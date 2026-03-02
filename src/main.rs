@@ -9,8 +9,8 @@ use ironclaw::{
     agent::{Agent, AgentDeps},
     app::{AppBuilder, AppBuilderFlags},
     channels::{
-        ChannelManager, GatewayChannel, HttpChannel, ReplChannel, SignalChannel, WebhookServer,
-        WebhookServerConfig,
+        ChannelManager, DiscordChannel, GatewayChannel, HttpChannel, ReplChannel, SignalChannel,
+        WebhookServer, WebhookServerConfig,
         wasm::{
             RegisteredEndpoint, SharedWasmChannel, WasmChannelLoader, WasmChannelRouter,
             WasmChannelRuntime, WasmChannelRuntimeConfig, create_wasm_channel_router,
@@ -383,6 +383,25 @@ async fn async_main() -> anyhow::Result<()> {
         if signal_config.allow_from.is_empty() {
             tracing::warn!(
                 "Signal channel has empty allow_from list - ALL messages will be DENIED."
+            );
+        }
+    }
+
+    // Add Discord channel if configured and not CLI-only mode.
+    if !cli.cli_only
+        && let Some(ref discord_config) = config.channels.discord
+    {
+        let discord_channel = DiscordChannel::new(discord_config.clone());
+        channel_names.push("discord".to_string());
+        channels.add(Box::new(discord_channel)).await;
+        tracing::info!(
+            guild_id = ?discord_config.guild_id,
+            mention_only = discord_config.mention_only,
+            "Discord channel enabled"
+        );
+        if discord_config.allowed_users.is_empty() {
+            tracing::warn!(
+                "Discord channel has empty allowed_users list - ALL messages will be DENIED."
             );
         }
     }

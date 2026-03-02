@@ -14,6 +14,7 @@ pub struct ChannelsConfig {
     pub http: Option<HttpConfig>,
     pub gateway: Option<GatewayConfig>,
     pub signal: Option<SignalConfig>,
+    pub discord: Option<DiscordConfig>,
     /// Directory containing WASM channel modules (default: ~/.ironclaw/channels/).
     pub wasm_channels_dir: std::path::PathBuf,
     /// Whether WASM channels are enabled.
@@ -86,6 +87,26 @@ pub struct SignalConfig {
     pub ignore_attachments: bool,
     /// Skip story messages.
     pub ignore_stories: bool,
+}
+
+/// Discord channel configuration (native gateway websocket mode).
+#[derive(Debug, Clone)]
+pub struct DiscordConfig {
+    /// Discord bot token (required to enable).
+    pub bot_token: SecretString,
+    /// Optional guild to restrict group messages to (DMs still allowed).
+    pub guild_id: Option<String>,
+    /// Users allowed to interact with the bot.
+    ///
+    /// - Empty list denies everyone (secure-by-default).
+    /// - `"*"` allows everyone.
+    pub allowed_users: Vec<String>,
+    /// Whether to process messages from other bots.
+    pub listen_to_bots: bool,
+    /// If true, in guild channels only respond when mentioned (unless sender is in group_reply_allowed_sender_ids).
+    pub mention_only: bool,
+    /// Sender IDs that can trigger the bot in guild channels without mentioning it.
+    pub group_reply_allowed_sender_ids: Vec<String>,
 }
 
 impl ChannelsConfig {
@@ -165,6 +186,40 @@ impl ChannelsConfig {
             None
         };
 
+        let discord = if let Some(token) = optional_env("DISCORD_BOT_TOKEN")? {
+            let allowed_users = optional_env("DISCORD_ALLOWED_USERS")?
+                .map(|s| {
+                    s.split(',')
+                        .map(|e| e.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                // Usability default: if you set a token but not an allowlist, allow all.
+                // You can lock it down by setting DISCORD_ALLOWED_USERS to an empty string
+                // (explicit deny) or to a specific list of IDs.
+                .unwrap_or_else(|| vec!["*".to_string()]);
+
+            let group_reply_allowed_sender_ids = optional_env("DISCORD_GROUP_REPLY_ALLOWED_SENDERS")?
+                .map(|s| {
+                    s.split(',')
+                        .map(|e| e.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            Some(DiscordConfig {
+                bot_token: SecretString::from(token),
+                guild_id: optional_env("DISCORD_GUILD_ID")?,
+                allowed_users,
+                listen_to_bots: parse_bool_env("DISCORD_LISTEN_TO_BOTS", false)?,
+                mention_only: parse_bool_env("DISCORD_MENTION_ONLY", true)?,
+                group_reply_allowed_sender_ids,
+            })
+        } else {
+            None
+        };
+
         let cli_enabled = optional_env("CLI_ENABLED")?
             .map(|s| s.to_lowercase() != "false" && s != "0")
             .unwrap_or(true);
@@ -176,6 +231,7 @@ impl ChannelsConfig {
             http,
             gateway,
             signal,
+            discord,
             wasm_channels_dir: optional_env("WASM_CHANNELS_DIR")?
                 .map(PathBuf::from)
                 .unwrap_or_else(default_channels_dir),

@@ -1,6 +1,6 @@
-//! NEAR AI Agentic Worker Framework
+//! BetterClaw agent framework.
 //!
-//! An LLM-powered autonomous agent that operates on the NEAR AI marketplace.
+//! A secure, local-first agent runtime with a web dashboard, channels, tools, and sandboxing.
 //!
 //! # Architecture
 //!

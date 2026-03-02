@@ -39,7 +39,7 @@ pub use self::embeddings::EmbeddingsConfig;
 pub use self::heartbeat::HeartbeatConfig;
 pub use self::hygiene::HygieneConfig;
 pub use self::llm::{
-    AnthropicDirectConfig, LlmBackend, LlmConfig, NearAiConfig, OllamaConfig,
+    AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
     OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
 };
 pub use self::routines::RoutineConfig;
@@ -221,7 +221,6 @@ pub async fn inject_llm_keys_from_secrets(
         ("llm_openai_api_key", "OPENAI_API_KEY"),
         ("llm_anthropic_api_key", "ANTHROPIC_API_KEY"),
         ("llm_compatible_api_key", "LLM_API_KEY"),
-        ("llm_nearai_api_key", "NEARAI_API_KEY"),
     ];
 
     let mut injected = HashMap::new();

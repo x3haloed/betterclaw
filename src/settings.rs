@@ -43,7 +43,7 @@ pub struct Settings {
     pub secrets_master_key_source: KeySource,
 
     // === Step 3: Inference Provider ===
-    /// LLM backend: "nearai", "anthropic", "openai", "ollama", "openai_compatible".
+    /// LLM backend: "anthropic", "openai", "ollama", "openai_compatible", "tinfoil".
     #[serde(default)]
     pub llm_backend: Option<String>,
 
@@ -121,7 +121,7 @@ pub struct EmbeddingsSettings {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Provider to use: "openai" or "nearai".
+    /// Provider to use: "openai" or "ollama".
     #[serde(default = "default_embeddings_provider")]
     pub provider: String,
 
@@ -131,7 +131,7 @@ pub struct EmbeddingsSettings {
 }
 
 fn default_embeddings_provider() -> String {
-    "nearai".to_string()
+    "openai".to_string()
 }
 
 fn default_embeddings_model() -> String {
@@ -609,8 +609,7 @@ impl Settings {
         // Start with defaults, then overlay each DB setting.
         //
         // The settings table stores both Settings struct fields and app-specific
-        // data (e.g. nearai.session_token). Skip keys that don't correspond to
-        // a known Settings path.
+        // data. Skip keys that don't correspond to a known Settings path.
         let mut settings = Self::default();
 
         for (key, value) in map {
@@ -626,7 +625,7 @@ impl Settings {
             match settings.set(key, &value_str) {
                 Ok(()) => {}
                 // The settings table stores both Settings fields and app-specific
-                // data (e.g. nearai.session_token). Silently skip unknown paths.
+                // data. Silently skip unknown paths.
                 Err(e) if e.starts_with("Path not found") => {}
                 Err(e) => {
                     tracing::warn!(
@@ -707,7 +706,7 @@ impl Settings {
              # Uncomment and edit values to override defaults.\n\
              # Run `ironclaw config init` to regenerate this file.\n\
              #\n\
-             # Documentation: https://github.com/nearai/ironclaw\n\
+             # Documentation: see README.md\n\
              \n\
              {raw}"
         );
@@ -1044,7 +1043,7 @@ mod tests {
     fn test_embeddings_defaults() {
         let settings = Settings::default();
         assert!(!settings.embeddings.enabled);
-        assert_eq!(settings.embeddings.provider, "nearai");
+        assert_eq!(settings.embeddings.provider, "openai");
         assert_eq!(settings.embeddings.model, "text-embedding-3-small");
     }
 
@@ -1395,7 +1394,7 @@ mod tests {
             secrets_master_key_source: KeySource::Keychain,
             embeddings: EmbeddingsSettings {
                 enabled: true,
-                provider: "nearai".to_string(),
+                provider: "openai".to_string(),
                 model: "text-embedding-3-large".to_string(),
             },
             tunnel: TunnelSettings {
@@ -1458,7 +1457,7 @@ mod tests {
         );
         assert!(restored.embeddings.enabled, "embeddings.enabled lost");
         assert_eq!(
-            restored.embeddings.provider, "nearai",
+            restored.embeddings.provider, "openai",
             "embeddings.provider lost"
         );
         assert_eq!(

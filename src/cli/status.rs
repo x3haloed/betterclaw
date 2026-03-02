@@ -55,15 +55,6 @@ pub async fn run_status_command() -> anyhow::Result<()> {
         }
     }
 
-    // Session / Auth
-    print!("  Session:     ");
-    let session_path = crate::llm::session::default_session_path();
-    if session_path.exists() {
-        println!("found ({})", session_path.display());
-    } else {
-        println!("not found (run `ironclaw onboard`)");
-    }
-
     // Secrets (auto-detect from env only; skip keychain probe to avoid
     // triggering macOS system password dialogs on a simple status check)
     print!("  Secrets:     ");

@@ -4,7 +4,6 @@ use secrecy::{ExposeSecret, SecretString};
 
 use crate::config::helpers::{optional_env, parse_bool_env, parse_optional_env};
 use crate::error::ConfigError;
-use crate::llm::SessionManager;
 use crate::settings::Settings;
 use crate::workspace::EmbeddingProvider;
 
@@ -13,7 +12,7 @@ use crate::workspace::EmbeddingProvider;
 pub struct EmbeddingsConfig {
     /// Whether embeddings are enabled.
     pub enabled: bool,
-    /// Provider to use: "openai", "nearai", or "ollama"
+    /// Provider to use: "openai" or "ollama"
     pub provider: String,
     /// OpenAI API key (for OpenAI provider).
     pub openai_api_key: Option<SecretString>,
@@ -92,30 +91,14 @@ impl EmbeddingsConfig {
     /// Create the appropriate embedding provider based on configuration.
     ///
     /// Returns `None` if embeddings are disabled or the required credentials
-    /// are missing. The `nearai_base_url` and `session` are needed only for
-    /// the NEAR AI provider but must be passed unconditionally.
-    pub fn create_provider(
-        &self,
-        nearai_base_url: &str,
-        session: Arc<SessionManager>,
-    ) -> Option<Arc<dyn EmbeddingProvider>> {
+    /// are missing.
+    pub fn create_provider(&self) -> Option<Arc<dyn EmbeddingProvider>> {
         if !self.enabled {
             tracing::info!("Embeddings disabled (set EMBEDDING_ENABLED=true to enable)");
             return None;
         }
 
         match self.provider.as_str() {
-            "nearai" => {
-                tracing::info!(
-                    "Embeddings enabled via NEAR AI (model: {}, dim: {})",
-                    self.model,
-                    self.dimension,
-                );
-                Some(Arc::new(
-                    crate::workspace::NearAiEmbeddings::new(nearai_base_url, session)
-                        .with_model(&self.model, self.dimension),
-                ))
-            }
             "ollama" => {
                 tracing::info!(
                     "Embeddings enabled via Ollama (model: {}, url: {}, dim: {})",

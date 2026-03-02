@@ -353,33 +353,13 @@ pub async fn migrate_disk_to_db(
         }
     }
 
-    // 4. Migrate session.json if it exists
+    // 4. Handle legacy session.json if it exists (no longer used)
     let session_path = ironclaw_dir.join("session.json");
     if session_path.exists() {
-        match std::fs::read_to_string(&session_path) {
-            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-                Ok(value) => {
-                    store
-                        .set_setting(user_id, "nearai.session_token", &value)
-                        .await
-                        .map_err(|e| {
-                            MigrationError::Database(format!(
-                                "Failed to write session to DB: {}",
-                                e
-                            ))
-                        })?;
-                    tracing::info!("Migrated session.json to database");
-
-                    rename_to_migrated(&session_path);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse session.json: {}", e);
-                }
-            },
-            Err(e) => {
-                tracing::warn!("Failed to read session.json: {}", e);
-            }
-        }
+        // Keep the file as a safety net, but move it out of the way so it
+        // doesn’t get mistaken for an active auth/session mechanism.
+        rename_to_migrated(&session_path);
+        tracing::info!("Renamed legacy session.json to .migrated (no longer used)");
     }
 
     // 5. Rename settings.json to .migrated (don't delete, safety net)
@@ -852,7 +832,7 @@ INJECTED="pwned"#;
         let vars = [
             ("DATABASE_BACKEND", "postgres"),
             ("DATABASE_URL", "postgres://u:p@h:5432/db"),
-            ("LLM_BACKEND", "nearai"),
+            ("LLM_BACKEND", "anthropic"),
             ("ONBOARD_COMPLETED", "true"),
             ("EMBEDDING_ENABLED", "false"),
         ];

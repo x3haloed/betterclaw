@@ -15,7 +15,7 @@ use crate::context::ContextManager;
 use crate::db::Database;
 use crate::extensions::ExtensionManager;
 use crate::hooks::HookRegistry;
-use crate::llm::{LlmProvider, SessionManager};
+use crate::llm::LlmProvider;
 use crate::safety::SafetyLayer;
 use crate::secrets::SecretsStore;
 use crate::skills::SkillRegistry;
@@ -48,7 +48,6 @@ pub struct AppComponents {
     pub skill_registry: Option<Arc<std::sync::RwLock<SkillRegistry>>>,
     pub skill_catalog: Option<Arc<SkillCatalog>>,
     pub cost_guard: Arc<crate::agent::cost_guard::CostGuard>,
-    pub session: Arc<SessionManager>,
     pub catalog_entries: Vec<crate::extensions::RegistryEntry>,
     pub dev_loaded_tool_names: Vec<String>,
 }
@@ -64,7 +63,6 @@ pub struct AppBuilder {
     config: Config,
     flags: AppBuilderFlags,
     toml_path: Option<std::path::PathBuf>,
-    session: Arc<SessionManager>,
     log_broadcaster: Arc<LogBroadcaster>,
 
     // Accumulated state
@@ -81,21 +79,19 @@ pub struct AppBuilder {
 impl AppBuilder {
     /// Create a new builder.
     ///
-    /// The `session` and `log_broadcaster` are created before the builder
-    /// because tracing must be initialized before any init phase runs,
-    /// and the log broadcaster is part of the tracing layer.
+    /// The `log_broadcaster` is created before the builder because tracing must
+    /// be initialized before any init phase runs, and the log broadcaster is
+    /// part of the tracing layer.
     pub fn new(
         config: Config,
         flags: AppBuilderFlags,
         toml_path: Option<std::path::PathBuf>,
-        session: Arc<SessionManager>,
         log_broadcaster: Arc<LogBroadcaster>,
     ) -> Self {
         Self {
             config,
             flags,
             toml_path,
-            session,
             log_broadcaster,
             db: None,
             secrets_store: None,
@@ -109,7 +105,7 @@ impl AppBuilder {
     /// Phase 1: Initialize database backend.
     ///
     /// Creates the database connection, runs migrations, reloads config
-    /// from DB, attaches DB to session manager, and cleans up stale jobs.
+    /// from DB and cleans up stale jobs.
     pub async fn init_database(&mut self) -> Result<(), anyhow::Error> {
         if self.flags.no_db {
             tracing::warn!("Running without database connection");
@@ -182,7 +178,7 @@ impl AppBuilder {
             }
         };
 
-        // Post-init: migrate disk config, reload config from DB, attach session, cleanup
+        // Post-init: migrate disk config, reload config from DB, cleanup
         if let Err(e) = crate::bootstrap::migrate_disk_to_db(db.as_ref(), "default").await {
             tracing::warn!("Disk-to-DB settings migration failed: {}", e);
         }
@@ -200,8 +196,6 @@ impl AppBuilder {
                 );
             }
         }
-
-        self.session.attach_store(db.clone(), "default").await;
 
         // Fire-and-forget housekeeping — no need to block startup.
         let db_cleanup = db.clone();
@@ -298,8 +292,7 @@ impl AppBuilder {
     pub fn init_llm(
         &self,
     ) -> Result<(Arc<dyn LlmProvider>, Option<Arc<dyn LlmProvider>>), anyhow::Error> {
-        let (llm, cheap_llm) =
-            crate::llm::build_provider_chain(&self.config.llm, self.session.clone())?;
+        let (llm, cheap_llm) = crate::llm::build_provider_chain(&self.config.llm)?;
         Ok((llm, cheap_llm))
     }
 
@@ -332,10 +325,7 @@ impl AppBuilder {
         tools.register_builtin_tools();
 
         // Create embeddings provider using the unified method
-        let embeddings = self
-            .config
-            .embeddings
-            .create_provider(&self.config.llm.nearai.base_url, self.session.clone());
+        let embeddings = self.config.embeddings.create_provider();
 
         // Warn if libSQL backend is used with non-1536 embedding dimension.
         if self.config.database.backend == crate::config::DatabaseBackend::LibSql
@@ -736,7 +726,6 @@ impl AppBuilder {
             skill_registry,
             skill_catalog,
             cost_guard,
-            session: self.session,
             catalog_entries,
             dev_loaded_tool_names,
         })

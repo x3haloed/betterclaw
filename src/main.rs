@@ -23,7 +23,6 @@ use ironclaw::{
     },
     config::Config,
     hooks::bootstrap_hooks,
-    llm::{SessionConfig, create_session_manager},
     orchestrator::{
         ContainerJobConfig, ContainerJobManager, OrchestratorApi, TokenStore,
         api::OrchestratorState,
@@ -172,13 +171,6 @@ async fn async_main() -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     };
 
-    // Initialize session manager and authenticate before channel setup
-    let session_config = SessionConfig {
-        auth_base_url: config.llm.nearai.auth_base_url.clone(),
-        session_path: config.llm.nearai.session_path.clone(),
-    };
-    let session = create_session_manager(session_config).await;
-
     // Create log broadcaster before tracing init so the WebLogLayer can capture all events.
     let log_broadcaster = Arc::new(LogBroadcaster::new());
 
@@ -198,20 +190,12 @@ async fn async_main() -> anyhow::Result<()> {
         config,
         flags,
         toml_path.map(std::path::PathBuf::from),
-        session.clone(),
         Arc::clone(&log_broadcaster),
     )
     .build_all()
     .await?;
 
     let config = components.config;
-
-    // Session-based auth is only needed for NEAR AI backend without an API key.
-    if config.llm.backend == ironclaw::config::LlmBackend::NearAi
-        && config.llm.nearai.api_key.is_none()
-    {
-        session.ensure_authenticated().await?;
-    }
 
     // ── Tunnel setup ───────────────────────────────────────────────────
 
@@ -749,15 +733,7 @@ async fn run_memory_command(mem_cmd: &ironclaw::cli::MemoryCommand) -> anyhow::R
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let session = create_session_manager(SessionConfig {
-        auth_base_url: config.llm.nearai.auth_base_url.clone(),
-        session_path: config.llm.nearai.session_path.clone(),
-    })
-    .await;
-
-    let embeddings = config
-        .embeddings
-        .create_provider(&config.llm.nearai.base_url, session);
+    let embeddings = config.embeddings.create_provider();
 
     // Warn if libSQL backend is used with non-1536 embedding dimension.
     if config.database.backend == ironclaw::config::DatabaseBackend::LibSql
@@ -1115,14 +1091,8 @@ fn check_onboard_needed() -> Option<&'static str> {
         return None;
     }
 
-    if std::env::var("NEARAI_API_KEY").is_err() {
-        let session_path = ironclaw::llm::session::default_session_path();
-        if !session_path.exists() {
-            return Some("First run");
-        }
-    }
-
-    None
+    // If the user hasn't explicitly completed onboarding, treat this as first run.
+    Some("First run")
 }
 
 /// Inject credentials for a channel based on naming convention.

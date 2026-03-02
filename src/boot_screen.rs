@@ -164,7 +164,7 @@ mod tests {
         let info = BootInfo {
             version: "0.2.0".to_string(),
             agent_name: "ironclaw".to_string(),
-            llm_backend: "nearai".to_string(),
+            llm_backend: "ollama".to_string(),
             llm_model: "claude-3-5-sonnet-20241022".to_string(),
             cheap_model: Some("gpt-4o-mini".to_string()),
             db_backend: "libsql".to_string(),
@@ -197,7 +197,7 @@ mod tests {
         let info = BootInfo {
             version: "0.2.0".to_string(),
             agent_name: "ironclaw".to_string(),
-            llm_backend: "nearai".to_string(),
+            llm_backend: "ollama".to_string(),
             llm_model: "gpt-4o".to_string(),
             cheap_model: None,
             db_backend: "none".to_string(),

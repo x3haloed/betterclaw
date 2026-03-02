@@ -1,7 +1,6 @@
 //! LLM integration for the agent.
 //!
 //! Supports multiple backends:
-//! - **NEAR AI** (default): Session token or API key auth via Chat Completions API
 //! - **OpenAI**: Direct API access with your own key
 //! - **Anthropic**: Direct API access with your own key
 //! - **Ollama**: Local model inference
@@ -10,18 +9,15 @@
 pub mod circuit_breaker;
 pub mod costs;
 pub mod failover;
-mod nearai_chat;
 mod provider;
 mod reasoning;
 pub mod response_cache;
 pub mod retry;
 mod rig_adapter;
-pub mod session;
 pub mod smart_routing;
 
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerProvider};
 pub use failover::{CooldownConfig, FailoverProvider};
-pub use nearai_chat::{ModelInfo, NearAiChatProvider};
 pub use provider::{
     ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ModelMetadata,
     Role, ToolCall, ToolCompletionRequest, ToolCompletionResponse, ToolDefinition, ToolResult,
@@ -33,7 +29,6 @@ pub use reasoning::{
 pub use response_cache::{CachedProvider, ResponseCacheConfig};
 pub use retry::{RetryConfig, RetryProvider};
 pub use rig_adapter::RigAdapter;
-pub use session::{SessionConfig, SessionManager, create_session_manager};
 pub use smart_routing::{SmartRoutingConfig, SmartRoutingProvider, TaskComplexity};
 
 use std::sync::Arc;
@@ -41,20 +36,16 @@ use std::sync::Arc;
 use rig::client::CompletionClient;
 use secrecy::ExposeSecret;
 
-use crate::config::{LlmBackend, LlmConfig, NearAiConfig};
+use crate::config::{LlmBackend, LlmConfig};
 use crate::error::LlmError;
 
 /// Create an LLM provider based on configuration.
 ///
-/// - `NearAi` backend: Uses session manager for authentication (Responses API)
-///   or API key (Chat Completions API)
 /// - Other backends: Use rig-core adapter with provider-specific clients
 pub fn create_llm_provider(
     config: &LlmConfig,
-    session: Arc<SessionManager>,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
     match config.backend {
-        LlmBackend::NearAi => create_llm_provider_with_config(&config.nearai, session),
         LlmBackend::OpenAi => create_openai_provider(config),
         LlmBackend::Anthropic => create_anthropic_provider(config),
         LlmBackend::Ollama => create_ollama_provider(config),
@@ -63,32 +54,57 @@ pub fn create_llm_provider(
     }
 }
 
-/// Create an LLM provider from a `NearAiConfig` directly.
-///
-/// This is useful when constructing additional providers for failover,
-/// where only the model name differs from the primary config.
-pub fn create_llm_provider_with_config(
-    config: &NearAiConfig,
-    session: Arc<SessionManager>,
+fn create_llm_provider_with_model(
+    config: &LlmConfig,
+    model_override: &str,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let auth_mode = if config.api_key.is_some() {
-        "API key"
-    } else {
-        "session token"
-    };
-    tracing::info!(
-        model = %config.model,
-        base_url = %config.base_url,
-        auth = auth_mode,
-        "Using NEAR AI (Chat Completions API)"
-    );
-    Ok(Arc::new(NearAiChatProvider::new(config.clone(), session)?))
+    match config.backend {
+        LlmBackend::OpenAi => {
+            let mut c = config.openai.as_ref().ok_or_else(|| LlmError::AuthFailed {
+                provider: "openai".to_string(),
+            })?.clone();
+            c.model = model_override.to_string();
+            create_openai_provider_from(&c)
+        }
+        LlmBackend::Anthropic => {
+            let mut c = config.anthropic.as_ref().ok_or_else(|| LlmError::AuthFailed {
+                provider: "anthropic".to_string(),
+            })?.clone();
+            c.model = model_override.to_string();
+            create_anthropic_provider_from(&c)
+        }
+        LlmBackend::Ollama => {
+            let mut c = config.ollama.as_ref().ok_or_else(|| LlmError::AuthFailed {
+                provider: "ollama".to_string(),
+            })?.clone();
+            c.model = model_override.to_string();
+            create_ollama_provider_from(&c)
+        }
+        LlmBackend::OpenAiCompatible => {
+            let mut c = config.openai_compatible.as_ref().ok_or_else(|| LlmError::AuthFailed {
+                provider: "openai_compatible".to_string(),
+            })?.clone();
+            c.model = model_override.to_string();
+            create_openai_compatible_provider_from(&c)
+        }
+        LlmBackend::Tinfoil => {
+            let mut c = config.tinfoil.as_ref().ok_or_else(|| LlmError::AuthFailed {
+                provider: "tinfoil".to_string(),
+            })?.clone();
+            c.model = model_override.to_string();
+            create_tinfoil_provider_from(&c)
+        }
+    }
 }
 
 fn create_openai_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
     let oai = config.openai.as_ref().ok_or_else(|| LlmError::AuthFailed {
         provider: "openai".to_string(),
     })?;
+    create_openai_provider_from(oai)
+}
+
+fn create_openai_provider_from(oai: &crate::config::OpenAiDirectConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
 
     use rig::providers::openai;
 
@@ -131,6 +147,10 @@ fn create_anthropic_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>,
             provider: "anthropic".to_string(),
         })?;
 
+    create_anthropic_provider_from(anth)
+}
+
+fn create_anthropic_provider_from(anth: &crate::config::AnthropicDirectConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::providers::anthropic;
 
     let client: anthropic::Client = if let Some(ref base_url) = anth.base_url {
@@ -159,6 +179,10 @@ fn create_ollama_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, Ll
     let oll = config.ollama.as_ref().ok_or_else(|| LlmError::AuthFailed {
         provider: "ollama".to_string(),
     })?;
+    create_ollama_provider_from(oll)
+}
+
+fn create_ollama_provider_from(oll: &crate::config::OllamaConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
 
     use rig::client::Nothing;
     use rig::providers::ollama;
@@ -191,6 +215,10 @@ fn create_tinfoil_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, L
             provider: "tinfoil".to_string(),
         })?;
 
+    create_tinfoil_provider_from(tf)
+}
+
+fn create_tinfoil_provider_from(tf: &crate::config::TinfoilConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::providers::openai;
 
     let client: openai::Client = openai::Client::builder()
@@ -218,6 +246,12 @@ fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmPr
             provider: "openai_compatible".to_string(),
         })?;
 
+    create_openai_compatible_provider_from(compat)
+}
+
+fn create_openai_compatible_provider_from(
+    compat: &crate::config::OpenAiCompatibleConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::providers::openai;
 
     let mut extra_headers = reqwest::header::HeaderMap::new();
@@ -267,32 +301,14 @@ fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmPr
 
 /// Create a cheap/fast LLM provider for lightweight tasks (heartbeat, routing, evaluation).
 ///
-/// Uses `NEARAI_CHEAP_MODEL` if set, otherwise falls back to the main provider.
-/// Currently only supports NEAR AI backend.
+/// Uses `LLM_CHEAP_MODEL` (via config/env) when set, otherwise returns `None`.
 pub fn create_cheap_llm_provider(
     config: &LlmConfig,
-    session: Arc<SessionManager>,
 ) -> Result<Option<Arc<dyn LlmProvider>>, LlmError> {
-    let Some(ref cheap_model) = config.nearai.cheap_model else {
+    let Some(ref cheap_model) = config.tuning.cheap_model else {
         return Ok(None);
     };
-
-    if config.backend != LlmBackend::NearAi {
-        tracing::warn!(
-            "NEARAI_CHEAP_MODEL is set but LLM_BACKEND is {:?}, not NearAi. \
-             Cheap model setting will be ignored.",
-            config.backend
-        );
-        return Ok(None);
-    }
-
-    let mut cheap_config = config.nearai.clone();
-    cheap_config.model = cheap_model.clone();
-
-    Ok(Some(Arc::new(NearAiChatProvider::new(
-        cheap_config,
-        session,
-    )?)))
+    Ok(Some(create_llm_provider_with_model(config, cheap_model)?))
 }
 
 /// Build the full LLM provider chain with all configured wrappers.
@@ -313,14 +329,13 @@ pub fn create_cheap_llm_provider(
 #[allow(clippy::type_complexity)]
 pub fn build_provider_chain(
     config: &LlmConfig,
-    session: Arc<SessionManager>,
 ) -> Result<(Arc<dyn LlmProvider>, Option<Arc<dyn LlmProvider>>), LlmError> {
-    let llm = create_llm_provider(config, session.clone())?;
+    let llm = create_llm_provider(config)?;
     tracing::info!("LLM provider initialized: {}", llm.model_name());
 
     // 1. Retry
     let retry_config = RetryConfig {
-        max_retries: config.nearai.max_retries,
+        max_retries: config.tuning.max_retries,
     };
     let llm: Arc<dyn LlmProvider> = if retry_config.max_retries > 0 {
         tracing::info!(
@@ -333,10 +348,8 @@ pub fn build_provider_chain(
     };
 
     // 2. Smart routing (cheap/primary split)
-    let llm: Arc<dyn LlmProvider> = if let Some(ref cheap_model) = config.nearai.cheap_model {
-        let mut cheap_config = config.nearai.clone();
-        cheap_config.model = cheap_model.clone();
-        let cheap = create_llm_provider_with_config(&cheap_config, session.clone())?;
+    let llm: Arc<dyn LlmProvider> = if let Some(ref cheap_model) = config.tuning.cheap_model {
+        let cheap = create_llm_provider_with_model(config, cheap_model)?;
         let cheap: Arc<dyn LlmProvider> = if retry_config.max_retries > 0 {
             Arc::new(RetryProvider::new(cheap, retry_config.clone()))
         } else {
@@ -351,7 +364,7 @@ pub fn build_provider_chain(
             llm,
             cheap,
             SmartRoutingConfig {
-                cascade_enabled: config.nearai.smart_routing_cascade,
+                cascade_enabled: config.tuning.smart_routing_cascade,
                 ..SmartRoutingConfig::default()
             },
         ))
@@ -360,15 +373,8 @@ pub fn build_provider_chain(
     };
 
     // 3. Failover
-    let llm: Arc<dyn LlmProvider> = if let Some(ref fallback_model) = config.nearai.fallback_model {
-        if fallback_model == &config.nearai.model {
-            tracing::warn!(
-                "fallback_model is the same as primary model, failover may not be effective"
-            );
-        }
-        let mut fallback_config = config.nearai.clone();
-        fallback_config.model = fallback_model.clone();
-        let fallback = create_llm_provider_with_config(&fallback_config, session.clone())?;
+    let llm: Arc<dyn LlmProvider> = if let Some(ref fallback_model) = config.tuning.fallback_model {
+        let fallback = create_llm_provider_with_model(config, fallback_model)?;
         tracing::info!(
             primary = %llm.model_name(),
             fallback = %fallback.model_name(),
@@ -380,8 +386,8 @@ pub fn build_provider_chain(
             fallback
         };
         let cooldown_config = CooldownConfig {
-            cooldown_duration: std::time::Duration::from_secs(config.nearai.failover_cooldown_secs),
-            failure_threshold: config.nearai.failover_cooldown_threshold,
+            cooldown_duration: std::time::Duration::from_secs(config.tuning.failover_cooldown_secs),
+            failure_threshold: config.tuning.failover_cooldown_threshold,
         };
         Arc::new(FailoverProvider::with_cooldown(
             vec![llm, fallback],
@@ -392,18 +398,18 @@ pub fn build_provider_chain(
     };
 
     // 4. Circuit breaker
-    let llm: Arc<dyn LlmProvider> = if let Some(threshold) = config.nearai.circuit_breaker_threshold
+    let llm: Arc<dyn LlmProvider> = if let Some(threshold) = config.tuning.circuit_breaker_threshold
     {
         let cb_config = CircuitBreakerConfig {
             failure_threshold: threshold,
             recovery_timeout: std::time::Duration::from_secs(
-                config.nearai.circuit_breaker_recovery_secs,
+                config.tuning.circuit_breaker_recovery_secs,
             ),
             ..CircuitBreakerConfig::default()
         };
         tracing::info!(
             threshold,
-            recovery_secs = config.nearai.circuit_breaker_recovery_secs,
+            recovery_secs = config.tuning.circuit_breaker_recovery_secs,
             "LLM circuit breaker enabled"
         );
         Arc::new(CircuitBreakerProvider::new(llm, cb_config))
@@ -412,14 +418,14 @@ pub fn build_provider_chain(
     };
 
     // 5. Response cache
-    let llm: Arc<dyn LlmProvider> = if config.nearai.response_cache_enabled {
+    let llm: Arc<dyn LlmProvider> = if config.tuning.response_cache_enabled {
         let rc_config = ResponseCacheConfig {
-            ttl: std::time::Duration::from_secs(config.nearai.response_cache_ttl_secs),
-            max_entries: config.nearai.response_cache_max_entries,
+            ttl: std::time::Duration::from_secs(config.tuning.response_cache_ttl_secs),
+            max_entries: config.tuning.response_cache_max_entries,
         };
         tracing::info!(
-            ttl_secs = config.nearai.response_cache_ttl_secs,
-            max_entries = config.nearai.response_cache_max_entries,
+            ttl_secs = config.tuning.response_cache_ttl_secs,
+            max_entries = config.tuning.response_cache_max_entries,
             "LLM response cache enabled"
         );
         Arc::new(CachedProvider::new(llm, rc_config))
@@ -428,7 +434,7 @@ pub fn build_provider_chain(
     };
 
     // Standalone cheap LLM for heartbeat/evaluation (not part of the chain)
-    let cheap_llm = create_cheap_llm_provider(config, session)?;
+    let cheap_llm = create_cheap_llm_provider(config)?;
     if let Some(ref cheap) = cheap_llm {
         tracing::info!("Cheap LLM provider initialized: {}", cheap.model_name());
     }
@@ -436,79 +442,4 @@ pub fn build_provider_chain(
     Ok((llm, cheap_llm))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::{LlmBackend, NearAiConfig};
-    use std::path::PathBuf;
-
-    fn test_nearai_config() -> NearAiConfig {
-        NearAiConfig {
-            model: "test-model".to_string(),
-            cheap_model: None,
-            base_url: "https://api.near.ai".to_string(),
-            auth_base_url: "https://private.near.ai".to_string(),
-            session_path: PathBuf::from("/tmp/test-session.json"),
-            api_key: None,
-            fallback_model: None,
-            max_retries: 3,
-            circuit_breaker_threshold: None,
-            circuit_breaker_recovery_secs: 30,
-            response_cache_enabled: false,
-            response_cache_ttl_secs: 3600,
-            response_cache_max_entries: 1000,
-            failover_cooldown_secs: 300,
-            failover_cooldown_threshold: 3,
-            smart_routing_cascade: true,
-        }
-    }
-
-    fn test_llm_config() -> LlmConfig {
-        LlmConfig {
-            backend: LlmBackend::NearAi,
-            nearai: test_nearai_config(),
-            openai: None,
-            anthropic: None,
-            ollama: None,
-            openai_compatible: None,
-            tinfoil: None,
-        }
-    }
-
-    #[test]
-    fn test_create_cheap_llm_provider_returns_none_when_not_configured() {
-        let config = test_llm_config();
-        let session = Arc::new(SessionManager::new(SessionConfig::default()));
-
-        let result = create_cheap_llm_provider(&config, session);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
-    }
-
-    #[test]
-    fn test_create_cheap_llm_provider_creates_provider_when_configured() {
-        let mut config = test_llm_config();
-        config.nearai.cheap_model = Some("cheap-test-model".to_string());
-
-        let session = Arc::new(SessionManager::new(SessionConfig::default()));
-        let result = create_cheap_llm_provider(&config, session);
-
-        assert!(result.is_ok());
-        let provider = result.unwrap();
-        assert!(provider.is_some());
-        assert_eq!(provider.unwrap().model_name(), "cheap-test-model");
-    }
-
-    #[test]
-    fn test_create_cheap_llm_provider_ignored_for_non_nearai_backend() {
-        let mut config = test_llm_config();
-        config.backend = LlmBackend::OpenAi;
-        config.nearai.cheap_model = Some("cheap-test-model".to_string());
-
-        let session = Arc::new(SessionManager::new(SessionConfig::default()));
-        let result = create_cheap_llm_provider(&config, session);
-
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
-    }
-}
+// (No llm module unit tests yet; most logic is exercised by higher-level tests.)

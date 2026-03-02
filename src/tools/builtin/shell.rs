@@ -1167,7 +1167,7 @@ mod tests {
         // Simulate common secret env vars that agents/tools might set
         let secrets = [
             ("OPENAI_API_KEY", "sk-test-fake-key-123"),
-            ("NEARAI_SESSION_TOKEN", "sess_fake_token_abc"),
+            ("ANTHROPIC_API_KEY", "sk-ant-api-test-fake-key-123"),
             ("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/fake"),
             ("DATABASE_URL", "postgres://user:pass@localhost/db"),
         ];

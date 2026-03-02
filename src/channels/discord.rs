@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
+use rand::seq::SliceRandom;
 use secrecy::ExposeSecret;
 use tokio::sync::{mpsc, Mutex};
 use tokio_stream::wrappers::ReceiverStream;
@@ -28,6 +29,8 @@ const DISCORD_MAX_MESSAGE_LEN: usize = 2000;
 const DISCORD_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 // Discord accepts max 10 files per message.
 const DISCORD_MAX_FILES: usize = 10;
+const DISCORD_MAX_TEXT_ATTACHMENT_BYTES: usize = 256 * 1024;
+const DISCORD_ATTACHMENT_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Rate-limit typing; Discord typing indicator expires quickly, but we don't want to spam.
 const TYPING_MIN_INTERVAL: Duration = Duration::from_secs(7);
@@ -310,6 +313,156 @@ impl DiscordChannel {
             None
         } else {
             Some(cleaned)
+        }
+    }
+
+    fn is_image_attachment(content_type: &str, filename: &str, url: &str) -> bool {
+        let normalized_content_type = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+
+        if !normalized_content_type.is_empty() {
+            if normalized_content_type.starts_with("image/") {
+                return true;
+            }
+            // Trust explicit non-image MIME to avoid false positives.
+            if normalized_content_type != "application/octet-stream" {
+                return false;
+            }
+        }
+
+        Self::has_image_extension(filename) || Self::has_image_extension(url)
+    }
+
+    fn has_image_extension(value: &str) -> bool {
+        let value = value.to_ascii_lowercase();
+        [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"]
+            .iter()
+            .any(|ext| value.ends_with(ext))
+    }
+
+    async fn fetch_text_attachment_limited(&self, url: &str) -> Option<String> {
+        let resp = self
+            .http_client()
+            .get(url)
+            .timeout(DISCORD_ATTACHMENT_FETCH_TIMEOUT)
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        if let Some(len) = resp.content_length()
+            && len as usize > DISCORD_MAX_TEXT_ATTACHMENT_BYTES
+        {
+            return None;
+        }
+
+        let mut bytes: Vec<u8> = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(item) = stream.next().await {
+            let chunk = item.ok()?;
+            let remaining = DISCORD_MAX_TEXT_ATTACHMENT_BYTES.saturating_sub(bytes.len());
+            if remaining == 0 {
+                break;
+            }
+            if chunk.len() <= remaining {
+                bytes.extend_from_slice(&chunk);
+            } else {
+                bytes.extend_from_slice(&chunk[..remaining]);
+                break;
+            }
+        }
+
+        Some(String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    async fn process_attachments(&self, attachments: &[serde_json::Value]) -> String {
+        let mut parts: Vec<String> = Vec::new();
+
+        for att in attachments {
+            let ct = att
+                .get("content_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let name = att
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            let Some(url) = att.get("url").and_then(|v| v.as_str()) else {
+                continue;
+            };
+
+            if Self::is_image_attachment(ct, name, url) {
+                parts.push(format!("[IMAGE:{url}]"));
+                continue;
+            }
+
+            if ct.starts_with("text/") {
+                match self.fetch_text_attachment_limited(url).await {
+                    Some(text) => parts.push(format!("[{name}]\n{text}")),
+                    None => parts.push(format!("[ATTACHMENT:{name}] {url}")),
+                }
+                continue;
+            }
+
+            parts.push(format!("[ATTACHMENT:{name}] {url}"));
+        }
+
+        parts.join("\n---\n")
+    }
+
+    fn ack_reaction_enabled_for_chat_type(&self, is_group_message: bool) -> bool {
+        let types = &self.state.config.ack_reaction_chat_types;
+        if types.is_empty() {
+            return true;
+        }
+        if is_group_message {
+            types.iter().any(|t| t == "group")
+        } else {
+            types.iter().any(|t| t == "dm")
+        }
+    }
+
+    async fn add_reaction(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        emoji: &str,
+    ) -> Result<(), ChannelError> {
+        let encoded = urlencoding::encode(emoji);
+        let url = format!(
+            "{DISCORD_API_BASE}/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me"
+        );
+
+        let resp = self
+            .http_client()
+            .put(&url)
+            .header(
+                "Authorization",
+                format!("Bot {}", self.state.config.bot_token.expose_secret()),
+            )
+            .send()
+            .await
+            .map_err(|e| ChannelError::SendFailed {
+                name: "discord".to_string(),
+                reason: format!("Discord add reaction failed: {e}"),
+            })?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(ChannelError::SendFailed {
+                name: "discord".to_string(),
+                reason: format!("Discord add reaction failed ({status}): {body}"),
+            })
         }
     }
 
@@ -811,29 +964,11 @@ impl DiscordChannel {
                         continue;
                     };
 
-                    // Lightweight attachment markers (no fetching here).
-                    let attachment_text = d.get("attachments").and_then(|a| a.as_array()).map(|arr| {
-                        let mut parts = Vec::new();
-                        for att in arr {
-                            let name = att
-                                .get("filename")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("file");
-                            let url = att.get("url").and_then(|x| x.as_str()).unwrap_or("");
-                            let ct = att
-                                .get("content_type")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("");
-                            if !url.is_empty() {
-                                if ct.to_ascii_lowercase().starts_with("image/") {
-                                    parts.push(format!("[IMAGE:{url}]"));
-                                } else {
-                                    parts.push(format!("[ATTACHMENT:{name}] {url}"));
-                                }
-                            }
-                        }
-                        parts.join("\n")
-                    }).unwrap_or_default();
+                    let attachment_text = if let Some(arr) = d.get("attachments").and_then(|a| a.as_array()) {
+                        self.process_attachments(arr).await
+                    } else {
+                        String::new()
+                    };
 
                     let final_content = if attachment_text.is_empty() {
                         clean_content
@@ -848,6 +983,23 @@ impl DiscordChannel {
                         .map(|s| s.to_string());
 
                     let message_id = d.get("id").and_then(|x| x.as_str()).unwrap_or("");
+
+                    // Optional ACK reaction (best-effort, async).
+                    if !message_id.is_empty()
+                        && !channel_id.is_empty()
+                        && !self.state.config.ack_reactions.is_empty()
+                        && self.ack_reaction_enabled_for_chat_type(is_group_message)
+                    {
+                        let mut rng = rand::thread_rng();
+                        if let Some(emoji) = self.state.config.ack_reactions.choose(&mut rng).cloned() {
+                            let ch = channel_id.to_string();
+                            let mid = message_id.to_string();
+                            let this = self.clone_for_task();
+                            tokio::spawn(async move {
+                                let _ = this.add_reaction(&ch, &mid, &emoji).await;
+                            });
+                        }
+                    }
 
                     let metadata = serde_json::json!({
                         "discord_channel_id": channel_id,

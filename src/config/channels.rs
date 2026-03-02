@@ -107,6 +107,15 @@ pub struct DiscordConfig {
     pub mention_only: bool,
     /// Sender IDs that can trigger the bot in guild channels without mentioning it.
     pub group_reply_allowed_sender_ids: Vec<String>,
+    /// Optional list of emojis to react with on accepted incoming messages.
+    ///
+    /// Empty list disables ACK reactions.
+    pub ack_reactions: Vec<String>,
+    /// If non-empty, only apply ACK reactions to these chat types.
+    ///
+    /// Supported values: "dm", "group".
+    /// Empty list means "all".
+    pub ack_reaction_chat_types: Vec<String>,
 }
 
 impl ChannelsConfig {
@@ -215,6 +224,22 @@ impl ChannelsConfig {
                 listen_to_bots: parse_bool_env("DISCORD_LISTEN_TO_BOTS", false)?,
                 mention_only: parse_bool_env("DISCORD_MENTION_ONLY", true)?,
                 group_reply_allowed_sender_ids,
+                ack_reactions: optional_env("DISCORD_ACK_REACTIONS")?
+                    .map(|s| {
+                        s.split(',')
+                            .map(|e| e.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                ack_reaction_chat_types: optional_env("DISCORD_ACK_REACTION_CHAT_TYPES")?
+                    .map(|s| {
+                        s.split(',')
+                            .map(|e| e.trim().to_ascii_lowercase())
+                            .filter(|s| s == "dm" || s == "group")
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
         } else {
             None

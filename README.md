@@ -1,320 +1,261 @@
-<p align="center">
-  <img src="ironclaw.png?v=2" alt="IronClaw" width="200"/>
-</p>
-
-<h1 align="center">IronClaw</h1>
+<h1 align="center">BetterClaw</h1>
 
 <p align="center">
-  <strong>Your secure personal AI assistant, always on your side</strong>
+  <strong>Your durable personal AI assistant, always on your side</strong>
 </p>
 
 <p align="center">
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
-  <a href="https://t.me/ironclawAI"><img src="https://img.shields.io/badge/Telegram-%40ironclawAI-26A5E4?style=flat&logo=telegram&logoColor=white" alt="Telegram: @ironclawAI" /></a>
-  <a href="https://www.reddit.com/r/ironclawAI/"><img src="https://img.shields.io/badge/Reddit-r%2FironclawAI-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/ironclawAI" /></a>
-</p>
-
-<p align="center">
-  <a href="#philosophy">Philosophy</a> •
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#security">Security</a> •
-  <a href="#architecture">Architecture</a>
 </p>
 
 ---
 
-## Philosophy
+## What This Is
 
-IronClaw is built on a simple principle: **your AI assistant should work for you, not against you**.
+BetterClaw is a Rust fork of IronClaw, reshaped to prioritize:
 
-In a world where AI systems are increasingly opaque about data handling and aligned with corporate interests, IronClaw takes a different approach:
+- Web gateway + control dashboard (SSE/WS, job/tool visibility)
+- Sandbox architecture (orchestrator/worker, WASM tools, capability policy)
+- libSQL-first local persistence (no Postgres required for default dev)
+- Discord as a first-class channel (ported using ZeroClaw as a reference implementation)
+- Durable continuity model centered on claims + isnads + projections (derived, cited, diffable)
 
-- **Your data stays yours** - All information is stored locally, encrypted, and never leaves your control
-- **Transparency by design** - Open source, auditable, no hidden telemetry or data harvesting
-- **Self-expanding capabilities** - Build new tools on the fly without waiting for vendor updates
-- **Defense in depth** - Multiple security layers protect against prompt injection and data exfiltration
+This repo is currently in “fork-and-refactor” mode: much of the implementation is still upstream IronClaw
+until we finish reshaping the data plane and routing/policy surfaces.
 
-IronClaw is the AI assistant you can actually trust with your personal and professional life.
+## Project Direction (High-Level)
 
-## Features
+- Episode-oriented orchestration with an explicit policy gate (autonomy dial, scopes, witness windows).
+- Append-only event ledger as the source of truth (turns, tool calls/results, routing decisions).
+- Derived objects (claims + isnads + S/U/R invariants) that must cite ledger event ids.
+- Wake pack snapshots built from projections (and diffed) so context wipes don’t reset intent.
+- Rule-based routing where model choice is explainable and inspectable (OpenRouter-heavy by default).
 
-### Security First
+⸻
 
-- **WASM Sandbox** - Untrusted tools run in isolated WebAssembly containers with capability-based permissions
-- **Credential Protection** - Secrets are never exposed to tools; injected at the host boundary with leak detection
-- **Prompt Injection Defense** - Pattern detection, content sanitization, and policy enforcement
-- **Endpoint Allowlisting** - HTTP requests only to explicitly approved hosts and paths
+1) System roles diagram (boxes + responsibilities)
 
-### Always Available
+┌───────────────────────────┐
+│         User / UI          │  (chat, buttons: pin/confirm/reject, browse memory)
+└──────────────┬────────────┘
+               │
+               v
+┌───────────────────────────┐
+│        Orchestrator        │  (episode loop, policy, tool routing)
+│  - decides what to call    │
+│  - enforces autonomy dial  │
+│  - builds plan + executes  │
+└───────┬───────────┬───────┘
+        │           │
+        │           │
+        v           v
+┌───────────────┐  ┌───────────────────────┐
+│  Prompt Packs  │  │     Tool Harness      │
+│ (versioned)    │  │ (email, files, etc.)  │
+│ - agent prompt │  │ logs calls+results    │
+│ - compressor   │  └─────────┬─────────────┘
+│ - verifier     │            │
+└───────┬───────┘            │
+        │                    │
+        v                    v
+┌───────────────────────────┐
+│        LLM Provider        │  (one or more models)
+│  - BUZZ "voice" model      │
+│  - Compressor model        │
+│  - Verifier/Reranker       │
+└──────────────┬────────────┘
+               │
+               v
+┌──────────────────────────────────────────────────────────┐
+│                       Data Plane                         │
+│  ┌──────────────────────┐   ┌─────────────────────────┐  │
+│  │ Append-only Ledger    │   │   Retrieval Indexes     │  │
+│  │ (events + transcripts │   │ - exact (entities/time) │  │
+│  │  + tool logs)         │   │ - vector (embeddings)   │  │
+│  └──────────┬───────────┘   └───────────┬─────────────┘  │
+│             │                           │                │
+│             v                           v                │
+│  ┌──────────────────────┐   ┌─────────────────────────┐  │
+│  │ Claims + Isnads       │   │ Projections / Views     │  │
+│  │ (derived, cited)      │   │ - invariants (S/U/R)    │  │
+│  │ + transform_id        │   │ - drift/contradictions  │  │
+│  └──────────┬───────────┘   │ - wake pack snapshots   │  │
+│             │               └───────────┬─────────────┘  │
+│             └───────────────────────────┘                │
+└──────────────────────────────────────────────────────────┘
 
-- **Multi-channel** - REPL, HTTP webhooks, WASM channels (Telegram, Slack), and web gateway
-- **Docker Sandbox** - Isolated container execution with per-job tokens and orchestrator/worker pattern
-- **Web Gateway** - Browser UI with real-time SSE/WebSocket streaming
-- **Routines** - Cron schedules, event triggers, webhook handlers for background automation
-- **Heartbeat System** - Proactive background execution for monitoring and maintenance tasks
-- **Parallel Jobs** - Handle multiple requests concurrently with isolated contexts
-- **Self-repair** - Automatic detection and recovery of stuck operations
+S/U/R = Self / User / Relationship
 
-### Self-Expanding
+⸻
 
-- **Dynamic Tool Building** - Describe what you need, and IronClaw builds it as a WASM tool
-- **MCP Protocol** - Connect to Model Context Protocol servers for additional capabilities
-- **Plugin Architecture** - Drop in new WASM tools and channels without restarting
+2) Runtime episode flow (what happens when you “wake” and chat)
 
-### Persistent Memory
+[Start Episode]
+     |
+     v
+[Load Policy State]
+(autonomy dial, scopes, thresholds)
+     |
+     v
+[Build Wake Pack]
+- top invariants (S/U/R)
+- drift alerts
+- active goals
+- relevant recent snippets
+     |
+     v
+[User message arrives]
+     |
+     v
+[Capture Event -> Ledger]
+(conversation.turn + hash + metadata)
+     |
+     v
+[Recall Step (hybrid)]
+- exact index lookup
+- vector candidate search
+- rerank/verify
+     |
+     v
+[Compose Context]
+Wake Pack + recalled evidence + current turn
+     |
+     v
+[Call BUZZ LLM (voice/agent)]
+(prompt pack: agent)
+     |
+     v
+[Does response propose an action?]----No---->[Respond to user]
+               |
+              Yes
+               |
+               v
+[Policy Gate + Preflight]
+- scope allowed?
+- confidence ok?
+- drift low?
+- witness window needed?
+               |
+       ┌───────┴────────┐
+       │ pass            │ fail
+       v                 v
+[Execute Tool]        [Downgrade]
+(log tool.call/result) (propose-only / ask user)
+       |
+       v
+[Capture Tool Result -> Ledger]
+       |
+       v
+[Optional Micro-Distill Trigger]
+(decision/correction/action happened)
+       |
+       v
+[Update Projections + Wake Snapshot]
+       |
+       v
+[Continue Episode / End Episode]
 
-- **Hybrid Search** - Full-text + vector search using Reciprocal Rank Fusion
-- **Workspace Filesystem** - Flexible path-based storage for notes, logs, and context
-- **Identity Files** - Maintain consistent personality and preferences across sessions
 
-## Installation
+⸻
 
-### Prerequisites
+3) CIL distillation flow (background / end-of-episode “compressor”)
 
-- Rust 1.85+
-- PostgreSQL 15+ with [pgvector](https://github.com/pgvector/pgvector) extension
-- NEAR AI account (authentication handled via setup wizard)
+[Trigger Distill]
+- end of episode
+- after decision/correction/action
+- daily macro run
+     |
+     v
+[Select Window]
+(last N events / last day / last week)
+     |
+     v
+[Gather Evidence Set]
+- relevant events
+- relevant prior invariants
+- contradictions/drift candidates
+     |
+     v
+[Call Compressor LLM]
+(prompt pack: compressor)
+(output via CFG schema)
+     |
+     v
+[Create Claims + Isnads]
+- each invariant must cite event_ids (+ offsets)
+- attach transform_id (prompt/version)
+     |
+     v
+[Verifier Pass]
+- schema validity
+- citations exist
+- no uncited assertions
+- optional second-model check
+     |
+     v
+[Commit Derived Objects]
+- invariants (S/U/R)
+- fact updates (with citations)
+- drift flags / contradictions
+     |
+     v
+[Reweight + Prune (macro only)]
+- merge duplicates
+- decay stale
+- mark contradicted (never delete)
+     |
+     v
+[Build New Wake Snapshot]
+- diff vs previous
+- if big diff -> tighten autonomy
+     |
+     v
+[Done]
 
-## Download or Build
+## Quick Start (libSQL dev build)
 
-Visit [Releases page](https://github.com/nearai/ironclaw/releases/) to see the latest updates.
+BetterClaw keeps IronClaw’s CLI for now, so commands still use `ironclaw` until we rename the binary.
 
-<details>
-  <summary>Install via Windows Installer (Windows)</summary>
-
-Download the [Windows Installer](https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-x86_64-pc-windows-msvc.msi) and run it.
-
-</details>
-
-<details>
-  <summary>Install via powershell script (Windows)</summary>
-
-```sh
-irm https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.ps1 | iex
-```
-
-</details>
-
-<details>
-  <summary>Install via shell script (macOS, Linux, Windows/WSL)</summary>
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nearai/ironclaw/releases/latest/download/ironclaw-installer.sh | sh
-```
-</details>
-
-<details>
-  <summary>Install via Homebrew (macOS/Linux)</summary>
-
-```sh
-brew install ironclaw
-```
-
-</details>
-
-<details>
-  <summary>Compile the source code (Cargo on Windows, Linux, macOS)</summary>
-
-Install it with `cargo`, just make sure you have [Rust](https://rustup.rs) installed on your computer.
+Build with libSQL only:
 
 ```bash
-# Clone the repository
-git clone https://github.com/nearai/ironclaw.git
-cd ironclaw
-
-# Build
-cargo build --release
-
-# Run tests
-cargo test
+cargo build --no-default-features --features libsql
 ```
 
-For **full release** (after modifying channel sources), run `./scripts/build-all.sh` to rebuild channels first.
-
-</details>
-
-### Database Setup
+Onboard:
 
 ```bash
-# Create database
-createdb ironclaw
-
-# Enable pgvector
-psql ironclaw -c "CREATE EXTENSION IF NOT EXISTS vector;"
+./target/debug/ironclaw onboard
 ```
 
-## Configuration
+Then run the gateway (exact flags/config are still upstream; see `docs/` and `.env.example`).
 
-Run the setup wizard to configure IronClaw:
+## Where To Look (When Hacking)
 
-```bash
-ironclaw onboard
-```
+- Orchestration / worker bridge: `src/orchestrator/`
+- Tool registry + schemas + sandboxed tools: `src/tools/` and `wit/tool.wit`
+- Web gateway (UI/API, SSE/WS): `src/channels/web/`
+- Workspace + retrieval: `src/workspace/` (note: libSQL vector search wiring is currently limited)
 
-The wizard handles database connection, NEAR AI authentication (via browser OAuth),
-and secrets encryption (using your system keychain). Settings are persisted in the
-connected database; bootstrap variables (e.g. `DATABASE_URL`, `LLM_BACKEND`) are
-written to `~/.ironclaw/.env` so they are available before the database connects.
+## Discord
 
-### Alternative LLM Providers
+Discord is not yet wired in this fork. The plan is:
 
-IronClaw defaults to NEAR AI but works with any OpenAI-compatible endpoint.
-Popular options include **OpenRouter** (300+ models), **Together AI**, **Fireworks AI**,
-**Ollama** (local), and self-hosted servers like **vLLM** or **LiteLLM**.
+- Implement a native Rust Discord channel using IronClaw’s channel manager interfaces.
+- Use ZeroClaw’s Discord implementation as a reference for lifecycle and edge cases.
 
-Select *"OpenAI-compatible"* in the wizard, or set environment variables directly:
+## Upstream Credit
 
-```env
-LLM_BACKEND=openai_compatible
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_API_KEY=sk-or-...
-LLM_MODEL=anthropic/claude-sonnet-4
-```
+- IronClaw (upstream base): [nearai/ironclaw](https://github.com/nearai/ironclaw)
+- ZeroClaw (reference for Discord patterns): [zeroclaw-labs/zeroclaw](https://github.com/zeroclaw-labs/zeroclaw)
 
-See [docs/LLM_PROVIDERS.md](docs/LLM_PROVIDERS.md) for a full provider guide.
-
-## Security
-
-IronClaw implements defense in depth to protect your data and prevent misuse.
-
-### WASM Sandbox
-
-All untrusted tools run in isolated WebAssembly containers:
-
-- **Capability-based permissions** - Explicit opt-in for HTTP, secrets, tool invocation
-- **Endpoint allowlisting** - HTTP requests only to approved hosts/paths
-- **Credential injection** - Secrets injected at host boundary, never exposed to WASM code
-- **Leak detection** - Scans requests and responses for secret exfiltration attempts
-- **Rate limiting** - Per-tool request limits to prevent abuse
-- **Resource limits** - Memory, CPU, and execution time constraints
-
-```
-WASM ──► Allowlist ──► Leak Scan ──► Credential ──► Execute ──► Leak Scan ──► WASM
-         Validator     (request)     Injector       Request     (response)
-```
-
-### Prompt Injection Defense
-
-External content passes through multiple security layers:
-
-- Pattern-based detection of injection attempts
-- Content sanitization and escaping
-- Policy rules with severity levels (Block/Warn/Review/Sanitize)
-- Tool output wrapping for safe LLM context injection
-
-### Data Protection
-
-- All data stored locally in your PostgreSQL database
-- Secrets encrypted with AES-256-GCM
-- No telemetry, analytics, or data sharing
-- Full audit log of all tool executions
-
-## Architecture
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                          Channels                              │
-│  ┌──────┐  ┌──────┐   ┌─────────────┐  ┌─────────────┐         │
-│  │ REPL │  │ HTTP │   │WASM Channels│  │ Web Gateway │         │
-│  └──┬───┘  └──┬───┘   └──────┬──────┘  │ (SSE + WS)  │         │
-│     │         │              │         └──────┬──────┘         │
-│     └─────────┴──────────────┴────────────────┘                │
-│                              │                                 │
-│                    ┌─────────▼─────────┐                       │
-│                    │    Agent Loop     │  Intent routing       │
-│                    └────┬──────────┬───┘                       │
-│                         │          │                           │
-│              ┌──────────▼────┐  ┌──▼───────────────┐           │
-│              │  Scheduler    │  │ Routines Engine  │           │
-│              │(parallel jobs)│  │(cron, event, wh) │           │
-│              └──────┬────────┘  └────────┬─────────┘           │
-│                     │                    │                     │
-│       ┌─────────────┼────────────────────┘                     │
-│       │             │                                          │
-│   ┌───▼─────┐  ┌────▼────────────────┐                         │
-│   │ Local   │  │    Orchestrator     │                         │
-│   │Workers  │  │  ┌───────────────┐  │                         │
-│   │(in-proc)│  │  │ Docker Sandbox│  │                         │
-│   └───┬─────┘  │  │   Containers  │  │                         │
-│       │        │  │ ┌───────────┐ │  │                         │
-│       │        │  │ │Worker / CC│ │  │                         │
-│       │        │  │ └───────────┘ │  │                         │
-│       │        │  └───────────────┘  │                         │
-│       │        └─────────┬───────────┘                         │
-│       └──────────────────┤                                     │
-│                          │                                     │
-│              ┌───────────▼──────────┐                          │
-│              │    Tool Registry     │                          │
-│              │  Built-in, MCP, WASM │                          │
-│              └──────────────────────┘                          │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Core Components
-
-| Component | Purpose |
-|-----------|---------|
-| **Agent Loop** | Main message handling and job coordination |
-| **Router** | Classifies user intent (command, query, task) |
-| **Scheduler** | Manages parallel job execution with priorities |
-| **Worker** | Executes jobs with LLM reasoning and tool calls |
-| **Orchestrator** | Container lifecycle, LLM proxying, per-job auth |
-| **Web Gateway** | Browser UI with chat, memory, jobs, logs, extensions, routines |
-| **Routines Engine** | Scheduled (cron) and reactive (event, webhook) background tasks |
-| **Workspace** | Persistent memory with hybrid search |
-| **Safety Layer** | Prompt injection defense and content sanitization |
-
-## Usage
-
-```bash
-# First-time setup (configures database, auth, etc.)
-ironclaw onboard
-
-# Start interactive REPL
-cargo run
-
-# With debug logging
-RUST_LOG=ironclaw=debug cargo run
-```
-
-## Development
-
-```bash
-# Format code
-cargo fmt
-
-# Lint
-cargo clippy --all --benches --tests --examples --all-features
-
-# Run tests
-createdb ironclaw_test
-cargo test
-
-# Run specific test
-cargo test test_name
-```
-
-- **Telegram channel**: See [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md) for setup and DM pairing.
-- **Changing channel sources**: Run `./channels-src/telegram/build.sh` before `cargo build` so the updated WASM is bundled.
-
-## OpenClaw Heritage
-
-IronClaw is a Rust reimplementation inspired by [OpenClaw](https://github.com/openclaw/openclaw). See [FEATURE_PARITY.md](FEATURE_PARITY.md) for the complete tracking matrix.
-
-Key differences:
-
-- **Rust vs TypeScript** - Native performance, memory safety, single binary
-- **WASM sandbox vs Docker** - Lightweight, capability-based security
-- **PostgreSQL vs SQLite** - Production-ready persistence
-- **Security-first design** - Multiple defense layers, credential protection
+IronClaw itself is inspired by OpenClaw; see `FEATURE_PARITY.md` for upstream tracking.
 
 ## License
 
 Licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0 (`LICENSE-APACHE`)
+- MIT License (`LICENSE-MIT`)
 
 at your option.

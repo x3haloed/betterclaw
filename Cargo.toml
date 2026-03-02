@@ -1,7 +1,6 @@
 [workspace]
 members = ["."]
 exclude = [
-    "channels-src/discord",
     "channels-src/telegram",
     "channels-src/slack",
     "channels-src/whatsapp",

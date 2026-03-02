@@ -15,9 +15,8 @@
     },
     "messaging": {
       "display_name": "Messaging Channels",
-      "description": "Discord, Telegram, Slack, and WhatsApp channels",
+      "description": "Telegram, Slack, and WhatsApp channels",
       "extensions": [
-        "channels/discord",
         "channels/telegram",
         "channels/slack",
         "channels/whatsapp"

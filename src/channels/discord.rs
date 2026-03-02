@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
@@ -33,7 +33,7 @@ const DISCORD_MAX_TEXT_ATTACHMENT_BYTES: usize = 256 * 1024;
 const DISCORD_ATTACHMENT_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Rate-limit typing; Discord typing indicator expires quickly, but we don't want to spam.
-const TYPING_MIN_INTERVAL: Duration = Duration::from_secs(7);
+const TYPING_LOOP_INTERVAL: Duration = Duration::from_secs(7);
 
 // Button IDs for approval prompts.
 const DISCORD_APPROVAL_APPROVE_PREFIX: &str = "bc_approve:";
@@ -44,8 +44,8 @@ const DISCORD_APPROVAL_ALWAYS_PREFIX: &str = "bc_always:";
 struct DiscordState {
     config: DiscordConfig,
     client: reqwest::Client,
-    // Map channel_id -> last typing timestamp.
-    typing_last: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Active typing tasks keyed by Discord channel_id.
+    typing_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 /// Discord channel — connects to Discord Gateway WebSocket for real-time messages.
@@ -63,7 +63,7 @@ impl DiscordChannel {
             state: DiscordState {
                 config,
                 client,
-                typing_last: Arc::new(Mutex::new(HashMap::new())),
+                typing_tasks: Arc::new(Mutex::new(HashMap::new())),
             },
         }
     }
@@ -479,24 +479,46 @@ impl DiscordChannel {
             .await;
     }
 
-    async fn maybe_typing(&self, metadata: &serde_json::Value) {
-        let Some(ch) = metadata
+    async fn start_typing(&self, channel_id: &str) {
+        let mut tasks = self.state.typing_tasks.lock().await;
+        if tasks.contains_key(channel_id) {
+            return;
+        }
+
+        let ch = channel_id.to_string();
+        let this = self.clone_for_task();
+        let handle = tokio::spawn(async move {
+            loop {
+                this.post_typing(&ch).await;
+                tokio::time::sleep(TYPING_LOOP_INTERVAL).await;
+            }
+        });
+
+        tasks.insert(channel_id.to_string(), handle);
+    }
+
+    async fn stop_typing(&self, channel_id: &str) {
+        let mut tasks = self.state.typing_tasks.lock().await;
+        if let Some(handle) = tasks.remove(channel_id) {
+            handle.abort();
+        }
+    }
+
+    async fn stop_typing_from_metadata(&self, metadata: &serde_json::Value) {
+        if let Some(ch) = metadata
             .get("discord_channel_id")
             .and_then(|v| v.as_str())
-        else {
-            return;
-        };
+        {
+            self.stop_typing(ch).await;
+        }
+    }
 
-        let mut map = self.state.typing_last.lock().await;
-        let now = Instant::now();
-        let should = match map.get(ch) {
-            Some(last) => now.duration_since(*last) >= TYPING_MIN_INTERVAL,
-            None => true,
-        };
-        if should {
-            map.insert(ch.to_string(), now);
-            drop(map);
-            self.post_typing(ch).await;
+    async fn start_typing_from_metadata(&self, metadata: &serde_json::Value) {
+        if let Some(ch) = metadata
+            .get("discord_channel_id")
+            .and_then(|v| v.as_str())
+        {
+            self.start_typing(ch).await;
         }
     }
 
@@ -1050,6 +1072,9 @@ impl Channel for DiscordChannel {
                 reason: "Missing discord_channel_id for reply".to_string(),
             })?;
 
+        // If we're about to respond, we're no longer "typing".
+        self.stop_typing(channel_id).await;
+
         let mut chunks = Self::split_for_discord(&response.content);
         if chunks.is_empty() {
             chunks.push(String::new());
@@ -1079,8 +1104,19 @@ impl Channel for DiscordChannel {
 
     async fn send_status(&self, status: StatusUpdate, metadata: &serde_json::Value) -> Result<(), ChannelError> {
         match status {
-            StatusUpdate::Thinking(_) | StatusUpdate::ToolStarted { .. } => {
-                self.maybe_typing(metadata).await;
+            StatusUpdate::Thinking(_) | StatusUpdate::ToolStarted { .. } | StatusUpdate::StreamChunk(_) => {
+                self.start_typing_from_metadata(metadata).await;
+            }
+            StatusUpdate::Status(msg) => {
+                let lower = msg.to_ascii_lowercase();
+                // Best-effort lifecycle mapping from agent status strings.
+                if lower.contains("done")
+                    || lower.contains("rejected")
+                    || lower.contains("awaiting approval")
+                    || lower.contains("awaiting")
+                {
+                    self.stop_typing_from_metadata(metadata).await;
+                }
             }
             StatusUpdate::ApprovalNeeded { request_id, tool_name, description, parameters } => {
                 let Some(channel_id) = metadata
@@ -1089,6 +1125,7 @@ impl Channel for DiscordChannel {
                 else {
                     return Ok(());
                 };
+                self.stop_typing(channel_id).await;
                 self.send_approval_prompt(channel_id, &request_id, &tool_name, &description, &parameters).await?;
             }
             _ => {}
@@ -1098,6 +1135,14 @@ impl Channel for DiscordChannel {
 
     async fn health_check(&self) -> Result<(), ChannelError> {
         let _ = self.fetch_bot_user_id().await?;
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), ChannelError> {
+        let mut tasks = self.state.typing_tasks.lock().await;
+        for (_, handle) in tasks.drain() {
+            handle.abort();
+        }
         Ok(())
     }
 }

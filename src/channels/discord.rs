@@ -23,6 +23,11 @@ const DISCORD_WS_DEFAULT: &str = "wss://gateway.discord.gg";
 
 // Discord max message length is 2000 chars.
 const DISCORD_MAX_MESSAGE_LEN: usize = 2000;
+// Common Discord upload limit for bots without boosts. This varies by server,
+// but we enforce a conservative cap to avoid repeated 413s.
+const DISCORD_MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
+// Discord accepts max 10 files per message.
+const DISCORD_MAX_FILES: usize = 10;
 
 // Rate-limit typing; Discord typing indicator expires quickly, but we don't want to spam.
 const TYPING_MIN_INTERVAL: Duration = Duration::from_secs(7);
@@ -151,47 +156,127 @@ impl DiscordChannel {
     }
 
     fn split_for_discord(content: &str) -> Vec<String> {
+        // Code-block-aware splitter: preserves fenced blocks across chunk boundaries
+        // by inserting closing/opening fences as needed.
         if content.chars().count() <= DISCORD_MAX_MESSAGE_LEN {
             return vec![content.to_string()];
         }
 
-        let mut chunks = Vec::new();
-        let mut current = String::new();
-        for line in content.split('\n') {
-            // +1 for the newline we add back.
-            let extra = if current.is_empty() { line.len() } else { line.len() + 1 };
-            if !current.is_empty() && current.chars().count() + extra > DISCORD_MAX_MESSAGE_LEN {
-                chunks.push(current);
-                current = String::new();
-            }
-            if !current.is_empty() {
-                current.push('\n');
-            }
-            current.push_str(line);
-        }
-        if !current.is_empty() {
-            chunks.push(current);
+        #[derive(Clone)]
+        struct Fence {
+            open_line: String, // e.g. ```rust
         }
 
-        // Fallback: if a single line was too long, hard-split by char count.
-        let mut out = Vec::new();
-        for c in chunks {
-            if c.chars().count() <= DISCORD_MAX_MESSAGE_LEN {
-                out.push(c);
+        fn push_with_limit(
+            out: &mut Vec<String>,
+            current: &mut String,
+            line: &str,
+            active_fence: Option<&Fence>,
+        ) {
+            const CLOSER: &str = "\n```";
+            let closer_len = CLOSER.chars().count();
+
+            // When we're inside a fenced block, reserve space for the closing fence
+            // so every emitted chunk is self-contained (balanced fences).
+            let max_len = if active_fence.is_some() {
+                DISCORD_MAX_MESSAGE_LEN.saturating_sub(closer_len)
             } else {
-                let mut buf = String::new();
-                for ch in c.chars() {
-                    if buf.chars().count() >= DISCORD_MAX_MESSAGE_LEN {
-                        out.push(buf);
-                        buf = String::new();
-                    }
-                    buf.push(ch);
+                DISCORD_MAX_MESSAGE_LEN
+            };
+
+            let sep = if current.is_empty() { "" } else { "\n" };
+            let candidate_len = current.chars().count() + sep.chars().count() + line.chars().count();
+            if candidate_len <= max_len {
+                if !current.is_empty() {
+                    current.push('\n');
                 }
-                if !buf.is_empty() {
-                    out.push(buf);
+                current.push_str(line);
+                return;
+            }
+
+            if !current.is_empty() {
+                // Close fence before flushing if we're inside one.
+                if active_fence.is_some() {
+                    current.push_str(CLOSER);
+                }
+                out.push(std::mem::take(current));
+            }
+
+            // Start a new chunk; reopen fence if needed.
+            if let Some(f) = active_fence {
+                current.push_str(&f.open_line);
+                current.push('\n');
+            }
+
+            // If the line itself is too long, hard-split it.
+            let line_len = line.chars().count();
+            if line_len > DISCORD_MAX_MESSAGE_LEN {
+                if let Some(f) = active_fence {
+                    // For fenced blocks, split the long line into pieces that
+                    // leave room for open+close fences.
+                    let overhead = f.open_line.chars().count() + 1 + closer_len; // open + \n + closer
+                    let cap = DISCORD_MAX_MESSAGE_LEN.saturating_sub(overhead).max(1);
+                    let mut it = line.chars();
+                    loop {
+                        let piece: String = it.by_ref().take(cap).collect();
+                        if piece.is_empty() {
+                            break;
+                        }
+                        out.push(format!("{}\n{}{}", f.open_line, piece, CLOSER));
+                    }
+                } else {
+                    // Plain text: split into <= 2000-char chunks.
+                    let mut it = line.chars();
+                    loop {
+                        let piece: String = it.by_ref().take(DISCORD_MAX_MESSAGE_LEN).collect();
+                        if piece.is_empty() {
+                            break;
+                        }
+                        out.push(piece);
+                    }
+                }
+                return;
+            }
+
+            current.push_str(line);
+        }
+
+        let mut out: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut fence: Option<Fence> = None;
+
+        for raw_line in content.split('\n') {
+            let line = raw_line;
+            let trimmed = line.trim_start();
+            let is_fence_line = trimmed.starts_with("```");
+
+            if is_fence_line {
+                if fence.is_some() {
+                    // Closing fence: include it in the current chunk.
+                    push_with_limit(&mut out, &mut current, "```", None);
+                    fence = None;
+                    continue;
+                } else {
+                    // Opening fence: capture full opening line (may include language).
+                    let open_line = trimmed.to_string();
+                    push_with_limit(&mut out, &mut current, &open_line, None);
+                    fence = Some(Fence { open_line });
+                    continue;
                 }
             }
+
+            // Normal line: route through limiter with awareness of current fence.
+            let active = fence.as_ref();
+            push_with_limit(&mut out, &mut current, line, active);
         }
+
+        if !current.is_empty() {
+            if fence.is_some() && !current.ends_with("```") {
+                current.push_str("\n```");
+            }
+            out.push(current);
+        }
+
         out
     }
 
@@ -288,6 +373,98 @@ impl DiscordChannel {
             Err(ChannelError::SendFailed {
                 name: "discord".to_string(),
                 reason: format!("Discord send failed ({status}): {body}"),
+            })
+        }
+    }
+
+    async fn send_message_with_files(
+        &self,
+        channel_id: &str,
+        content: &str,
+        attachments: &[String],
+    ) -> Result<(), ChannelError> {
+        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/messages");
+
+        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        for path_str in attachments.iter().take(DISCORD_MAX_FILES) {
+            let path = std::path::Path::new(path_str);
+            let meta = tokio::fs::metadata(path).await.map_err(|e| ChannelError::SendFailed {
+                name: "discord".to_string(),
+                reason: format!("Attachment not found: {path_str}: {e}"),
+            })?;
+
+            if !meta.is_file() {
+                return Err(ChannelError::SendFailed {
+                    name: "discord".to_string(),
+                    reason: format!("Attachment is not a file: {path_str}"),
+                });
+            }
+
+            if meta.len() > DISCORD_MAX_FILE_BYTES {
+                return Err(ChannelError::SendFailed {
+                    name: "discord".to_string(),
+                    reason: format!(
+                        "Attachment too large ({} bytes > {}): {path_str}",
+                        meta.len(),
+                        DISCORD_MAX_FILE_BYTES
+                    ),
+                });
+            }
+
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file")
+                .to_string();
+            let data = tokio::fs::read(path).await.map_err(|e| ChannelError::SendFailed {
+                name: "discord".to_string(),
+                reason: format!("Failed to read attachment: {path_str}: {e}"),
+            })?;
+            files.push((name, data));
+        }
+
+        if files.is_empty() {
+            return self.send_json_message(channel_id, content).await;
+        }
+
+        let payload = serde_json::json!({ "content": content }).to_string();
+        let mut form = reqwest::multipart::Form::new().text("payload_json", payload);
+
+        for (i, (name, data)) in files.into_iter().enumerate() {
+            let mime = mime_guess::from_path(&name).first_or_octet_stream();
+            let part = reqwest::multipart::Part::bytes(data)
+                .file_name(name)
+                .mime_str(mime.as_ref())
+                .map_err(|e| ChannelError::SendFailed {
+                    name: "discord".to_string(),
+                    reason: format!("Failed to build multipart part: {e}"),
+                })?;
+            form = form.part(format!("files[{i}]"), part);
+        }
+
+        let resp = self
+            .http_client()
+            .post(&url)
+            .header(
+                "Authorization",
+                format!("Bot {}", self.state.config.bot_token.expose_secret()),
+            )
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| ChannelError::SendFailed {
+                name: "discord".to_string(),
+                reason: format!("Discord send (multipart) failed: {e}"),
+            })?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(ChannelError::SendFailed {
+                name: "discord".to_string(),
+                reason: format!("Discord send (multipart) failed ({status}): {body}"),
             })
         }
     }
@@ -721,15 +898,28 @@ impl Channel for DiscordChannel {
                 reason: "Missing discord_channel_id for reply".to_string(),
             })?;
 
-        if !response.attachments.is_empty() {
-            tracing::warn!(
-                count = response.attachments.len(),
-                "DiscordChannel: attachments are not implemented yet; sending text only"
-            );
+        let mut chunks = Self::split_for_discord(&response.content);
+        if chunks.is_empty() {
+            chunks.push(String::new());
         }
 
-        for chunk in Self::split_for_discord(&response.content) {
-            self.send_json_message(channel_id, &chunk).await?;
+        // If there are attachments, send them with the first chunk only.
+        let mut first = true;
+        for chunk in chunks {
+            if first && !response.attachments.is_empty() {
+                if response.attachments.len() > DISCORD_MAX_FILES {
+                    tracing::warn!(
+                        count = response.attachments.len(),
+                        max = DISCORD_MAX_FILES,
+                        "DiscordChannel: truncating attachments to Discord limit"
+                    );
+                }
+                self.send_message_with_files(channel_id, &chunk, &response.attachments)
+                    .await?;
+            } else {
+                self.send_json_message(channel_id, &chunk).await?;
+            }
+            first = false;
             tokio::time::sleep(Duration::from_millis(350)).await;
         }
         Ok(())
@@ -764,6 +954,43 @@ impl DiscordChannel {
     fn clone_for_task(&self) -> Self {
         Self {
             state: self.state.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiscordChannel;
+
+    #[test]
+    fn split_for_discord_keeps_chunks_under_limit() {
+        let input = "a".repeat(5000);
+        let chunks = DiscordChannel::split_for_discord(&input);
+        assert!(chunks.len() >= 3);
+        for c in chunks {
+            assert!(c.chars().count() <= super::DISCORD_MAX_MESSAGE_LEN);
+        }
+    }
+
+    #[test]
+    fn split_for_discord_preserves_fenced_blocks() {
+        let mut input = String::new();
+        input.push_str("before\n");
+        input.push_str("```rust\n");
+        input.push_str(&"let x = 1;\n".repeat(400));
+        input.push_str("```\n");
+        input.push_str("after\n");
+
+        let chunks = DiscordChannel::split_for_discord(&input);
+        assert!(chunks.len() >= 2);
+        for c in &chunks {
+            assert!(c.chars().count() <= super::DISCORD_MAX_MESSAGE_LEN);
+        }
+
+        // If any chunk opens a fence, it should also close it (we wrap/reopen across chunks).
+        for c in &chunks {
+            let opens = c.matches("```").count();
+            assert!(opens % 2 == 0, "chunk has unbalanced fences:\n{c}");
         }
     }
 }

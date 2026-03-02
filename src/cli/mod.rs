@@ -28,8 +28,6 @@ pub use config::{ConfigCommand, run_config_command};
 pub use doctor::run_doctor_command;
 pub use mcp::{McpCommand, run_mcp_command};
 pub use memory::MemoryCommand;
-#[cfg(feature = "postgres")]
-pub use memory::run_memory_command;
 pub use memory::run_memory_command_with_db;
 pub use pairing::{PairingCommand, run_pairing_command, run_pairing_command_with_store};
 pub use registry::{RegistryCommand, run_registry_command};

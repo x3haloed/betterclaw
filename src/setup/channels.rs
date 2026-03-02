@@ -15,8 +15,6 @@ use serde::Deserialize;
 use url::Url;
 use uuid::Uuid;
 
-#[cfg(feature = "postgres")]
-use crate::secrets::SecretsCrypto;
 use crate::secrets::{CreateSecretParams, SecretsStore};
 use crate::settings::{Settings, TunnelSettings};
 use crate::setup::prompts::{
@@ -54,15 +52,6 @@ impl SecretsContext {
     pub fn from_store(store: Arc<dyn SecretsStore>, user_id: &str) -> Self {
         Self {
             store,
-            user_id: user_id.to_string(),
-        }
-    }
-
-    /// Create a new secrets context from a PostgreSQL pool and crypto.
-    #[cfg(feature = "postgres")]
-    pub fn new(pool: deadpool_postgres::Pool, crypto: Arc<SecretsCrypto>, user_id: &str) -> Self {
-        Self {
-            store: Arc::new(crate::secrets::PostgresSecretsStore::new(pool, crypto)),
             user_id: user_id.to_string(),
         }
     }

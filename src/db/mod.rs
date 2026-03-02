@@ -1,19 +1,11 @@
 //! Database abstraction layer.
 //!
 //! Provides a backend-agnostic `Database` trait that unifies all persistence
-//! operations. Two implementations exist behind feature flags:
-//!
-//! - `postgres` (default): Uses `deadpool-postgres` + `tokio-postgres`
-//! - `libsql`: Uses libSQL (Turso's SQLite fork) for embedded/edge deployment
+//! operations. BetterClaw currently uses libSQL (Turso's SQLite fork) for
+//! embedded/edge deployment.
 //!
 //! The existing `Store`, `Repository`, `SecretsStore`, and `WasmToolStore`
 //! types become thin wrappers that delegate to `Arc<dyn Database>`.
-
-#[cfg(feature = "postgres")]
-pub mod postgres;
-
-#[cfg(feature = "postgres")]
-pub mod tls;
 
 #[cfg(feature = "libsql")]
 pub mod libsql;
@@ -76,18 +68,6 @@ pub async fn connect_from_config(
             backend.run_migrations().await?;
             Ok(Arc::new(backend))
         }
-        #[cfg(feature = "postgres")]
-        _ => {
-            let pg = postgres::PgBackend::new(config)
-                .await
-                .map_err(|e| DatabaseError::Pool(e.to_string()))?;
-            pg.run_migrations().await?;
-            Ok(Arc::new(pg))
-        }
-        #[cfg(not(feature = "postgres"))]
-        _ => Err(DatabaseError::Pool(
-            "No database backend available. Enable 'postgres' or 'libsql' feature.".to_string(),
-        )),
     }
 }
 

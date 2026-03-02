@@ -17,11 +17,11 @@ pub struct Settings {
     pub onboard_completed: bool,
 
     // === Step 1: Database ===
-    /// Database backend: "postgres" or "libsql".
+    /// Database backend: "libsql".
     #[serde(default)]
     pub database_backend: Option<String>,
 
-    /// Database connection URL (postgres://...).
+    /// Database connection URL (legacy; ignored in libsql-only builds).
     #[serde(default)]
     pub database_url: Option<String>,
 

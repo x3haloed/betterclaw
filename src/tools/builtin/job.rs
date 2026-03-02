@@ -1705,7 +1705,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_job_events_tool_rejects_other_users_job() {
-        // JobEventsTool needs a Store (PostgreSQL) for the full path, but the
+        // JobEventsTool needs a database store for the full path, but the
         // ownership check happens first via ContextManager, so we can test that
         // without a database by using a Store that will never be reached.
         //

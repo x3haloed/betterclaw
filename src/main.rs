@@ -31,7 +31,6 @@ use ironclaw::{
     secrets::SecretsStore,
 };
 
-#[cfg(any(feature = "postgres", feature = "libsql"))]
 use ironclaw::setup::{SetupConfig, SetupWizard};
 
 /// Initialize tracing for simple CLI commands (warn level, no fancy layers).
@@ -121,20 +120,12 @@ async fn async_main() -> anyhow::Result<()> {
             skip_auth,
             channels_only,
         }) => {
-            #[cfg(any(feature = "postgres", feature = "libsql"))]
-            {
-                let config = SetupConfig {
-                    skip_auth: *skip_auth,
-                    channels_only: *channels_only,
-                };
-                let mut wizard = SetupWizard::with_config(config);
-                wizard.run().await?;
-            }
-            #[cfg(not(any(feature = "postgres", feature = "libsql")))]
-            {
-                let _ = (skip_auth, channels_only);
-                eprintln!("Onboarding wizard requires the 'postgres' or 'libsql' feature.");
-            }
+            let config = SetupConfig {
+                skip_auth: *skip_auth,
+                channels_only: *channels_only,
+            };
+            let mut wizard = SetupWizard::with_config(config);
+            wizard.run().await?;
             return Ok(());
         }
         None | Some(Command::Run) => {
@@ -145,7 +136,6 @@ async fn async_main() -> anyhow::Result<()> {
     // ── Agent startup ──────────────────────────────────────────────────
 
     // Enhanced first-run detection
-    #[cfg(any(feature = "postgres", feature = "libsql"))]
     if !cli.no_onboard
         && let Some(reason) = check_onboard_needed()
     {
@@ -744,7 +734,7 @@ async fn run_memory_command(mem_cmd: &ironclaw::cli::MemoryCommand) -> anyhow::R
             configured_dimension = config.embeddings.dimension,
             "Embedding dimension {} is not 1536. The libSQL schema uses \
              F32_BLOB(1536) which requires exactly 1536 dimensions. \
-             Embedding storage will fail. Use PostgreSQL or set \
+             Embedding storage will fail. Use libSQL or set \
              EMBEDDING_DIMENSION=1536.",
             config.embeddings.dimension
         );
@@ -1074,10 +1064,8 @@ async fn setup_wasm_channels(
 }
 
 /// Check if onboarding is needed and return the reason.
-#[cfg(any(feature = "postgres", feature = "libsql"))]
 fn check_onboard_needed() -> Option<&'static str> {
-    let has_db = std::env::var("DATABASE_URL").is_ok()
-        || std::env::var("LIBSQL_PATH").is_ok()
+    let has_db = std::env::var("LIBSQL_PATH").is_ok()
         || ironclaw::config::default_libsql_path().exists();
 
     if !has_db {

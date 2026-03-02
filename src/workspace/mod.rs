@@ -44,8 +44,6 @@ mod chunker;
 mod document;
 mod embeddings;
 pub mod hygiene;
-#[cfg(feature = "postgres")]
-mod repository;
 mod search;
 
 pub use chunker::{ChunkConfig, chunk_document};
@@ -53,27 +51,19 @@ pub use document::{MemoryChunk, MemoryDocument, WorkspaceEntry, paths};
 pub use embeddings::{
     EmbeddingProvider, MockEmbeddings, OllamaEmbeddings, OpenAiEmbeddings,
 };
-#[cfg(feature = "postgres")]
-pub use repository::Repository;
 pub use search::{RankedResult, SearchConfig, SearchResult, reciprocal_rank_fusion};
 
 use std::sync::Arc;
 
 use chrono::{NaiveDate, Utc};
-#[cfg(feature = "postgres")]
-use deadpool_postgres::Pool;
 use uuid::Uuid;
 
 use crate::error::WorkspaceError;
 
 /// Internal storage abstraction for Workspace.
 ///
-/// Allows Workspace to work with either a PostgreSQL `Repository` (the original
-/// path) or any `Database` trait implementation (e.g. libSQL backend).
+/// Allows Workspace to work with any `Database` trait implementation.
 enum WorkspaceStorage {
-    /// PostgreSQL-backed repository (uses connection pool directly).
-    #[cfg(feature = "postgres")]
-    Repo(Repository),
     /// Generic backend implementing the Database trait.
     Db(Arc<dyn crate::db::Database>),
 }
@@ -86,16 +76,12 @@ impl WorkspaceStorage {
         path: &str,
     ) -> Result<MemoryDocument, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.get_document_by_path(user_id, agent_id, path).await,
             Self::Db(db) => db.get_document_by_path(user_id, agent_id, path).await,
         }
     }
 
     async fn get_document_by_id(&self, id: Uuid) -> Result<MemoryDocument, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.get_document_by_id(id).await,
             Self::Db(db) => db.get_document_by_id(id).await,
         }
     }
@@ -107,11 +93,6 @@ impl WorkspaceStorage {
         path: &str,
     ) -> Result<MemoryDocument, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => {
-                repo.get_or_create_document_by_path(user_id, agent_id, path)
-                    .await
-            }
             Self::Db(db) => {
                 db.get_or_create_document_by_path(user_id, agent_id, path)
                     .await
@@ -121,8 +102,6 @@ impl WorkspaceStorage {
 
     async fn update_document(&self, id: Uuid, content: &str) -> Result<(), WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.update_document(id, content).await,
             Self::Db(db) => db.update_document(id, content).await,
         }
     }
@@ -134,8 +113,6 @@ impl WorkspaceStorage {
         path: &str,
     ) -> Result<(), WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.delete_document_by_path(user_id, agent_id, path).await,
             Self::Db(db) => db.delete_document_by_path(user_id, agent_id, path).await,
         }
     }
@@ -147,8 +124,6 @@ impl WorkspaceStorage {
         directory: &str,
     ) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.list_directory(user_id, agent_id, directory).await,
             Self::Db(db) => db.list_directory(user_id, agent_id, directory).await,
         }
     }
@@ -159,16 +134,12 @@ impl WorkspaceStorage {
         agent_id: Option<Uuid>,
     ) -> Result<Vec<String>, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.list_all_paths(user_id, agent_id).await,
             Self::Db(db) => db.list_all_paths(user_id, agent_id).await,
         }
     }
 
     async fn delete_chunks(&self, document_id: Uuid) -> Result<(), WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.delete_chunks(document_id).await,
             Self::Db(db) => db.delete_chunks(document_id).await,
         }
     }
@@ -181,11 +152,6 @@ impl WorkspaceStorage {
         embedding: Option<&[f32]>,
     ) -> Result<Uuid, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => {
-                repo.insert_chunk(document_id, chunk_index, content, embedding)
-                    .await
-            }
             Self::Db(db) => {
                 db.insert_chunk(document_id, chunk_index, content, embedding)
                     .await
@@ -199,8 +165,6 @@ impl WorkspaceStorage {
         embedding: &[f32],
     ) -> Result<(), WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => repo.update_chunk_embedding(chunk_id, embedding).await,
             Self::Db(db) => db.update_chunk_embedding(chunk_id, embedding).await,
         }
     }
@@ -212,11 +176,6 @@ impl WorkspaceStorage {
         limit: usize,
     ) -> Result<Vec<MemoryChunk>, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => {
-                repo.get_chunks_without_embeddings(user_id, agent_id, limit)
-                    .await
-            }
             Self::Db(db) => {
                 db.get_chunks_without_embeddings(user_id, agent_id, limit)
                     .await
@@ -233,11 +192,6 @@ impl WorkspaceStorage {
         config: &SearchConfig,
     ) -> Result<Vec<SearchResult>, WorkspaceError> {
         match self {
-            #[cfg(feature = "postgres")]
-            Self::Repo(repo) => {
-                repo.hybrid_search(user_id, agent_id, query, embedding, config)
-                    .await
-            }
             Self::Db(db) => {
                 db.hybrid_search(user_id, agent_id, query, embedding, config)
                     .await
@@ -275,7 +229,7 @@ const HEARTBEAT_SEED: &str = "\
 ///
 /// Each workspace is scoped to a user (and optionally an agent).
 /// Documents are persisted to the database and indexed for search.
-/// Supports both PostgreSQL (via Repository) and libSQL (via Database trait).
+/// Uses the `Database` trait for storage (libsql in BetterClaw).
 pub struct Workspace {
     /// User identifier (from channel).
     user_id: String,
@@ -288,17 +242,6 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Create a new workspace backed by a PostgreSQL connection pool.
-    #[cfg(feature = "postgres")]
-    pub fn new(user_id: impl Into<String>, pool: Pool) -> Self {
-        Self {
-            user_id: user_id.into(),
-            agent_id: None,
-            storage: WorkspaceStorage::Repo(Repository::new(pool)),
-            embeddings: None,
-        }
-    }
-
     /// Create a new workspace backed by any Database implementation.
     ///
     /// Use this for libSQL or any other backend that implements the Database trait.

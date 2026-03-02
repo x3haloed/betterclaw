@@ -70,9 +70,6 @@ pub struct AppBuilder {
     secrets_store: Option<Arc<dyn SecretsStore + Send + Sync>>,
 
     // Backend-specific handles needed by secrets store
-    #[cfg(feature = "postgres")]
-    pg_pool: Option<deadpool_postgres::Pool>,
-    #[cfg(feature = "libsql")]
     libsql_db: Option<Arc<libsql::Database>>,
 }
 
@@ -95,9 +92,6 @@ impl AppBuilder {
             log_broadcaster,
             db: None,
             secrets_store: None,
-            #[cfg(feature = "postgres")]
-            pg_pool: None,
-            #[cfg(feature = "libsql")]
             libsql_db: None,
         }
     }
@@ -112,71 +106,35 @@ impl AppBuilder {
             return Ok(());
         }
 
-        let db: Arc<dyn Database> = match self.config.database.backend {
-            #[cfg(feature = "libsql")]
-            crate::config::DatabaseBackend::LibSql => {
-                use crate::db::Database as _;
-                use crate::db::libsql::LibSqlBackend;
-                use secrecy::ExposeSecret as _;
+        use crate::db::Database as _;
+        use crate::db::libsql::LibSqlBackend;
+        use secrecy::ExposeSecret as _;
 
-                let default_path = crate::config::default_libsql_path();
-                let db_path = self
-                    .config
-                    .database
-                    .libsql_path
-                    .as_deref()
-                    .unwrap_or(&default_path);
+        let default_path = crate::config::default_libsql_path();
+        let db_path = self
+            .config
+            .database
+            .libsql_path
+            .as_deref()
+            .unwrap_or(&default_path);
 
-                let backend = if let Some(ref url) = self.config.database.libsql_url {
-                    let token =
-                        self.config
-                            .database
-                            .libsql_auth_token
-                            .as_ref()
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "LIBSQL_AUTH_TOKEN is required when LIBSQL_URL is set"
-                                )
-                            })?;
-                    LibSqlBackend::new_remote_replica(db_path, url, token.expose_secret()).await?
-                } else {
-                    LibSqlBackend::new_local(db_path).await?
-                };
-                backend.run_migrations().await?;
-                tracing::info!("libSQL database connected and migrations applied");
-
-                #[cfg(feature = "libsql")]
-                {
-                    self.libsql_db = Some(backend.shared_db());
-                }
-
-                Arc::new(backend) as Arc<dyn Database>
-            }
-            #[cfg(feature = "postgres")]
-            _ => {
-                use crate::db::Database as _;
-                let pg = crate::db::postgres::PgBackend::new(&self.config.database)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                pg.run_migrations()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                tracing::info!("PostgreSQL database connected and migrations applied");
-
-                #[cfg(feature = "postgres")]
-                {
-                    self.pg_pool = Some(pg.pool());
-                }
-
-                Arc::new(pg) as Arc<dyn Database>
-            }
-            #[cfg(not(feature = "postgres"))]
-            _ => {
-                anyhow::bail!(
-                    "No database backend available. Enable 'postgres' or 'libsql' feature."
-                );
-            }
+        let backend = if let Some(ref url) = self.config.database.libsql_url {
+            let token = self
+                .config
+                .database
+                .libsql_auth_token
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("LIBSQL_AUTH_TOKEN is required when LIBSQL_URL is set"))?;
+            LibSqlBackend::new_remote_replica(db_path, url, token.expose_secret()).await?
+        } else {
+            LibSqlBackend::new_local(db_path).await?
         };
+        backend.run_migrations().await?;
+        tracing::info!("libSQL database connected and migrations applied");
+
+        self.libsql_db = Some(backend.shared_db());
+
+        let db: Arc<dyn Database> = Arc::new(backend) as Arc<dyn Database>;
 
         // Post-init: migrate disk config, reload config from DB, cleanup
         if let Err(e) = crate::bootstrap::migrate_disk_to_db(db.as_ref(), "default").await {
@@ -219,10 +177,7 @@ impl AppBuilder {
             Some(k) => k,
             None => {
                 // Consume unused handles
-                #[cfg(feature = "libsql")]
-                {
-                    self.libsql_db.take();
-                }
+                self.libsql_db.take();
                 return Ok(());
             }
         };
@@ -231,34 +186,14 @@ impl AppBuilder {
             Ok(c) => Arc::new(c),
             Err(e) => {
                 tracing::warn!("Failed to initialize secrets crypto: {}", e);
-                #[cfg(feature = "libsql")]
-                {
-                    self.libsql_db.take();
-                }
+                self.libsql_db.take();
                 return Ok(());
             }
         };
 
-        let store: Option<Arc<dyn SecretsStore + Send + Sync>> = None;
-
-        #[cfg(feature = "libsql")]
-        let store = store.or_else(|| {
-            self.libsql_db.take().map(|db| {
-                Arc::new(crate::secrets::LibSqlSecretsStore::new(
-                    db,
-                    Arc::clone(&crypto),
-                )) as Arc<dyn SecretsStore + Send + Sync>
-            })
-        });
-
-        #[cfg(feature = "postgres")]
-        let store = store.or_else(|| {
-            self.pg_pool.as_ref().map(|pool| {
-                Arc::new(crate::secrets::PostgresSecretsStore::new(
-                    pool.clone(),
-                    Arc::clone(&crypto),
-                )) as Arc<dyn SecretsStore + Send + Sync>
-            })
+        let store = self.libsql_db.take().map(|db| {
+            Arc::new(crate::secrets::LibSqlSecretsStore::new(db, Arc::clone(&crypto)))
+                as Arc<dyn SecretsStore + Send + Sync>
         });
 
         if let Some(ref secrets) = store {
@@ -336,7 +271,7 @@ impl AppBuilder {
                 configured_dimension = self.config.embeddings.dimension,
                 "Embedding dimension {} is not 1536. The libSQL schema uses \
                  F32_BLOB(1536) which requires exactly 1536 dimensions. \
-                 Embedding storage will fail. Use PostgreSQL or set \
+                 Embedding storage will fail. Use libSQL or set \
                  EMBEDDING_DIMENSION=1536.",
                 self.config.embeddings.dimension
             );

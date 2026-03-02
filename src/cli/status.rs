@@ -26,7 +26,7 @@ pub async fn run_status_command() -> anyhow::Result<()> {
     print!("  Database:    ");
     let db_backend = std::env::var("DATABASE_BACKEND")
         .ok()
-        .unwrap_or_else(|| "postgres".to_string());
+        .unwrap_or_else(|| "libsql".to_string());
     match db_backend.as_str() {
         "libsql" | "turso" | "sqlite" => {
             let path = std::env::var("LIBSQL_PATH")
@@ -43,16 +43,7 @@ pub async fn run_status_command() -> anyhow::Result<()> {
                 println!("libSQL (file missing: {})", path.display());
             }
         }
-        _ => {
-            if std::env::var("DATABASE_URL").is_ok() {
-                match check_database().await {
-                    Ok(()) => println!("connected (PostgreSQL)"),
-                    Err(e) => println!("error ({})", e),
-                }
-            } else {
-                println!("not configured");
-            }
-        }
+        other => println!("unsupported ({other}; BetterClaw is libsql-only)"),
     }
 
     // Secrets (auto-detect from env only; skip keychain probe to avoid
@@ -149,36 +140,6 @@ pub async fn run_status_command() -> anyhow::Result<()> {
         crate::bootstrap::ironclaw_env_path().display()
     );
 
-    Ok(())
-}
-
-#[cfg(feature = "postgres")]
-async fn check_database() -> anyhow::Result<()> {
-    let url = std::env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL not set"))?;
-
-    let config: deadpool_postgres::Config = deadpool_postgres::Config {
-        url: Some(url),
-        ..Default::default()
-    };
-    let pool = crate::db::tls::create_pool(&config, crate::config::SslMode::from_env())
-        .map_err(|e| anyhow::anyhow!("pool error: {}", e))?;
-
-    let client = tokio::time::timeout(std::time::Duration::from_secs(5), pool.get())
-        .await
-        .map_err(|_| anyhow::anyhow!("timeout"))?
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    client
-        .execute("SELECT 1", &[])
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    Ok(())
-}
-
-#[cfg(not(feature = "postgres"))]
-async fn check_database() -> anyhow::Result<()> {
-    // For non-postgres backends, just report configured
     Ok(())
 }
 

@@ -79,31 +79,6 @@ pub enum MemoryCommand {
     Status,
 }
 
-/// Run a memory command (PostgreSQL backend).
-#[cfg(feature = "postgres")]
-pub async fn run_memory_command(
-    cmd: MemoryCommand,
-    pool: deadpool_postgres::Pool,
-    embeddings: Option<Arc<dyn EmbeddingProvider>>,
-) -> anyhow::Result<()> {
-    let mut workspace = Workspace::new("default", pool);
-    if let Some(emb) = embeddings {
-        workspace = workspace.with_embeddings(emb);
-    }
-
-    match cmd {
-        MemoryCommand::Search { query, limit } => search(&workspace, &query, limit).await,
-        MemoryCommand::Read { path } => read(&workspace, &path).await,
-        MemoryCommand::Write {
-            path,
-            content,
-            append,
-        } => write(&workspace, &path, content, append).await,
-        MemoryCommand::Tree { path, depth } => tree(&workspace, &path, depth).await,
-        MemoryCommand::Status => status(&workspace).await,
-    }
-}
-
 async fn search(workspace: &Workspace, query: &str, limit: usize) -> anyhow::Result<()> {
     let config = SearchConfig::default().with_limit(limit.min(50));
     let results = workspace.search_with_config(query, config).await?;

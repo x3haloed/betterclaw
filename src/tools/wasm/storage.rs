@@ -1,29 +1,25 @@
 //! WASM binary storage with integrity verification.
 //!
-//! Stores compiled WASM tools in PostgreSQL with BLAKE3 hash verification.
+//! Stores compiled WASM tools in libSQL with BLAKE3 hash verification.
 //! On load, the hash is verified to detect tampering.
 //!
 //! # Storage Flow
 //!
 //! ```text
-//! WASM bytes ──► BLAKE3 hash ──► Store in PostgreSQL
+//! WASM bytes ──► BLAKE3 hash ──► Store in libSQL
 //!                    │               (binary + hash)
 //!                    │
 //!                    └──► Later: Load ──► Verify hash ──► Return bytes
 //! ```
 
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-#[cfg(feature = "postgres")]
-use deadpool_postgres::Pool;
 use uuid::Uuid;
 
-use crate::tools::wasm::capabilities::{
-    Capabilities, EndpointPattern, HttpCapability, RateLimitConfig, SecretsCapability,
-    ToolInvokeCapability,
-};
+use crate::tools::wasm::capabilities::Capabilities;
+use crate::tools::wasm::capabilities_schema::CapabilitiesFile;
 
 /// Trust level for a WASM tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,7 +89,7 @@ impl std::str::FromStr for ToolStatus {
     }
 }
 
-/// A stored WASM tool.
+/// A stored WASM tool (metadata only).
 #[derive(Debug, Clone)]
 pub struct StoredWasmTool {
     pub id: Uuid,
@@ -120,123 +116,59 @@ pub struct StoredWasmToolWithBinary {
 /// Capabilities stored in the database.
 #[derive(Debug, Clone)]
 pub struct StoredCapabilities {
-    pub id: Uuid,
-    pub wasm_tool_id: Uuid,
-    pub http_allowlist: Vec<EndpointPattern>,
-    pub allowed_secrets: Vec<String>,
-    pub tool_aliases: HashMap<String, String>,
-    pub requests_per_minute: u32,
-    pub requests_per_hour: u32,
-    pub max_request_body_bytes: i64,
-    pub max_response_body_bytes: i64,
-    pub workspace_read_prefixes: Vec<String>,
-    pub http_timeout_secs: i32,
+    pub tool_id: Uuid,
+    pub capabilities_file: CapabilitiesFile,
 }
 
 impl StoredCapabilities {
-    /// Convert to runtime Capabilities struct.
     pub fn to_capabilities(&self) -> Capabilities {
-        let mut caps = Capabilities::default();
-
-        // Workspace read
-        if !self.workspace_read_prefixes.is_empty() {
-            caps = caps.with_workspace_read(self.workspace_read_prefixes.clone());
-        }
-
-        // HTTP capability
-        if !self.http_allowlist.is_empty() {
-            caps.http = Some(HttpCapability {
-                allowlist: self.http_allowlist.clone(),
-                credentials: HashMap::new(), // Loaded separately
-                rate_limit: RateLimitConfig {
-                    requests_per_minute: self.requests_per_minute,
-                    requests_per_hour: self.requests_per_hour,
-                },
-                max_request_bytes: self.max_request_body_bytes as usize,
-                max_response_bytes: self.max_response_body_bytes as usize,
-                timeout: std::time::Duration::from_secs(self.http_timeout_secs as u64),
-            });
-        }
-
-        // Tool invoke capability
-        if !self.tool_aliases.is_empty() {
-            caps.tool_invoke = Some(ToolInvokeCapability {
-                aliases: self.tool_aliases.clone(),
-                rate_limit: RateLimitConfig {
-                    requests_per_minute: self.requests_per_minute,
-                    requests_per_hour: self.requests_per_hour,
-                },
-            });
-        }
-
-        // Secrets capability
-        if !self.allowed_secrets.is_empty() {
-            caps.secrets = Some(SecretsCapability {
-                allowed_names: self.allowed_secrets.clone(),
-            });
-        }
-
-        caps
+        self.capabilities_file.to_capabilities()
     }
 }
 
-/// Error from WASM storage operations.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum WasmStorageError {
-    #[error("Tool not found: {0}")]
-    NotFound(String),
-
-    #[error("Tool is disabled")]
-    Disabled,
-
-    #[error("Tool is quarantined")]
-    Quarantined,
-
-    #[error("Binary integrity check failed: hash mismatch")]
-    IntegrityCheckFailed,
-
     #[error("Database error: {0}")]
     Database(String),
-
+    #[error("Tool not found: {0}")]
+    NotFound(String),
     #[error("Invalid data: {0}")]
     InvalidData(String),
+    #[error("Integrity violation: stored hash mismatch")]
+    IntegrityViolation,
 }
 
 /// Trait for WASM tool storage.
 #[async_trait]
 pub trait WasmToolStore: Send + Sync {
-    /// Store a new WASM tool.
     async fn store(&self, params: StoreToolParams) -> Result<StoredWasmTool, WasmStorageError>;
-
-    /// Get tool metadata (without binary).
     async fn get(&self, user_id: &str, name: &str) -> Result<StoredWasmTool, WasmStorageError>;
-
-    /// Get tool with binary (verifies integrity).
     async fn get_with_binary(
         &self,
         user_id: &str,
         name: &str,
     ) -> Result<StoredWasmToolWithBinary, WasmStorageError>;
-
-    /// Get tool capabilities.
-    async fn get_capabilities(
-        &self,
-        tool_id: Uuid,
-    ) -> Result<Option<StoredCapabilities>, WasmStorageError>;
-
-    /// List all tools for a user.
     async fn list(&self, user_id: &str) -> Result<Vec<StoredWasmTool>, WasmStorageError>;
-
-    /// Update tool status.
     async fn update_status(
         &self,
         user_id: &str,
         name: &str,
         status: ToolStatus,
     ) -> Result<(), WasmStorageError>;
-
-    /// Delete a tool.
     async fn delete(&self, user_id: &str, name: &str) -> Result<bool, WasmStorageError>;
+
+    /// Get the stored capabilities for a tool.
+    async fn get_capabilities(
+        &self,
+        tool_id: Uuid,
+    ) -> Result<Option<StoredCapabilities>, WasmStorageError>;
+
+    /// Set (upsert) the stored capabilities for a tool.
+    async fn set_capabilities(
+        &self,
+        tool_id: Uuid,
+        capabilities_file: &CapabilitiesFile,
+    ) -> Result<(), WasmStorageError>;
 }
 
 /// Parameters for storing a new tool.
@@ -263,321 +195,18 @@ pub fn verify_binary_integrity(binary: &[u8], expected_hash: &[u8]) -> bool {
     actual_hash == expected_hash
 }
 
-/// PostgreSQL implementation of WasmToolStore.
-#[cfg(feature = "postgres")]
-pub struct PostgresWasmToolStore {
-    pool: Pool,
-}
-
-#[cfg(feature = "postgres")]
-impl PostgresWasmToolStore {
-    pub fn new(pool: Pool) -> Self {
-        Self { pool }
-    }
-}
-
-#[cfg(feature = "postgres")]
-#[async_trait]
-impl WasmToolStore for PostgresWasmToolStore {
-    async fn store(&self, params: StoreToolParams) -> Result<StoredWasmTool, WasmStorageError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let binary_hash = compute_binary_hash(&params.wasm_binary);
-        let id = Uuid::new_v4();
-        let now = Utc::now();
-
-        let row = client
-            .query_one(
-                r#"
-                INSERT INTO wasm_tools (
-                    id, user_id, name, version, description, wasm_binary, binary_hash,
-                    parameters_schema, source_url, trust_level, status, created_at, updated_at
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11, $11)
-                ON CONFLICT (user_id, name, version) DO UPDATE SET
-                    description = EXCLUDED.description,
-                    wasm_binary = EXCLUDED.wasm_binary,
-                    binary_hash = EXCLUDED.binary_hash,
-                    parameters_schema = EXCLUDED.parameters_schema,
-                    source_url = EXCLUDED.source_url,
-                    updated_at = NOW()
-                RETURNING id, user_id, name, version, description, parameters_schema,
-                          source_url, trust_level, status, created_at, updated_at
-                "#,
-                &[
-                    &id,
-                    &params.user_id,
-                    &params.name,
-                    &params.version,
-                    &params.description,
-                    &params.wasm_binary,
-                    &binary_hash,
-                    &params.parameters_schema,
-                    &params.source_url,
-                    &params.trust_level.to_string(),
-                    &now,
-                ],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        row_to_tool(&row)
-    }
-
-    async fn get(&self, user_id: &str, name: &str) -> Result<StoredWasmTool, WasmStorageError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let row = client
-            .query_opt(
-                r#"
-                SELECT id, user_id, name, version, description, parameters_schema,
-                       source_url, trust_level, status, created_at, updated_at
-                FROM wasm_tools
-                WHERE user_id = $1 AND name = $2 AND status = 'active'
-                ORDER BY version DESC
-                LIMIT 1
-                "#,
-                &[&user_id, &name],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        match row {
-            Some(r) => {
-                let tool = row_to_tool(&r)?;
-                match tool.status {
-                    ToolStatus::Active => Ok(tool),
-                    ToolStatus::Disabled => Err(WasmStorageError::Disabled),
-                    ToolStatus::Quarantined => Err(WasmStorageError::Quarantined),
-                }
-            }
-            None => Err(WasmStorageError::NotFound(name.to_string())),
-        }
-    }
-
-    async fn get_with_binary(
-        &self,
-        user_id: &str,
-        name: &str,
-    ) -> Result<StoredWasmToolWithBinary, WasmStorageError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let row = client
-            .query_opt(
-                r#"
-                SELECT id, user_id, name, version, description, wasm_binary, binary_hash,
-                       parameters_schema, source_url, trust_level, status, created_at, updated_at
-                FROM wasm_tools
-                WHERE user_id = $1 AND name = $2 AND status = 'active'
-                ORDER BY version DESC
-                LIMIT 1
-                "#,
-                &[&user_id, &name],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        match row {
-            Some(r) => {
-                let wasm_binary: Vec<u8> = r.get("wasm_binary");
-                let binary_hash: Vec<u8> = r.get("binary_hash");
-
-                // Verify integrity
-                if !verify_binary_integrity(&wasm_binary, &binary_hash) {
-                    tracing::error!(
-                        user_id = user_id,
-                        name = name,
-                        "WASM binary integrity check failed"
-                    );
-                    return Err(WasmStorageError::IntegrityCheckFailed);
-                }
-
-                let tool = row_to_tool(&r)?;
-
-                match tool.status {
-                    ToolStatus::Active => Ok(StoredWasmToolWithBinary {
-                        tool,
-                        wasm_binary,
-                        binary_hash,
-                    }),
-                    ToolStatus::Disabled => Err(WasmStorageError::Disabled),
-                    ToolStatus::Quarantined => Err(WasmStorageError::Quarantined),
-                }
-            }
-            None => Err(WasmStorageError::NotFound(name.to_string())),
-        }
-    }
-
-    async fn get_capabilities(
-        &self,
-        tool_id: Uuid,
-    ) -> Result<Option<StoredCapabilities>, WasmStorageError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let row = client
-            .query_opt(
-                r#"
-                SELECT id, wasm_tool_id, http_allowlist, allowed_secrets, tool_aliases,
-                       requests_per_minute, requests_per_hour, max_request_body_bytes,
-                       max_response_body_bytes, workspace_read_prefixes, http_timeout_secs
-                FROM tool_capabilities
-                WHERE wasm_tool_id = $1
-                "#,
-                &[&tool_id],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        match row {
-            Some(r) => {
-                let http_allowlist_json: serde_json::Value = r.get("http_allowlist");
-                let tool_aliases_json: serde_json::Value = r.get("tool_aliases");
-
-                let http_allowlist: Vec<EndpointPattern> =
-                    serde_json::from_value(http_allowlist_json).unwrap_or_default();
-                let tool_aliases: HashMap<String, String> =
-                    serde_json::from_value(tool_aliases_json).unwrap_or_default();
-
-                Ok(Some(StoredCapabilities {
-                    id: r.get("id"),
-                    wasm_tool_id: r.get("wasm_tool_id"),
-                    http_allowlist,
-                    allowed_secrets: r.get("allowed_secrets"),
-                    tool_aliases,
-                    requests_per_minute: r.get::<_, i32>("requests_per_minute") as u32,
-                    requests_per_hour: r.get::<_, i32>("requests_per_hour") as u32,
-                    max_request_body_bytes: r.get("max_request_body_bytes"),
-                    max_response_body_bytes: r.get("max_response_body_bytes"),
-                    workspace_read_prefixes: r.get("workspace_read_prefixes"),
-                    http_timeout_secs: r.get("http_timeout_secs"),
-                }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    async fn list(&self, user_id: &str) -> Result<Vec<StoredWasmTool>, WasmStorageError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let rows = client
-            .query(
-                r#"
-                SELECT DISTINCT ON (name) id, user_id, name, version, description,
-                       parameters_schema, source_url, trust_level, status, created_at, updated_at
-                FROM wasm_tools
-                WHERE user_id = $1
-                ORDER BY name, version DESC
-                "#,
-                &[&user_id],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        rows.into_iter().map(|r| row_to_tool(&r)).collect()
-    }
-
-    async fn update_status(
-        &self,
-        user_id: &str,
-        name: &str,
-        status: ToolStatus,
-    ) -> Result<(), WasmStorageError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let result = client
-            .execute(
-                "UPDATE wasm_tools SET status = $1, updated_at = NOW() WHERE user_id = $2 AND name = $3",
-                &[&status.to_string(), &user_id, &name],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        if result == 0 {
-            return Err(WasmStorageError::NotFound(name.to_string()));
-        }
-
-        Ok(())
-    }
-
-    async fn delete(&self, user_id: &str, name: &str) -> Result<bool, WasmStorageError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let result = client
-            .execute(
-                "DELETE FROM wasm_tools WHERE user_id = $1 AND name = $2",
-                &[&user_id, &name],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        Ok(result > 0)
-    }
-}
-
-#[cfg(feature = "postgres")]
-fn row_to_tool(row: &tokio_postgres::Row) -> Result<StoredWasmTool, WasmStorageError> {
-    let trust_level_str: String = row.get("trust_level");
-    let status_str: String = row.get("status");
-
-    Ok(StoredWasmTool {
-        id: row.get("id"),
-        user_id: row.get("user_id"),
-        name: row.get("name"),
-        version: row.get("version"),
-        description: row.get("description"),
-        parameters_schema: row.get("parameters_schema"),
-        source_url: row.get("source_url"),
-        trust_level: trust_level_str
-            .parse()
-            .map_err(WasmStorageError::InvalidData)?,
-        status: status_str.parse().map_err(WasmStorageError::InvalidData)?,
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-    })
-}
-
 // ==================== libSQL implementation ====================
 
 /// libSQL/Turso implementation of WasmToolStore.
 ///
 /// Holds an `Arc<Database>` handle and creates a fresh connection per operation,
 /// matching the connection-per-request pattern used by the main `LibSqlBackend`.
-#[cfg(feature = "libsql")]
 pub struct LibSqlWasmToolStore {
-    db: std::sync::Arc<libsql::Database>,
+    db: Arc<libsql::Database>,
 }
 
-#[cfg(feature = "libsql")]
 impl LibSqlWasmToolStore {
-    pub fn new(db: std::sync::Arc<libsql::Database>) -> Self {
+    pub fn new(db: Arc<libsql::Database>) -> Self {
         Self { db }
     }
 
@@ -588,14 +217,11 @@ impl LibSqlWasmToolStore {
             .map_err(|e| WasmStorageError::Database(format!("Connection failed: {}", e)))?;
         conn.query("PRAGMA busy_timeout = 5000", ())
             .await
-            .map_err(|e| {
-                WasmStorageError::Database(format!("Failed to set busy_timeout: {}", e))
-            })?;
+            .map_err(|e| WasmStorageError::Database(format!("Failed to set busy_timeout: {}", e)))?;
         Ok(conn)
     }
 }
 
-#[cfg(feature = "libsql")]
 #[async_trait]
 impl WasmToolStore for LibSqlWasmToolStore {
     async fn store(&self, params: StoreToolParams) -> Result<StoredWasmTool, WasmStorageError> {
@@ -644,18 +270,15 @@ impl WasmToolStore for LibSqlWasmToolStore {
         .await
         .map_err(|e| WasmStorageError::Database(e.to_string()))?;
 
-        // Read back the row within the same transaction
         let mut rows = tx
             .query(
                 r#"
                 SELECT id, user_id, name, version, description, parameters_schema,
                        source_url, trust_level, status, created_at, updated_at
                 FROM wasm_tools
-                WHERE user_id = ?1 AND name = ?2
-                ORDER BY version DESC
-                LIMIT 1
+                WHERE user_id = ?1 AND name = ?2 AND version = ?3
                 "#,
-                libsql::params![params.user_id.as_str(), params.name.as_str()],
+                libsql::params![params.user_id.as_str(), params.name.as_str(), params.version.as_str()],
             )
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?;
@@ -664,9 +287,7 @@ impl WasmToolStore for LibSqlWasmToolStore {
             .next()
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?
-            .ok_or_else(|| {
-                WasmStorageError::Database("Insert succeeded but row not found".into())
-            })?;
+            .ok_or_else(|| WasmStorageError::Database("insert succeeded but row missing".into()))?;
 
         let tool = libsql_row_to_tool(&row)?;
 
@@ -694,21 +315,12 @@ impl WasmToolStore for LibSqlWasmToolStore {
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?;
 
-        match rows
+        let row = rows
             .next()
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?
-        {
-            Some(row) => {
-                let tool = libsql_row_to_tool(&row)?;
-                match tool.status {
-                    ToolStatus::Active => Ok(tool),
-                    ToolStatus::Disabled => Err(WasmStorageError::Disabled),
-                    ToolStatus::Quarantined => Err(WasmStorageError::Quarantined),
-                }
-            }
-            None => Err(WasmStorageError::NotFound(name.to_string())),
-        }
+            .ok_or_else(|| WasmStorageError::NotFound(name.to_string()))?;
+        libsql_row_to_tool(&row)
     }
 
     async fn get_with_binary(
@@ -720,8 +332,9 @@ impl WasmToolStore for LibSqlWasmToolStore {
         let mut rows = conn
             .query(
                 r#"
-                SELECT id, user_id, name, version, description, wasm_binary, binary_hash,
-                       parameters_schema, source_url, trust_level, status, created_at, updated_at
+                SELECT id, user_id, name, version, description,
+                       wasm_binary, binary_hash, parameters_schema,
+                       source_url, trust_level, status, created_at, updated_at
                 FROM wasm_tools
                 WHERE user_id = ?1 AND name = ?2 AND status = 'active'
                 ORDER BY version DESC
@@ -732,43 +345,95 @@ impl WasmToolStore for LibSqlWasmToolStore {
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?;
 
-        match rows
+        let row = rows
+            .next()
+            .await
+            .map_err(|e| WasmStorageError::Database(e.to_string()))?
+            .ok_or_else(|| WasmStorageError::NotFound(name.to_string()))?;
+
+        let tool = libsql_row_to_tool_with_offset(&row)?;
+
+        let wasm_binary: Vec<u8> = row
+            .get(5)
+            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
+        let binary_hash: Vec<u8> = row
+            .get(6)
+            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
+
+        if !verify_binary_integrity(&wasm_binary, &binary_hash) {
+            return Err(WasmStorageError::IntegrityViolation);
+        }
+
+        Ok(StoredWasmToolWithBinary {
+            tool,
+            wasm_binary,
+            binary_hash,
+        })
+    }
+
+    async fn list(&self, user_id: &str) -> Result<Vec<StoredWasmTool>, WasmStorageError> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT id, user_id, name, version, description, parameters_schema,
+                       source_url, trust_level, status, created_at, updated_at
+                FROM wasm_tools
+                WHERE user_id = ?1
+                ORDER BY name, version DESC
+                "#,
+                libsql::params![user_id],
+            )
+            .await
+            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows
             .next()
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?
         {
-            Some(row) => {
-                let wasm_binary: Vec<u8> = row
-                    .get(5)
-                    .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-                let binary_hash: Vec<u8> = row
-                    .get(6)
-                    .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-                if !verify_binary_integrity(&wasm_binary, &binary_hash) {
-                    tracing::error!(
-                        user_id = user_id,
-                        name = name,
-                        "WASM binary integrity check failed"
-                    );
-                    return Err(WasmStorageError::IntegrityCheckFailed);
-                }
-
-                // Parse metadata from the row (different column offsets due to binary/hash)
-                let tool = libsql_row_to_tool_with_offset(&row)?;
-
-                match tool.status {
-                    ToolStatus::Active => Ok(StoredWasmToolWithBinary {
-                        tool,
-                        wasm_binary,
-                        binary_hash,
-                    }),
-                    ToolStatus::Disabled => Err(WasmStorageError::Disabled),
-                    ToolStatus::Quarantined => Err(WasmStorageError::Quarantined),
-                }
-            }
-            None => Err(WasmStorageError::NotFound(name.to_string())),
+            out.push(libsql_row_to_tool(&row)?);
         }
+        Ok(out)
+    }
+
+    async fn update_status(
+        &self,
+        user_id: &str,
+        name: &str,
+        status: ToolStatus,
+    ) -> Result<(), WasmStorageError> {
+        let conn = self.connect().await?;
+        let updated = conn
+            .execute(
+                "UPDATE wasm_tools SET status = ?1, updated_at = ?2 WHERE user_id = ?3 AND name = ?4",
+                libsql::params![
+                    status.to_string(),
+                    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    user_id,
+                    name
+                ],
+            )
+            .await
+            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
+
+        if updated == 0 {
+            return Err(WasmStorageError::NotFound(name.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, user_id: &str, name: &str) -> Result<bool, WasmStorageError> {
+        let conn = self.connect().await?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM wasm_tools WHERE user_id = ?1 AND name = ?2",
+                libsql::params![user_id, name],
+            )
+            .await
+            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
+        Ok(deleted > 0)
     }
 
     async fn get_capabilities(
@@ -778,144 +443,57 @@ impl WasmToolStore for LibSqlWasmToolStore {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                r#"
-                SELECT id, wasm_tool_id, http_allowlist, allowed_secrets, tool_aliases,
-                       requests_per_minute, requests_per_hour, max_request_body_bytes,
-                       max_response_body_bytes, workspace_read_prefixes, http_timeout_secs
-                FROM tool_capabilities
-                WHERE wasm_tool_id = ?1
-                "#,
+                "SELECT capabilities_json FROM wasm_tool_capabilities WHERE tool_id = ?1",
                 libsql::params![tool_id.to_string()],
             )
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?;
 
-        match rows
+        let Some(row) = rows
             .next()
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?
-        {
-            Some(row) => {
-                let id_str: String = row
-                    .get(0)
-                    .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-                let tool_id_str: String = row
-                    .get(1)
-                    .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-                let http_allowlist_str: String = row.get::<String>(2).unwrap_or_default();
-                let allowed_secrets_str: String = row.get::<String>(3).unwrap_or_default();
-                let tool_aliases_str: String = row.get::<String>(4).unwrap_or_default();
-                let rpm: i64 = row.get::<i64>(5).unwrap_or(60);
-                let rph: i64 = row.get::<i64>(6).unwrap_or(1000);
-                let max_req: i64 = row.get::<i64>(7).unwrap_or(1048576);
-                let max_resp: i64 = row.get::<i64>(8).unwrap_or(10485760);
-                let ws_prefixes_str: String = row.get::<String>(9).unwrap_or_default();
-                let timeout: i64 = row.get::<i64>(10).unwrap_or(30);
+        else {
+            return Ok(None);
+        };
 
-                let http_allowlist: Vec<EndpointPattern> =
-                    serde_json::from_str(&http_allowlist_str).unwrap_or_default();
-                let allowed_secrets: Vec<String> =
-                    serde_json::from_str(&allowed_secrets_str).unwrap_or_default();
-                let tool_aliases: HashMap<String, String> =
-                    serde_json::from_str(&tool_aliases_str).unwrap_or_default();
-                let workspace_read_prefixes: Vec<String> =
-                    serde_json::from_str(&ws_prefixes_str).unwrap_or_default();
-
-                Ok(Some(StoredCapabilities {
-                    id: id_str
-                        .parse()
-                        .map_err(|e: uuid::Error| WasmStorageError::InvalidData(e.to_string()))?,
-                    wasm_tool_id: tool_id_str
-                        .parse()
-                        .map_err(|e: uuid::Error| WasmStorageError::InvalidData(e.to_string()))?,
-                    http_allowlist,
-                    allowed_secrets,
-                    tool_aliases,
-                    requests_per_minute: rpm as u32,
-                    requests_per_hour: rph as u32,
-                    max_request_body_bytes: max_req,
-                    max_response_body_bytes: max_resp,
-                    workspace_read_prefixes,
-                    http_timeout_secs: timeout as i32,
-                }))
-            }
-            None => Ok(None),
-        }
-    }
-
-    async fn list(&self, user_id: &str) -> Result<Vec<StoredWasmTool>, WasmStorageError> {
-        // SQLite doesn't have DISTINCT ON, so we use a subquery to get latest version per name
-        let conn = self.connect().await?;
-        let mut rows = conn
-            .query(
-                r#"
-                SELECT id, user_id, name, version, description, parameters_schema,
-                       source_url, trust_level, status, created_at, updated_at
-                FROM wasm_tools
-                WHERE user_id = ?1
-                  AND rowid IN (
-                      SELECT MAX(rowid)
-                      FROM wasm_tools
-                      WHERE user_id = ?1
-                      GROUP BY name
-                  )
-                ORDER BY name
-                "#,
-                libsql::params![user_id],
-            )
-            .await
+        let s: String = row
+            .get(0)
             .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        let mut tools = Vec::new();
-        while let Some(row) = rows
-            .next()
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?
-        {
-            tools.push(libsql_row_to_tool(&row)?);
-        }
-        Ok(tools)
+        let file =
+            CapabilitiesFile::from_json(&s).map_err(|e| WasmStorageError::InvalidData(e.to_string()))?;
+        Ok(Some(StoredCapabilities {
+            tool_id,
+            capabilities_file: file,
+        }))
     }
 
-    async fn update_status(
+    async fn set_capabilities(
         &self,
-        user_id: &str,
-        name: &str,
-        status: ToolStatus,
+        tool_id: Uuid,
+        capabilities_file: &CapabilitiesFile,
     ) -> Result<(), WasmStorageError> {
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let conn = self.connect().await?;
-
-        let result = conn
-            .execute(
-                "UPDATE wasm_tools SET status = ?1, updated_at = ?2 WHERE user_id = ?3 AND name = ?4",
-                libsql::params![status.to_string(), now.as_str(), user_id, name],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        if result == 0 {
-            return Err(WasmStorageError::NotFound(name.to_string()));
-        }
-
+        let caps_json = serde_json::to_string(capabilities_file)
+            .map_err(|e| WasmStorageError::InvalidData(e.to_string()))?;
+        conn.execute(
+            r#"
+            INSERT INTO wasm_tool_capabilities (tool_id, capabilities_json, created_at)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(tool_id) DO UPDATE SET capabilities_json = excluded.capabilities_json
+            "#,
+            libsql::params![
+                tool_id.to_string(),
+                caps_json.as_str(),
+                Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ],
+        )
+        .await
+        .map_err(|e| WasmStorageError::Database(e.to_string()))?;
         Ok(())
-    }
-
-    async fn delete(&self, user_id: &str, name: &str) -> Result<bool, WasmStorageError> {
-        let conn = self.connect().await?;
-        let result = conn
-            .execute(
-                "DELETE FROM wasm_tools WHERE user_id = ?1 AND name = ?2",
-                libsql::params![user_id, name],
-            )
-            .await
-            .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-
-        Ok(result > 0)
     }
 }
 
-#[cfg(feature = "libsql")]
 fn libsql_wasm_opt_text(s: Option<&str>) -> libsql::Value {
     match s {
         Some(s) => libsql::Value::Text(s.to_string()),
@@ -923,43 +501,25 @@ fn libsql_wasm_opt_text(s: Option<&str>) -> libsql::Value {
     }
 }
 
-#[cfg(feature = "libsql")]
 fn libsql_wasm_parse_ts(s: &str) -> Result<DateTime<Utc>, WasmStorageError> {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Ok(dt.with_timezone(&Utc));
-    }
-    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
-        return Ok(ndt.and_utc());
-    }
-    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
-        return Ok(ndt.and_utc());
-    }
-    Err(WasmStorageError::InvalidData(format!(
-        "unparseable timestamp: {:?}",
-        s
-    )))
+    DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| WasmStorageError::InvalidData(format!("bad timestamp: {}", e)))
 }
 
-/// Parse a tool row with standard column order (no binary columns).
-/// Columns: id(0), user_id(1), name(2), version(3), description(4),
-///          parameters_schema(5), source_url(6), trust_level(7), status(8),
-///          created_at(9), updated_at(10)
-#[cfg(feature = "libsql")]
 fn libsql_row_to_tool(row: &libsql::Row) -> Result<StoredWasmTool, WasmStorageError> {
     libsql_row_to_tool_at(row, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 }
 
-/// Parse a tool row when binary columns are present (get_with_binary query).
-/// Columns: id(0), user_id(1), name(2), version(3), description(4),
-///          wasm_binary(5), binary_hash(6),
-///          parameters_schema(7), source_url(8), trust_level(9), status(10),
-///          created_at(11), updated_at(12)
-#[cfg(feature = "libsql")]
 fn libsql_row_to_tool_with_offset(row: &libsql::Row) -> Result<StoredWasmTool, WasmStorageError> {
+    // when binary columns are present:
+    // id(0), user_id(1), name(2), version(3), description(4),
+    // wasm_binary(5), binary_hash(6),
+    // parameters_schema(7), source_url(8), trust_level(9), status(10),
+    // created_at(11), updated_at(12)
     libsql_row_to_tool_at(row, 0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12)
 }
 
-#[cfg(feature = "libsql")]
 #[allow(clippy::too_many_arguments)]
 fn libsql_row_to_tool_at(
     row: &libsql::Row,
@@ -1026,9 +586,7 @@ fn libsql_row_to_tool_at(
 
 #[cfg(test)]
 mod tests {
-    use crate::tools::wasm::storage::{
-        ToolStatus, TrustLevel, compute_binary_hash, verify_binary_integrity,
-    };
+    use super::*;
 
     #[test]
     fn test_compute_hash() {
@@ -1042,38 +600,5 @@ mod tests {
         let binary = b"test wasm binary content";
         let hash = compute_binary_hash(binary);
         assert!(verify_binary_integrity(binary, &hash));
-    }
-
-    #[test]
-    fn test_verify_integrity_failure() {
-        let binary = b"test wasm binary content";
-        let hash = compute_binary_hash(binary);
-        let tampered = b"tampered wasm binary content";
-        assert!(!verify_binary_integrity(tampered, &hash));
-    }
-
-    #[test]
-    fn test_trust_level_parse() {
-        assert_eq!("system".parse::<TrustLevel>().unwrap(), TrustLevel::System);
-        assert_eq!(
-            "verified".parse::<TrustLevel>().unwrap(),
-            TrustLevel::Verified
-        );
-        assert_eq!("user".parse::<TrustLevel>().unwrap(), TrustLevel::User);
-        assert!("invalid".parse::<TrustLevel>().is_err());
-    }
-
-    #[test]
-    fn test_status_parse() {
-        assert_eq!("active".parse::<ToolStatus>().unwrap(), ToolStatus::Active);
-        assert_eq!(
-            "disabled".parse::<ToolStatus>().unwrap(),
-            ToolStatus::Disabled
-        );
-        assert_eq!(
-            "quarantined".parse::<ToolStatus>().unwrap(),
-            ToolStatus::Quarantined
-        );
-        assert!("invalid".parse::<ToolStatus>().is_err());
     }
 }

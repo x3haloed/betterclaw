@@ -229,7 +229,7 @@ mod tests {
             llm_backend: "openai".to_string(),
             llm_model: "gpt-4o".to_string(),
             cheap_model: None,
-            db_backend: "postgres".to_string(),
+            db_backend: "libsql".to_string(),
             db_connected: true,
             tool_count: 10,
             gateway_url: None,

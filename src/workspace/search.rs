@@ -1,8 +1,8 @@
 //! Hybrid search combining full-text and semantic search.
 //!
 //! Uses Reciprocal Rank Fusion (RRF) to combine results from:
-//! 1. PostgreSQL full-text search (ts_rank_cd)
-//! 2. pgvector cosine similarity search
+//! 1. Full-text search (backend-specific)
+//! 2. Vector similarity search (backend-specific)
 //!
 //! RRF formula: score = sum(1 / (k + rank)) for each retrieval method
 //! This is robust to different score scales and produces better results

@@ -1293,7 +1293,7 @@ async fn extensions_install_handler(
                 }
                 _ => format!(
                     "Extension manager not available (secrets store required). \
-                     Configure DATABASE_URL or a secrets backend to enable installation of '{}'.",
+                     Configure LIBSQL_PATH (or run onboarding) to enable installation of '{}'.",
                     req.name
                 ),
             };

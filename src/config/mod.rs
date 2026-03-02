@@ -1,7 +1,7 @@
 //! Configuration for IronClaw.
 //!
 //! Settings are loaded with priority: env var > database > default.
-//! `DATABASE_URL` lives in `~/.ironclaw/.env` (loaded via dotenvy early
+//! `DATABASE_BACKEND` and libsql connection details live in `~/.ironclaw/.env` (loaded via dotenvy early
 //! in startup). Everything else comes from env vars, the DB settings
 //! table, or auto-detection.
 
@@ -34,7 +34,7 @@ pub use self::builder::BuilderModeConfig;
 pub use self::channels::{
     ChannelsConfig, CliConfig, DiscordConfig, GatewayConfig, HttpConfig, SignalConfig,
 };
-pub use self::database::{DatabaseBackend, DatabaseConfig, SslMode, default_libsql_path};
+pub use self::database::{DatabaseBackend, DatabaseConfig, default_libsql_path};
 pub use self::embeddings::EmbeddingsConfig;
 pub use self::heartbeat::HeartbeatConfig;
 pub use self::hygiene::HygieneConfig;

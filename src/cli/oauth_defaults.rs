@@ -12,7 +12,7 @@
 //!
 //! Default credentials are hardcoded below. They can be overridden at:
 //!
-//! - **Compile time**: Set IRONCLAW_GOOGLE_CLIENT_ID / IRONCLAW_GOOGLE_CLIENT_SECRET
+//! - **Compile time**: Set BETTERCLAW_GOOGLE_CLIENT_ID / BETTERCLAW_GOOGLE_CLIENT_SECRET
 //!   env vars before building to replace the hardcoded defaults.
 //! - **Runtime**: Users can set GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET
 //!   env vars, which take priority over built-in defaults.
@@ -31,11 +31,11 @@ pub struct OAuthCredentials {
 
 /// Google OAuth "Desktop App" credentials, shared across all Google tools.
 /// Compile-time env vars override the hardcoded defaults below.
-const GOOGLE_CLIENT_ID: &str = match option_env!("IRONCLAW_GOOGLE_CLIENT_ID") {
+const GOOGLE_CLIENT_ID: &str = match option_env!("BETTERCLAW_GOOGLE_CLIENT_ID") {
     Some(v) => v,
     None => "564604149681-efo25d43rs85v0tibdepsmdv5dsrhhr0.apps.googleusercontent.com",
 };
-const GOOGLE_CLIENT_SECRET: &str = match option_env!("IRONCLAW_GOOGLE_CLIENT_SECRET") {
+const GOOGLE_CLIENT_SECRET: &str = match option_env!("BETTERCLAW_GOOGLE_CLIENT_SECRET") {
     Some(v) => v,
     None => "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",
 };
@@ -64,11 +64,11 @@ pub const OAUTH_CALLBACK_PORT: u16 = 9876;
 
 /// Returns the OAuth callback base URL.
 ///
-/// Checks `IRONCLAW_OAUTH_CALLBACK_URL` env var first (useful for remote/VPS
+/// Checks `BETTERCLAW_OAUTH_CALLBACK_URL` env var first (useful for remote/VPS
 /// deployments where `127.0.0.1` is unreachable from the user's browser),
 /// then falls back to `http://{callback_host()}:{OAUTH_CALLBACK_PORT}`.
 pub fn callback_url() -> String {
-    std::env::var("IRONCLAW_OAUTH_CALLBACK_URL")
+    std::env::var("BETTERCLAW_OAUTH_CALLBACK_URL")
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| format!("http://{}:{}", callback_host(), OAUTH_CALLBACK_PORT))
@@ -89,7 +89,7 @@ pub fn callback_url() -> String {
 ///
 /// ```bash
 /// export OAUTH_CALLBACK_HOST=203.0.113.10
-/// ironclaw login
+/// betterclaw login
 /// # Opens: http://203.0.113.10:9876/auth/callback
 /// ```
 pub fn callback_host() -> String {
@@ -300,7 +300,7 @@ pub fn landing_html(provider_name: &str, success: bool) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>IronClaw - {heading}</title>
+<title>BetterClaw - {heading}</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box }}
   body {{
@@ -346,7 +346,7 @@ pub fn landing_html(provider_name: &str, success: bool) -> String {
     {icon}
     <h1>{heading}</h1>
     <p>{subtitle}</p>
-    <div class="brand">IronClaw</div>
+    <div class="brand">BetterClaw</div>
   </div>
 </body>
 </html>"#,
@@ -402,11 +402,11 @@ mod tests {
     fn test_callback_host_env_override() {
         let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
         let original_host = std::env::var("OAUTH_CALLBACK_HOST").ok();
-        let original_url = std::env::var("IRONCLAW_OAUTH_CALLBACK_URL").ok();
+        let original_url = std::env::var("BETTERCLAW_OAUTH_CALLBACK_URL").ok();
         // SAFETY: Under ENV_MUTEX, no concurrent env access.
         unsafe {
             std::env::set_var("OAUTH_CALLBACK_HOST", "203.0.113.10");
-            std::env::remove_var("IRONCLAW_OAUTH_CALLBACK_URL");
+            std::env::remove_var("BETTERCLAW_OAUTH_CALLBACK_URL");
         }
         assert_eq!(callback_host(), "203.0.113.10");
         // callback_url() fallback should incorporate the custom host
@@ -420,7 +420,7 @@ mod tests {
                 std::env::remove_var("OAUTH_CALLBACK_HOST");
             }
             if let Some(val) = original_url {
-                std::env::set_var("IRONCLAW_OAUTH_CALLBACK_URL", val);
+                std::env::set_var("BETTERCLAW_OAUTH_CALLBACK_URL", val);
             }
         }
     }
@@ -429,11 +429,11 @@ mod tests {
     fn test_callback_url_default() {
         let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
         // Clear both env vars to test default behavior
-        let original_url = std::env::var("IRONCLAW_OAUTH_CALLBACK_URL").ok();
+        let original_url = std::env::var("BETTERCLAW_OAUTH_CALLBACK_URL").ok();
         let original_host = std::env::var("OAUTH_CALLBACK_HOST").ok();
         // SAFETY: Under ENV_MUTEX, no concurrent env access.
         unsafe {
-            std::env::remove_var("IRONCLAW_OAUTH_CALLBACK_URL");
+            std::env::remove_var("BETTERCLAW_OAUTH_CALLBACK_URL");
             std::env::remove_var("OAUTH_CALLBACK_HOST");
         }
         let url = callback_url();
@@ -441,7 +441,7 @@ mod tests {
         // Restore
         unsafe {
             if let Some(val) = original_url {
-                std::env::set_var("IRONCLAW_OAUTH_CALLBACK_URL", val);
+                std::env::set_var("BETTERCLAW_OAUTH_CALLBACK_URL", val);
             }
             if let Some(val) = original_host {
                 std::env::set_var("OAUTH_CALLBACK_HOST", val);
@@ -452,11 +452,11 @@ mod tests {
     #[test]
     fn test_callback_url_env_override() {
         let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
-        let original = std::env::var("IRONCLAW_OAUTH_CALLBACK_URL").ok();
+        let original = std::env::var("BETTERCLAW_OAUTH_CALLBACK_URL").ok();
         // SAFETY: Under ENV_MUTEX, no concurrent env access.
         unsafe {
             std::env::set_var(
-                "IRONCLAW_OAUTH_CALLBACK_URL",
+                "BETTERCLAW_OAUTH_CALLBACK_URL",
                 "https://myserver.example.com:9876",
             );
         }
@@ -465,9 +465,9 @@ mod tests {
         // Restore
         unsafe {
             if let Some(val) = original {
-                std::env::set_var("IRONCLAW_OAUTH_CALLBACK_URL", val);
+                std::env::set_var("BETTERCLAW_OAUTH_CALLBACK_URL", val);
             } else {
-                std::env::remove_var("IRONCLAW_OAUTH_CALLBACK_URL");
+                std::env::remove_var("BETTERCLAW_OAUTH_CALLBACK_URL");
             }
         }
     }
@@ -491,7 +491,7 @@ mod tests {
         let html = landing_html("Google", true);
         assert!(html.contains("Google Connected"));
         assert!(html.contains("charset"));
-        assert!(html.contains("IronClaw"));
+        assert!(html.contains("BetterClaw"));
         assert!(html.contains("#22c55e")); // green accent
         assert!(!html.contains("Failed"));
     }
@@ -508,7 +508,7 @@ mod tests {
         let html = landing_html("Notion", false);
         assert!(html.contains("Authorization Failed"));
         assert!(html.contains("charset"));
-        assert!(html.contains("IronClaw"));
+        assert!(html.contains("BetterClaw"));
         assert!(html.contains("#ef4444")); // red accent
         assert!(!html.contains("Connected"));
     }

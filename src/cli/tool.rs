@@ -9,14 +9,14 @@ use std::sync::Arc;
 use clap::Subcommand;
 use tokio::fs;
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::config::Config;
 use crate::secrets::{CreateSecretParams, SecretsCrypto, SecretsStore};
 use crate::tools::wasm::{CapabilitiesFile, compute_binary_hash};
 
 /// Default tools directory.
 fn default_tools_dir() -> PathBuf {
-    ironclaw_base_dir().join("tools")
+    betterclaw_base_dir().join("tools")
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -34,7 +34,7 @@ pub enum ToolCommand {
         #[arg(long)]
         capabilities: Option<PathBuf>,
 
-        /// Target directory for installation (default: ~/.ironclaw/tools/)
+        /// Target directory for installation (default: ~/.betterclaw/tools/)
         #[arg(short, long)]
         target: Option<PathBuf>,
 
@@ -53,7 +53,7 @@ pub enum ToolCommand {
 
     /// List installed tools
     List {
-        /// Directory to list tools from (default: ~/.ironclaw/tools/)
+        /// Directory to list tools from (default: ~/.betterclaw/tools/)
         #[arg(short, long)]
         dir: Option<PathBuf>,
 
@@ -67,7 +67,7 @@ pub enum ToolCommand {
         /// Name of the tool to remove
         name: String,
 
-        /// Directory to remove tool from (default: ~/.ironclaw/tools/)
+        /// Directory to remove tool from (default: ~/.betterclaw/tools/)
         #[arg(short, long)]
         dir: Option<PathBuf>,
     },
@@ -77,7 +77,7 @@ pub enum ToolCommand {
         /// Name of the tool or path to .wasm file
         name_or_path: String,
 
-        /// Directory to look for tool (default: ~/.ironclaw/tools/)
+        /// Directory to look for tool (default: ~/.betterclaw/tools/)
         #[arg(short, long)]
         dir: Option<PathBuf>,
     },
@@ -87,7 +87,7 @@ pub enum ToolCommand {
         /// Name of the tool
         name: String,
 
-        /// Directory to look for tool (default: ~/.ironclaw/tools/)
+        /// Directory to look for tool (default: ~/.betterclaw/tools/)
         #[arg(short, long)]
         dir: Option<PathBuf>,
 
@@ -101,7 +101,7 @@ pub enum ToolCommand {
         /// Name of the tool
         name: String,
 
-        /// Directory to look for tool (default: ~/.ironclaw/tools/)
+        /// Directory to look for tool (default: ~/.betterclaw/tools/)
         #[arg(short, long)]
         dir: Option<PathBuf>,
 
@@ -296,7 +296,7 @@ async fn list_tools(dir: Option<PathBuf>, verbose: bool) -> anyhow::Result<()> {
 
     if !tools_dir.exists() {
         println!("No tools directory found at {}", tools_dir.display());
-        println!("Install a tool with: ironclaw tool install <path>");
+        println!("Install a tool with: betterclaw tool install <path>");
         return Ok(());
     }
 
@@ -555,7 +555,7 @@ async fn init_secrets_store() -> anyhow::Result<Arc<dyn SecretsStore + Send + Sy
     let config = Config::from_env().await?;
     let master_key = config.secrets.master_key().ok_or_else(|| {
         anyhow::anyhow!(
-            "SECRETS_MASTER_KEY not set. Run 'ironclaw onboard' first or set it in .env"
+            "SECRETS_MASTER_KEY not set. Run 'betterclaw onboard' first or set it in .env"
         )
     })?;
 
@@ -774,7 +774,7 @@ async fn auth_tool_oauth(
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "OAuth client_id not configured.\n\
-                 Set {} env var, or build with IRONCLAW_GOOGLE_CLIENT_ID.",
+                 Set {} env var, or build with BETTERCLAW_GOOGLE_CLIENT_ID.",
                 oauth.client_id_env.as_deref().unwrap_or("the client_id")
             )
         })?;
@@ -1186,7 +1186,7 @@ async fn setup_tool(name: String, dir: Option<PathBuf>, user_id: String) -> anyh
         anyhow::anyhow!(
             "Tool '{}' has no setup configuration.\n\
              The tool may not require setup, or setup is not defined.\n\
-             Try 'ironclaw tool auth {}' for OAuth-based authentication.",
+             Try 'betterclaw tool auth {}' for OAuth-based authentication.",
             name,
             name
         )
@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn test_default_tools_dir() {
         let dir = default_tools_dir();
-        assert!(dir.to_string_lossy().contains(".ironclaw"));
+        assert!(dir.to_string_lossy().contains(".betterclaw"));
         assert!(dir.to_string_lossy().contains("tools"));
     }
 }

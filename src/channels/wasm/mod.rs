@@ -63,14 +63,14 @@
 //! # Example Usage
 //!
 //! ```ignore
-//! use ironclaw::channels::wasm::{WasmChannelLoader, WasmChannelRuntime};
+//! use betterclaw::channels::wasm::{WasmChannelLoader, WasmChannelRuntime};
 //!
 //! // Create runtime (can share engine with tool runtime)
 //! let runtime = WasmChannelRuntime::new(config)?;
 //!
 //! // Load channels from directory
 //! let loader = WasmChannelLoader::new(runtime);
-//! let channels = loader.load_from_dir(Path::new("~/.ironclaw/channels/")).await?;
+//! let channels = loader.load_from_dir(Path::new("~/.betterclaw/channels/")).await?;
 //!
 //! // Add to channel manager
 //! for channel in channels {

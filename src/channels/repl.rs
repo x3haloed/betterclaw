@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::agent::truncate_for_preview;
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
 use crate::error::ChannelError;
 
@@ -255,7 +255,7 @@ fn print_help() {
     let r = "\x1b[0m"; // reset
 
     println!();
-    println!("  {h}IronClaw REPL{r}");
+    println!("  {h}BetterClaw REPL{r}");
     println!();
     println!("  {h}Commands{r}");
     println!("  {c}/help{r}              {d}show this help{r}");
@@ -278,9 +278,9 @@ fn print_help() {
     println!();
 }
 
-/// Get the history file path (~/.ironclaw/history).
+/// Get the history file path (~/.betterclaw/history).
 fn history_path() -> std::path::PathBuf {
-    ironclaw_base_dir().join("history")
+    betterclaw_base_dir().join("history")
 }
 
 #[async_trait]
@@ -337,7 +337,7 @@ impl Channel for ReplChannel {
             let _ = rl.load_history(&hist_path);
 
             if !suppress_banner.load(Ordering::Relaxed) {
-                println!("\x1b[1mIronClaw\x1b[0m  /help for commands, /quit to exit");
+                println!("\x1b[1mBetterClaw\x1b[0m  /help for commands, /quit to exit");
                 println!();
             }
 

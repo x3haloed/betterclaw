@@ -1,7 +1,7 @@
 //! Native Discord channel (Gateway WebSocket).
 //!
 //! Ported and simplified from ZeroClaw's Discord implementation.
-//! This integrates directly with IronClaw's `Channel` abstraction so the
+//! This integrates directly with BetterClaw's `Channel` abstraction so the
 //! gateway + discord run in a single process.
 
 use std::collections::HashMap;
@@ -905,7 +905,7 @@ impl DiscordChannel {
                         }
 
                         if let Some((request_id, approved, always)) = Self::parse_interaction_custom_id(custom_id) {
-                            // IMPORTANT: `Submission` is an externally-tagged enum in IronClaw.
+                            // IMPORTANT: `Submission` is an externally-tagged enum in BetterClaw.
                             // The parser only accepts JSON that deserializes to `Submission::ExecApproval`,
                             // which means we must wrap fields under the `"ExecApproval"` variant key.
                             let content = serde_json::json!({

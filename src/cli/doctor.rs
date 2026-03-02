@@ -1,4 +1,4 @@
-//! `ironclaw doctor` - active health diagnostics.
+//! `betterclaw doctor` - active health diagnostics.
 //!
 //! Probes external dependencies and validates configuration to surface
 //! problems before they bite during normal operation. Each check reports
@@ -6,11 +6,11 @@
 
 use std::path::PathBuf;
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 
 /// Run all diagnostic checks and print results.
 pub async fn run_doctor_command() -> anyhow::Result<()> {
-    println!("IronClaw Doctor");
+    println!("BetterClaw Doctor");
     println!("===============\n");
 
     let mut passed = 0u32;
@@ -125,7 +125,7 @@ async fn check_database() -> CheckResult {
 }
 
 fn check_workspace_dir() -> CheckResult {
-    let dir = ironclaw_base_dir();
+    let dir = betterclaw_base_dir();
 
     if dir.exists() {
         if dir.is_dir() {
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn check_binary_skips_nonexistent() {
-        match check_binary("__ironclaw_nonexistent_binary__", &["--version"]) {
+        match check_binary("__betterclaw_nonexistent_binary__", &["--version"]) {
             CheckResult::Skip(_) => {}
             other => panic!(
                 "expected Skip for nonexistent binary, got: {}",

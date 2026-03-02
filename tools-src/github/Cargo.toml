@@ -2,7 +2,7 @@
 name = "github-tool"
 version = "0.1.0"
 edition = "2021"
-description = "GitHub integration tool for IronClaw (WASM component)"
+description = "GitHub integration tool for BetterClaw (WASM component)"
 license = "MIT OR Apache-2.0"
 publish = false
 

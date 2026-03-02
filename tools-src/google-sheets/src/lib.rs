@@ -1,4 +1,4 @@
-//! Google Sheets WASM Tool for IronClaw.
+//! Google Sheets WASM Tool for BetterClaw.
 //!
 //! Provides Google Sheets integration for creating, reading, writing,
 //! and formatting spreadsheets. Use Google Drive tool to search for
@@ -182,7 +182,7 @@ impl exports::near::agent::tool::Guest for GoogleSheetsTool {
 fn execute_inner(params: &str) -> Result<String, String> {
     if !crate::near::agent::host::secret_exists("google_oauth_token") {
         return Err(
-            "Google OAuth token not configured. Run `ironclaw tool auth google-sheets` to set up \
+            "Google OAuth token not configured. Run `betterclaw tool auth google-sheets` to set up \
              OAuth, or set the GOOGLE_OAUTH_TOKEN environment variable."
                 .to_string(),
         );

@@ -38,7 +38,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use ironclaw::secrets::{SecretsStore, LibSqlSecretsStore, SecretsCrypto, CreateSecretParams};
+//! use betterclaw::secrets::{SecretsStore, LibSqlSecretsStore, SecretsCrypto, CreateSecretParams};
 //! use secrecy::SecretString;
 //!
 //! // Initialize crypto with master key from environment

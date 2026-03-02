@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::channels::{ChannelManager, OutgoingResponse};
 use crate::context::JobContext;
 use crate::tools::tool::{
@@ -28,7 +28,7 @@ pub struct MessageTool {
 
 impl MessageTool {
     pub fn new(channel_manager: Arc<ChannelManager>) -> Self {
-        let base_dir = ironclaw_base_dir();
+        let base_dir = betterclaw_base_dir();
 
         Self {
             channel_manager,
@@ -336,7 +336,7 @@ mod tests {
             )
             .await;
 
-        // Should fail due to sandbox rejection (paths outside ~/.ironclaw/)
+        // Should fail due to sandbox rejection (paths outside ~/.betterclaw/)
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("sandbox") || err.contains("escapes"));

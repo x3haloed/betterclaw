@@ -110,7 +110,7 @@ fn create_openai_provider_from(oai: &crate::config::OpenAiDirectConfig) -> Resul
 
     // Use CompletionsClient (Chat Completions API) instead of the default Client
     // (Responses API). The Responses API path in rig-core panics when tool results
-    // are sent back because ironclaw doesn't thread `call_id` through its ToolCall
+    // are sent back because betterclaw doesn't thread `call_id` through its ToolCall
     // type. The Chat Completions API works correctly with the existing code.
     let client: openai::CompletionsClient = if let Some(ref base_url) = oai.base_url {
         tracing::info!(

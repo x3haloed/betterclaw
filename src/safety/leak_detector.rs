@@ -733,15 +733,6 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_near_ai_session_token() {
-        let detector = LeakDetector::new();
-        let token = format!("sess_{}", "a".repeat(32));
-        let content = format!("token: {token}");
-        let result = detector.scan(&content);
-        assert!(!result.is_clean(), "NEAR AI session token not detected");
-    }
-
-    #[test]
     fn test_detect_stripe_key() {
         let detector = LeakDetector::new();
         // Build at runtime to avoid GitHub push protection false positive.

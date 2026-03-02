@@ -53,7 +53,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Build Docker image
-        run: docker build -t ironclaw-test:ci .
+        run: docker build -t betterclaw-test:ci .
 
   # Roll-up job for branch protection
   run-tests:

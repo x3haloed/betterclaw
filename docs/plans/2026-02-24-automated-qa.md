@@ -1,4 +1,4 @@
-# Automated QA Plan for IronClaw
+# Automated QA Plan for BetterClaw
 
 **Date:** 2026-02-24
 **Status:** Draft
@@ -8,7 +8,7 @@
 
 ## Motivation
 
-A review of all closed issues and merged bug-fix PRs reveals that most IronClaw bugs fall into a few recurring categories:
+A review of all closed issues and merged bug-fix PRs reveals that most BetterClaw bugs fall into a few recurring categories:
 
 | Category | Examples | Root Cause |
 |----------|----------|------------|
@@ -54,7 +54,7 @@ fn all_tool_schemas_are_openai_strict_valid() {
 }
 ```
 
-Add the same validation for WASM tools (loaded from `~/.ironclaw/tools/`) and MCP tools (mock a simple MCP manifest and validate the schema it produces).
+Add the same validation for WASM tools (loaded from `~/.betterclaw/tools/`) and MCP tools (mock a simple MCP manifest and validate the schema it produces).
 
 **Files:** New `src/tools/schema_validator.rs` (validation logic), test in `tests/tool_schema_validation.rs`
 
@@ -124,7 +124,7 @@ docker-build:
   steps:
     - uses: actions/checkout@v6
     - name: Build Docker image
-      run: docker build -t ironclaw-test:ci .
+      run: docker build -t betterclaw-test:ci .
 ```
 
 **Files:** Modify `.github/workflows/test.yml`
@@ -318,7 +318,7 @@ async fn context_length_exceeded_triggers_compaction() {
 
 ## Tier 3: Computer-Use E2E Testing
 
-**Cost:** High (requires Anthropic computer use API, headless browser, ironclaw running)
+**Cost:** High (requires Anthropic computer use API, headless browser, betterclaw running)
 **Timeline:** ~2 weeks for infrastructure, then incremental scenario additions
 **Bugs this would have caught:** #307, #306, #263, all manual web-ui-test checklist items
 
@@ -326,7 +326,7 @@ async fn context_length_exceeded_triggers_compaction() {
 
 ```
 +------------------+     +-----------------+     +------------------+
-|  Test Runner     |     |  Headless       |     |  IronClaw        |
+|  Test Runner     |     |  Headless       |     |  BetterClaw        |
 |  (Python/TS)     |---->|  Chromium        |---->|  (cargo run)     |
 |                  |     |  (Playwright)   |     |  GATEWAY=true    |
 |  Orchestrates    |     |                 |     |  port 3001       |
@@ -345,7 +345,7 @@ async fn context_length_exceeded_triggers_compaction() {
 
 **Components:**
 
-1. **Test runner** -- Python or TypeScript script that orchestrates the flow. Starts ironclaw, waits for readiness, launches Playwright browser, runs scenarios.
+1. **Test runner** -- Python or TypeScript script that orchestrates the flow. Starts betterclaw, waits for readiness, launches Playwright browser, runs scenarios.
 
 2. **Playwright browser** -- Headless Chromium. Takes screenshots, executes click/type actions as directed by the computer use agent. Also provides DOM access for structural assertions (element exists, text content matches, no error toasts).
 
@@ -362,7 +362,7 @@ async fn context_length_exceeded_triggers_compaction() {
 ```
 tests/
   e2e/
-    conftest.py             # pytest fixtures: start ironclaw, browser
+    conftest.py             # pytest fixtures: start betterclaw, browser
     computer_use.py         # Claude computer use client wrapper
     assertions.py           # DOM + visual assertion helpers
     scenarios/
@@ -374,15 +374,15 @@ tests/
       test_html_injection.py
       test_tool_approval.py
     screenshots/            # Reference screenshots (gitignored)
-    Dockerfile.test         # Container for CI: ironclaw + chromium
+    Dockerfile.test         # Container for CI: betterclaw + chromium
 ```
 
-**Fixture: start ironclaw**
+**Fixture: start betterclaw**
 
 ```python
 @pytest.fixture(scope="session")
-async def ironclaw_server():
-    """Start ironclaw with gateway enabled, return base URL."""
+async def betterclaw_server():
+    """Start betterclaw with gateway enabled, return base URL."""
     env = {
         "CLI_ENABLED": "false",
         "GATEWAY_ENABLED": "true",
@@ -409,12 +409,12 @@ async def ironclaw_server():
 
 ```python
 @pytest.fixture
-async def browser_agent(ironclaw_server):
+async def browser_agent(betterclaw_server):
     """Playwright browser + Claude computer use agent."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page(viewport={"width": 1280, "height": 720})
-        await page.goto(f"{ironclaw_server}/?token=test-token-e2e")
+        await page.goto(f"{betterclaw_server}/?token=test-token-e2e")
         agent = ComputerUseAgent(page)
         yield agent
         await browser.close()
@@ -533,7 +533,7 @@ async def test_chat_sends_and_receives(browser_agent):
 #### Scenario 3: SSE Reconnect
 
 ```python
-async def test_sse_reconnect_preserves_history(browser_agent, ironclaw_server):
+async def test_sse_reconnect_preserves_history(browser_agent, betterclaw_server):
     """Bug: #307 (no re-sync on SSE reconnect after server restart)"""
     page = browser_agent.page
 
@@ -546,7 +546,7 @@ async def test_sse_reconnect_preserves_history(browser_agent, ironclaw_server):
 
     # Step 2: Kill and restart the server
     # (test fixture provides a restart helper)
-    await restart_ironclaw(ironclaw_server)
+    await restart_betterclaw(betterclaw_server)
 
     # Step 3: Wait for reconnect
     await page.wait_for_selector(".connection-status.connected", timeout=30000)
@@ -623,20 +623,20 @@ async def test_tool_approval_overlay(browser_agent):
 #### Scenario 7: Onboarding Wizard (Full Flow)
 
 ```python
-async def test_onboarding_wizard_completes(tmp_ironclaw_home):
+async def test_onboarding_wizard_completes(tmp_betterclaw_home):
     """Bugs: #187, #174, #129, #185 (wizard persistence and re-trigger)"""
-    # Start ironclaw with a fresh home directory (no prior config)
+    # Start betterclaw with a fresh home directory (no prior config)
     # The wizard runs in TUI mode, so we need a PTY or use the web wizard
     # if/when one exists. For now, test the CLI wizard via expect-style automation.
 
     proc = pexpect.spawn(
         "cargo run",
-        env={"IRONCLAW_HOME": str(tmp_ironclaw_home), **base_env},
+        env={"BETTERCLAW_HOME": str(tmp_betterclaw_home), **base_env},
         timeout=60,
     )
 
     # Step through wizard
-    proc.expect("Welcome to IronClaw")
+    proc.expect("Welcome to BetterClaw")
     proc.expect("LLM Backend")
     proc.sendline("1")  # Select first option
     # ... continue through all 7 steps ...
@@ -646,12 +646,12 @@ async def test_onboarding_wizard_completes(tmp_ironclaw_home):
     # Restart and verify wizard does NOT re-trigger
     proc2 = pexpect.spawn(
         "cargo run",
-        env={"IRONCLAW_HOME": str(tmp_ironclaw_home), **base_env},
+        env={"BETTERCLAW_HOME": str(tmp_betterclaw_home), **base_env},
         timeout=30,
     )
-    proc2.expect("Agent ironclaw ready")  # Should skip wizard
-    # Must NOT see "Welcome to IronClaw" again
-    assert not proc2.match_any(["Welcome to IronClaw"], timeout=5)
+    proc2.expect("Agent betterclaw ready")  # Should skip wizard
+    # Must NOT see "Welcome to BetterClaw" again
+    assert not proc2.match_any(["Welcome to BetterClaw"], timeout=5)
     proc2.close()
 ```
 
@@ -687,7 +687,7 @@ jobs:
         image: ollama/ollama:latest
     steps:
       - uses: actions/checkout@v6
-      - name: Build ironclaw
+      - name: Build betterclaw
         run: cargo build --features libsql
       - name: Install Playwright
         run: pip install playwright pytest-playwright && playwright install chromium

@@ -223,7 +223,7 @@ fn score_entry(entry: &RegistryEntry, tokens: &[String]) -> u32 {
     score
 }
 
-/// Well-known extensions that ship with ironclaw.
+/// Well-known extensions that ship with betterclaw.
 fn builtin_entries() -> Vec<RegistryEntry> {
     vec![
         // -- MCP Servers --

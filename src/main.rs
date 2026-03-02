@@ -1,11 +1,11 @@
-//! IronClaw - Main entry point.
+//! BetterClaw - Main entry point.
 
 use std::sync::Arc;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use ironclaw::{
+use betterclaw::{
     agent::{Agent, AgentDeps},
     app::{AppBuilder, AppBuilderFlags},
     channels::{
@@ -31,7 +31,7 @@ use ironclaw::{
     secrets::SecretsStore,
 };
 
-use ironclaw::setup::{SetupConfig, SetupWizard};
+use betterclaw::setup::{SetupConfig, SetupWizard};
 
 /// Initialize tracing for simple CLI commands (warn level, no fancy layers).
 fn init_cli_tracing() {
@@ -46,7 +46,7 @@ fn init_cli_tracing() {
 /// starts so that `std::env::set_var` is safe (no worker threads yet).
 fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
-    ironclaw::bootstrap::load_ironclaw_env();
+    betterclaw::bootstrap::load_betterclaw_env();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -65,11 +65,11 @@ async fn async_main() -> anyhow::Result<()> {
         }
         Some(Command::Config(config_cmd)) => {
             init_cli_tracing();
-            return ironclaw::cli::run_config_command(config_cmd.clone()).await;
+            return betterclaw::cli::run_config_command(config_cmd.clone()).await;
         }
         Some(Command::Registry(registry_cmd)) => {
             init_cli_tracing();
-            return ironclaw::cli::run_registry_command(registry_cmd.clone()).await;
+            return betterclaw::cli::run_registry_command(registry_cmd.clone()).await;
         }
         Some(Command::Mcp(mcp_cmd)) => {
             init_cli_tracing();
@@ -89,7 +89,7 @@ async fn async_main() -> anyhow::Result<()> {
         }
         Some(Command::Doctor) => {
             init_cli_tracing();
-            return ironclaw::cli::run_doctor_command().await;
+            return betterclaw::cli::run_doctor_command().await;
         }
         Some(Command::Status) => {
             init_cli_tracing();
@@ -149,12 +149,12 @@ async fn async_main() -> anyhow::Result<()> {
     let toml_path = cli.config.as_deref();
     let config = match Config::from_env_with_toml(toml_path).await {
         Ok(c) => c,
-        Err(ironclaw::error::ConfigError::MissingRequired { key, hint }) => {
+        Err(betterclaw::error::ConfigError::MissingRequired { key, hint }) => {
             eprintln!("Configuration error: Missing required setting '{}'", key);
             eprintln!("  {}", hint);
             eprintln!();
             eprintln!(
-                "Run 'ironclaw onboard' to configure, or set the required environment variables."
+                "Run 'betterclaw onboard' to configure, or set the required environment variables."
             );
             std::process::exit(1);
         }
@@ -167,9 +167,9 @@ async fn async_main() -> anyhow::Result<()> {
     // Initialize tracing with a reloadable EnvFilter so the gateway can switch
     // log levels at runtime without restarting.
     let log_level_handle =
-        ironclaw::channels::web::log_layer::init_tracing(Arc::clone(&log_broadcaster));
+        betterclaw::channels::web::log_layer::init_tracing(Arc::clone(&log_broadcaster));
 
-    tracing::info!("Starting IronClaw...");
+    tracing::info!("Starting BetterClaw...");
     tracing::info!("Loaded configuration for agent: {}", config.agent.name);
     tracing::info!("LLM backend: {}", config.llm.backend);
 
@@ -195,32 +195,32 @@ async fn async_main() -> anyhow::Result<()> {
 
     // Proactive Docker detection
     let docker_status = if config.sandbox.enabled {
-        let detection = ironclaw::sandbox::check_docker().await;
+        let detection = betterclaw::sandbox::check_docker().await;
         match detection.status {
-            ironclaw::sandbox::DockerStatus::Available => {
+            betterclaw::sandbox::DockerStatus::Available => {
                 tracing::info!("Docker is available");
             }
-            ironclaw::sandbox::DockerStatus::NotInstalled => {
+            betterclaw::sandbox::DockerStatus::NotInstalled => {
                 tracing::warn!(
                     "Docker is not installed -- sandbox disabled for this session. {}",
                     detection.platform.install_hint()
                 );
             }
-            ironclaw::sandbox::DockerStatus::NotRunning => {
+            betterclaw::sandbox::DockerStatus::NotRunning => {
                 tracing::warn!(
                     "Docker is installed but not running -- sandbox disabled for this session. {}",
                     detection.platform.start_hint()
                 );
             }
-            ironclaw::sandbox::DockerStatus::Disabled => {}
+            betterclaw::sandbox::DockerStatus::Disabled => {}
         }
         detection.status
     } else {
-        ironclaw::sandbox::DockerStatus::Disabled
+        betterclaw::sandbox::DockerStatus::Disabled
     };
 
     let job_event_tx: Option<
-        tokio::sync::broadcast::Sender<(uuid::Uuid, ironclaw::channels::web::types::SseEvent)>,
+        tokio::sync::broadcast::Sender<(uuid::Uuid, betterclaw::channels::web::types::SseEvent)>,
     > = if config.sandbox.enabled && docker_status.is_ok() {
         let (tx, _) = tokio::sync::broadcast::channel(256);
         Some(tx)
@@ -229,7 +229,7 @@ async fn async_main() -> anyhow::Result<()> {
     };
     let prompt_queue = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
         uuid::Uuid,
-        std::collections::VecDeque<ironclaw::orchestrator::api::PendingPrompt>,
+        std::collections::VecDeque<betterclaw::orchestrator::api::PendingPrompt>,
     >::new()));
 
     let container_job_manager: Option<Arc<ContainerJobManager>> =
@@ -241,7 +241,7 @@ async fn async_main() -> anyhow::Result<()> {
                 cpu_shares: config.sandbox.cpu_shares,
                 orchestrator_port: 50051,
                 claude_code_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
-                claude_code_oauth_token: ironclaw::config::ClaudeCodeConfig::extract_oauth_token(),
+                claude_code_oauth_token: betterclaw::config::ClaudeCodeConfig::extract_oauth_token(),
                 claude_code_model: config.claude_code.model.clone(),
                 claude_code_max_turns: config.claude_code.max_turns,
                 claude_code_memory_limit_mb: config.claude_code.memory_limit_mb,
@@ -447,12 +447,12 @@ async fn async_main() -> anyhow::Result<()> {
 
     // Create session manager (shared between agent and web gateway)
     let session_manager =
-        Arc::new(ironclaw::agent::SessionManager::new().with_hooks(components.hooks.clone()));
+        Arc::new(betterclaw::agent::SessionManager::new().with_hooks(components.hooks.clone()));
 
     // Lazy scheduler slot — filled after Agent::new creates the Scheduler.
     // Allows CreateJobTool to dispatch local jobs via the Scheduler even though
     // the Scheduler is created after tools are registered (chicken-and-egg).
-    let scheduler_slot: ironclaw::tools::builtin::SchedulerSlot =
+    let scheduler_slot: betterclaw::tools::builtin::SchedulerSlot =
         Arc::new(tokio::sync::RwLock::new(None));
 
     // Register job tools (sandbox deps auto-injected when container_job_manager is available)
@@ -475,9 +475,9 @@ async fn async_main() -> anyhow::Result<()> {
 
     let mut gateway_url: Option<String> = None;
     let mut sse_sender: Option<
-        tokio::sync::broadcast::Sender<ironclaw::channels::web::types::SseEvent>,
+        tokio::sync::broadcast::Sender<betterclaw::channels::web::types::SseEvent>,
     > = None;
-    let mut gateway_state: Option<std::sync::Arc<ironclaw::channels::web::server::GatewayState>> =
+    let mut gateway_state: Option<std::sync::Arc<betterclaw::channels::web::server::GatewayState>> =
         None;
     if let Some(ref gw_config) = config.channels.gateway {
         let mut gw =
@@ -551,7 +551,7 @@ async fn async_main() -> anyhow::Result<()> {
         .map(|c| c.model_name().to_string());
 
     if config.channels.cli.enabled && cli.message.is_none() {
-        let boot_info = ironclaw::boot_screen::BootInfo {
+        let boot_info = betterclaw::boot_screen::BootInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             agent_name: config.agent.name.clone(),
             llm_backend: config.llm.backend.to_string(),
@@ -585,7 +585,7 @@ async fn async_main() -> anyhow::Result<()> {
                 .or_else(|| config.tunnel.public_url.clone()),
             tunnel_provider: active_tunnel.as_ref().map(|t| t.name().to_string()),
         };
-        ironclaw::boot_screen::print_boot_screen(&boot_info);
+        betterclaw::boot_screen::print_boot_screen(&boot_info);
     }
 
     // ── Run the agent ──────────────────────────────────────────────────
@@ -699,7 +699,7 @@ async fn async_main() -> anyhow::Result<()> {
             .restart_requested
             .load(std::sync::atomic::Ordering::Relaxed)
     {
-        eprintln!("Restarting IronClaw (exit code 75)...");
+        eprintln!("Restarting BetterClaw (exit code 75)...");
         std::process::exit(75);
     }
 
@@ -712,13 +712,13 @@ async fn async_main() -> anyhow::Result<()> {
 fn init_worker_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("ironclaw=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("betterclaw=info")),
         )
         .init();
 }
 
 /// Run the Memory CLI subcommand.
-async fn run_memory_command(mem_cmd: &ironclaw::cli::MemoryCommand) -> anyhow::Result<()> {
+async fn run_memory_command(mem_cmd: &betterclaw::cli::MemoryCommand) -> anyhow::Result<()> {
     let config = Config::from_env()
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -726,7 +726,7 @@ async fn run_memory_command(mem_cmd: &ironclaw::cli::MemoryCommand) -> anyhow::R
     let embeddings = config.embeddings.create_provider();
 
     // Warn if libSQL backend is used with non-1536 embedding dimension.
-    if config.database.backend == ironclaw::config::DatabaseBackend::LibSql
+    if config.database.backend == betterclaw::config::DatabaseBackend::LibSql
         && config.embeddings.enabled
         && config.embeddings.dimension != 1536
     {
@@ -740,11 +740,11 @@ async fn run_memory_command(mem_cmd: &ironclaw::cli::MemoryCommand) -> anyhow::R
         );
     }
 
-    let db: Arc<dyn ironclaw::db::Database> = ironclaw::db::connect_from_config(&config.database)
+    let db: Arc<dyn betterclaw::db::Database> = betterclaw::db::connect_from_config(&config.database)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    ironclaw::cli::run_memory_command_with_db(mem_cmd.clone(), db, embeddings).await
+    betterclaw::cli::run_memory_command_with_db(mem_cmd.clone(), db, embeddings).await
 }
 
 /// Run the Worker subcommand (inside Docker containers).
@@ -759,14 +759,14 @@ async fn run_worker(
         orchestrator_url
     );
 
-    let config = ironclaw::worker::runtime::WorkerConfig {
+    let config = betterclaw::worker::runtime::WorkerConfig {
         job_id,
         orchestrator_url: orchestrator_url.to_string(),
         max_iterations,
         timeout: std::time::Duration::from_secs(600),
     };
 
-    let runtime = ironclaw::worker::WorkerRuntime::new(config)
+    let runtime = betterclaw::worker::WorkerRuntime::new(config)
         .map_err(|e| anyhow::anyhow!("Worker init failed: {}", e))?;
 
     runtime
@@ -789,16 +789,16 @@ async fn run_claude_bridge(
         model
     );
 
-    let config = ironclaw::worker::claude_bridge::ClaudeBridgeConfig {
+    let config = betterclaw::worker::claude_bridge::ClaudeBridgeConfig {
         job_id,
         orchestrator_url: orchestrator_url.to_string(),
         max_turns,
         model: model.to_string(),
         timeout: std::time::Duration::from_secs(1800),
-        allowed_tools: ironclaw::config::ClaudeCodeConfig::from_env().allowed_tools,
+        allowed_tools: betterclaw::config::ClaudeCodeConfig::from_env().allowed_tools,
     };
 
-    let runtime = ironclaw::worker::ClaudeBridgeRuntime::new(config)
+    let runtime = betterclaw::worker::ClaudeBridgeRuntime::new(config)
         .map_err(|e| anyhow::anyhow!("Claude bridge init failed: {}", e))?;
 
     runtime
@@ -809,10 +809,10 @@ async fn run_claude_bridge(
 
 /// Start managed tunnel if configured and no static URL is already set.
 async fn start_tunnel(
-    mut config: ironclaw::config::Config,
+    mut config: betterclaw::config::Config,
 ) -> (
-    ironclaw::config::Config,
-    Option<Box<dyn ironclaw::tunnel::Tunnel>>,
+    betterclaw::config::Config,
+    Option<Box<dyn betterclaw::tunnel::Tunnel>>,
 ) {
     if config.tunnel.public_url.is_some() {
         tracing::info!(
@@ -839,7 +839,7 @@ async fn start_tunnel(
         .map(|g| g.host.as_str())
         .unwrap_or("127.0.0.1");
 
-    match ironclaw::tunnel::create_tunnel(provider_config) {
+    match betterclaw::tunnel::create_tunnel(provider_config) {
         Ok(Some(tunnel)) => {
             tracing::info!(
                 "Starting {} tunnel on {}:{}...",
@@ -869,7 +869,7 @@ async fn start_tunnel(
 
 /// Result of WASM channel setup.
 struct WasmChannelSetup {
-    channels: Vec<(String, Box<dyn ironclaw::channels::Channel>)>,
+    channels: Vec<(String, Box<dyn betterclaw::channels::Channel>)>,
     channel_names: Vec<String>,
     webhook_routes: Option<axum::Router>,
     /// Runtime objects needed for hot-activation via ExtensionManager.
@@ -880,10 +880,10 @@ struct WasmChannelSetup {
 
 /// Load WASM channels and register their webhook routes.
 async fn setup_wasm_channels(
-    config: &ironclaw::config::Config,
+    config: &betterclaw::config::Config,
     secrets_store: &Option<Arc<dyn SecretsStore + Send + Sync>>,
-    extension_manager: Option<&Arc<ironclaw::extensions::ExtensionManager>>,
-    database: Option<&Arc<dyn ironclaw::db::Database>>,
+    extension_manager: Option<&Arc<betterclaw::extensions::ExtensionManager>>,
+    database: Option<&Arc<dyn betterclaw::db::Database>>,
 ) -> Option<WasmChannelSetup> {
     let runtime = match WasmChannelRuntime::new(WasmChannelRuntimeConfig::default()) {
         Ok(r) => Arc::new(r),
@@ -894,8 +894,8 @@ async fn setup_wasm_channels(
     };
 
     let pairing_store = Arc::new(PairingStore::new());
-    let settings_store: Option<Arc<dyn ironclaw::db::SettingsStore>> =
-        database.map(|db| Arc::clone(db) as Arc<dyn ironclaw::db::SettingsStore>);
+    let settings_store: Option<Arc<dyn betterclaw::db::SettingsStore>> =
+        database.map(|db| Arc::clone(db) as Arc<dyn betterclaw::db::SettingsStore>);
     let loader = WasmChannelLoader::new(
         Arc::clone(&runtime),
         Arc::clone(&pairing_store),
@@ -914,7 +914,7 @@ async fn setup_wasm_channels(
     };
 
     let wasm_router = Arc::new(WasmChannelRouter::new());
-    let mut channels: Vec<(String, Box<dyn ironclaw::channels::Channel>)> = Vec::new();
+    let mut channels: Vec<(String, Box<dyn betterclaw::channels::Channel>)> = Vec::new();
     let mut channel_names: Vec<String> = Vec::new();
 
     for loaded in results.loaded {
@@ -1066,7 +1066,7 @@ async fn setup_wasm_channels(
 /// Check if onboarding is needed and return the reason.
 fn check_onboard_needed() -> Option<&'static str> {
     let has_db = std::env::var("LIBSQL_PATH").is_ok()
-        || ironclaw::config::default_libsql_path().exists();
+        || betterclaw::config::default_libsql_path().exists();
 
     if !has_db {
         return Some("Database not configured");
@@ -1088,7 +1088,7 @@ fn check_onboard_needed() -> Option<&'static str> {
 /// Looks for secrets matching the pattern `{channel_name}_*` and injects them
 /// as credential placeholders (e.g., `telegram_bot_token` -> `{TELEGRAM_BOT_TOKEN}`).
 async fn inject_channel_credentials(
-    channel: &Arc<ironclaw::channels::wasm::WasmChannel>,
+    channel: &Arc<betterclaw::channels::wasm::WasmChannel>,
     secrets: &dyn SecretsStore,
     channel_name: &str,
 ) -> anyhow::Result<usize> {

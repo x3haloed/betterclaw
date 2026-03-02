@@ -5,14 +5,14 @@
 
 use std::path::PathBuf;
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::settings::Settings;
 
 /// Run the status command, printing system health info.
 pub async fn run_status_command() -> anyhow::Result<()> {
     let settings = Settings::default();
 
-    println!("IronClaw Status");
+    println!("BetterClaw Status");
     println!("===============\n");
 
     // Version
@@ -137,7 +137,7 @@ pub async fn run_status_command() -> anyhow::Result<()> {
     // Config path
     println!(
         "\n  Config:      {}",
-        crate::bootstrap::ironclaw_env_path().display()
+        crate::bootstrap::betterclaw_env_path().display()
     );
 
     Ok(())
@@ -155,9 +155,9 @@ fn count_wasm_files(dir: &std::path::Path) -> usize {
 }
 
 fn default_tools_dir() -> PathBuf {
-    ironclaw_base_dir().join("tools")
+    betterclaw_base_dir().join("tools")
 }
 
 fn default_channels_dir() -> PathBuf {
-    ironclaw_base_dir().join("channels")
+    betterclaw_base_dir().join("channels")
 }

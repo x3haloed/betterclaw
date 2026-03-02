@@ -15,7 +15,7 @@
 //! ┌──────────────────────────────────────────────┐
 //! │ Docker Container                              │
 //! │                                               │
-//! │  ironclaw claude-bridge --job-id <uuid>       │
+//! │  betterclaw claude-bridge --job-id <uuid>       │
 //! │    └─ writes /workspace/.claude/settings.json │
 //! │    └─ claude -p "task" --output-format        │
 //! │       stream-json                             │
@@ -136,7 +136,7 @@ pub struct ClaudeBridgeRuntime {
 impl ClaudeBridgeRuntime {
     /// Create a new bridge runtime.
     ///
-    /// Reads `IRONCLAW_WORKER_TOKEN` from the environment for auth.
+    /// Reads `BETTERCLAW_WORKER_TOKEN` from the environment for auth.
     pub fn new(config: ClaudeBridgeConfig) -> Result<Self, WorkerError> {
         let client = Arc::new(WorkerHttpClient::from_env(
             config.orchestrator_url.clone(),

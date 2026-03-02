@@ -1,8 +1,8 @@
-# IronClaw Development Guide
+# BetterClaw Development Guide
 
 ## Project Overview
 
-**IronClaw** is a secure personal AI assistant that protects your data and expands its capabilities on the fly.
+**BetterClaw** is a secure personal AI assistant that protects your data and expands its capabilities on the fly.
 
 ### Core Philosophy
 - **User-first security** - Your data stays yours, encrypted and local
@@ -42,7 +42,7 @@ cargo test
 cargo test test_name
 
 # Run with logging
-RUST_LOG=ironclaw=debug cargo run
+RUST_LOG=betterclaw=debug cargo run
 ```
 
 ## Project Structure
@@ -335,8 +335,8 @@ Environment variables (see `.env.example`):
 ```bash
 # Database backend (default: postgres)
 DATABASE_BACKEND=postgres               # or "libsql" / "turso"
-DATABASE_URL=postgres://user:pass@localhost/ironclaw
-LIBSQL_PATH=~/.ironclaw/ironclaw.db    # libSQL local path (default)
+DATABASE_URL=postgres://user:pass@localhost/betterclaw
+LIBSQL_PATH=~/.betterclaw/betterclaw.db    # libSQL local path (default)
 # LIBSQL_URL=libsql://xxx.turso.io    # Turso cloud (optional)
 # LIBSQL_AUTH_TOKEN=xxx                # Required with LIBSQL_URL
 
@@ -350,7 +350,7 @@ NEARAI_BASE_URL=https://private.near.ai
 NEARAI_MODEL=claude-3-5-sonnet-20241022
 
 # Agent settings
-AGENT_NAME=ironclaw
+AGENT_NAME=betterclaw
 MAX_PARALLEL_JOBS=5
 
 # Embeddings (for semantic memory search)
@@ -375,7 +375,7 @@ GATEWAY_USER_ID=default
 
 # Docker sandbox
 SANDBOX_ENABLED=true
-SANDBOX_IMAGE=ironclaw-worker:latest
+SANDBOX_IMAGE=betterclaw-worker:latest
 SANDBOX_MEMORY_LIMIT_MB=512
 SANDBOX_TIMEOUT_SECS=1800
 SANDBOX_CPU_LIMIT=1.0                  # CPU cores per container
@@ -407,7 +407,7 @@ TINFOIL_MODEL=kimi-k2-5               # Default model
 
 ### LLM Providers
 
-IronClaw supports multiple LLM backends via the `LLM_BACKEND` env var: `nearai` (default), `openai`, `anthropic`, `ollama`, `openai_compatible`, and `tinfoil`.
+BetterClaw supports multiple LLM backends via the `LLM_BACKEND` env var: `nearai` (default), `openai`, `anthropic`, `ollama`, `openai_compatible`, and `tinfoil`.
 
 **NEAR AI** -- Uses the Chat Completions API with dual auth support. Session token auth (default): authenticates with session tokens (`sess_xxx`) obtained via browser OAuth (GitHub/Google), base URL defaults to `https://private.near.ai`. API key auth: set `NEARAI_API_KEY` (from `cloud.near.ai`), base URL defaults to `https://cloud-api.near.ai`. Both modes use the same Chat Completions endpoint. Tool messages are flattened to plain text for compatibility. Set `NEARAI_SESSION_TOKEN` env var for hosting providers that inject tokens via environment.
 
@@ -419,7 +419,7 @@ IronClaw supports multiple LLM backends via the `LLM_BACKEND` env var: `nearai` 
 
 ## Database
 
-IronClaw supports two database backends, selected at compile time via Cargo feature flags and at runtime via the `DATABASE_BACKEND` environment variable.
+BetterClaw supports two database backends, selected at compile time via Cargo feature flags and at runtime via the `DATABASE_BACKEND` environment variable.
 
 **IMPORTANT: All new features that touch persistence MUST support both backends.** Implement the operation as a method on the `Database` trait in `src/db/mod.rs`, then add the implementation in both `src/db/postgres.rs` (delegate to Store/Repository) and `src/db/libsql_backend.rs` (native SQL).
 
@@ -523,7 +523,7 @@ Skills are SKILL.md files that extend the agent's prompt with domain-specific in
 
 | Trust Level | Source | Tool Access |
 |-------------|--------|-------------|
-| **Trusted** | User-placed in `~/.ironclaw/skills/` or workspace `skills/` | All tools available to the agent |
+| **Trusted** | User-placed in `~/.betterclaw/skills/` or workspace `skills/` | All tools available to the agent |
 | **Installed** | Downloaded from ClawHub registry | Read-only tools only (no shell, file write, HTTP) |
 
 ### SKILL.md Format
@@ -568,9 +568,9 @@ Four built-in tools for managing skills at runtime:
 
 ### Skill Directories
 
-- `~/.ironclaw/skills/` -- User's global skills (trusted)
+- `~/.betterclaw/skills/` -- User's global skills (trusted)
 - `<workspace>/skills/` -- Per-workspace skills (trusted)
-- `~/.ironclaw/installed_skills/` -- Registry-installed skills (installed trust)
+- `~/.betterclaw/installed_skills/` -- Registry-installed skills (installed trust)
 
 ### Testing Skills
 
@@ -632,7 +632,7 @@ Key test patterns:
 
 **Keep tool-specific logic out of the main agent codebase.** The main agent provides generic infrastructure; tools are self-contained units that declare their requirements through `capabilities.json` files (API endpoints, credentials, rate limits, auth setup). Service-specific auth flows, CLI commands, and configuration do not belong in the main agent.
 
-Tools can be built as **WASM** (sandboxed, credential-injected, single binary) or **MCP servers** (ecosystem of pre-built servers, any language, but no sandbox). Both are first-class via `ironclaw tool install`. Auth is declared in capabilities files with OAuth and manual token entry support.
+Tools can be built as **WASM** (sandboxed, credential-injected, single binary) or **MCP servers** (ecosystem of pre-built servers, any language, but no sandbox). Both are first-class via `betterclaw tool install`. Auth is declared in capabilities files with OAuth and manual token entry support.
 
 See `src/tools/README.md` for full tool architecture, adding new tools (built-in Rust and WASM), auth JSON examples, and WASM vs MCP decision guide.
 
@@ -647,13 +647,13 @@ See `src/tools/README.md` for full tool architecture, adding new tools (built-in
 
 ```bash
 # Verbose logging
-RUST_LOG=ironclaw=trace cargo run
+RUST_LOG=betterclaw=trace cargo run
 
 # Just the agent module
-RUST_LOG=ironclaw::agent=debug cargo run
+RUST_LOG=betterclaw::agent=debug cargo run
 
 # With HTTP request logging
-RUST_LOG=ironclaw=debug,tower_http=debug cargo run
+RUST_LOG=betterclaw=debug,tower_http=debug cargo run
 ```
 
 ## Module Specifications

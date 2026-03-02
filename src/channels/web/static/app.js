@@ -1,4 +1,4 @@
-// IronClaw Web Gateway - Client
+// BetterClaw Web Gateway - Client
 
 let token = '';
 let eventSource = null;
@@ -58,7 +58,7 @@ function authenticate() {
   // Test the token against the health-ish endpoint (chat/threads requires auth)
   apiFetch('/api/chat/threads')
     .then(() => {
-      sessionStorage.setItem('ironclaw_token', token);
+      sessionStorage.setItem('betterclaw_token', token);
       document.getElementById('auth-screen').style.display = 'none';
       document.getElementById('app').style.display = 'flex';
       // Strip token and log_level from URL so they're not visible in the address bar
@@ -82,7 +82,7 @@ function authenticate() {
       }
     })
     .catch(() => {
-      sessionStorage.removeItem('ironclaw_token');
+      sessionStorage.removeItem('betterclaw_token');
       document.getElementById('auth-screen').style.display = '';
       document.getElementById('app').style.display = 'none';
       document.getElementById('auth-error').textContent = 'Invalid token';
@@ -102,7 +102,7 @@ document.getElementById('token-input').addEventListener('keydown', (e) => {
     authenticate();
     return;
   }
-  const saved = sessionStorage.getItem('ironclaw_token');
+  const saved = sessionStorage.getItem('betterclaw_token');
   if (saved) {
     document.getElementById('token-input').value = saved;
     // Hide auth screen immediately to prevent flash, authenticate() will
@@ -2261,7 +2261,7 @@ function stopPairingPoll() {
 // --- Gateway restart ---
 
 function restartGateway() {
-  if (!confirm('Restart IronClaw gateway? Active connections will be dropped.')) return;
+  if (!confirm('Restart BetterClaw gateway? Active connections will be dropped.')) return;
 
   apiFetch('/api/gateway/restart', { method: 'POST' })
     .then(function() {
@@ -2277,7 +2277,7 @@ function showRestartOverlay() {
   overlay.className = 'restart-overlay';
   overlay.innerHTML = '<div class="restart-message">'
     + '<div class="restart-spinner"></div>'
-    + '<h2>Restarting IronClaw...</h2>'
+    + '<h2>Restarting BetterClaw...</h2>'
     + '<p>Waiting for server to come back online</p>'
     + '</div>';
   document.body.appendChild(overlay);

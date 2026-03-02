@@ -12,7 +12,7 @@
 
 ## What This Is
 
-BetterClaw is a Rust fork of IronClaw, reshaped to prioritize:
+BetterClaw is a Rust fork of BetterClaw, reshaped to prioritize:
 
 - Web gateway + control dashboard (SSE/WS, job/tool visibility)
 - Sandbox architecture (orchestrator/worker, WASM tools, capability policy)
@@ -20,7 +20,7 @@ BetterClaw is a Rust fork of IronClaw, reshaped to prioritize:
 - Discord as a first-class channel (ported using ZeroClaw as a reference implementation)
 - Durable continuity model centered on claims + isnads + projections (derived, cited, diffable)
 
-This repo is currently in “fork-and-refactor” mode: much of the implementation is still upstream IronClaw
+This repo is currently in “fork-and-refactor” mode: much of the implementation is still upstream BetterClaw
 until we finish reshaping the data plane and routing/policy surfaces.
 
 ## Project Direction (High-Level)
@@ -214,7 +214,7 @@ Wake Pack + recalled evidence + current turn
 
 ## Quick Start (libSQL dev build)
 
-BetterClaw keeps IronClaw’s CLI for now, so commands still use `ironclaw` until we rename the binary.
+BetterClaw keeps BetterClaw’s CLI for now, so commands still use `betterclaw` until we rename the binary.
 
 Build with libSQL only:
 
@@ -225,7 +225,7 @@ cargo build --no-default-features --features libsql
 Onboard:
 
 ```bash
-./target/debug/ironclaw onboard
+./target/debug/betterclaw onboard
 ```
 
 Then run the gateway (exact flags/config are still upstream; see `docs/` and `.env.example`).
@@ -241,7 +241,7 @@ Then run the gateway (exact flags/config are still upstream; see `docs/` and `.e
 
 Discord is not yet wired in this fork. The plan is:
 
-- Implement a native Rust Discord channel using IronClaw’s channel manager interfaces.
+- Implement a native Rust Discord channel using BetterClaw’s channel manager interfaces.
 - Use ZeroClaw’s Discord implementation as a reference for lifecycle and edge cases.
 
 ## Upstream Credit
@@ -249,7 +249,7 @@ Discord is not yet wired in this fork. The plan is:
 - IronClaw (upstream base): [nearai/ironclaw](https://github.com/nearai/ironclaw)
 - ZeroClaw (reference for Discord patterns): [zeroclaw-labs/zeroclaw](https://github.com/zeroclaw-labs/zeroclaw)
 
-IronClaw itself is inspired by OpenClaw; see `FEATURE_PARITY.md` for upstream tracking.
+BetterClaw itself is inspired by OpenClaw; see `FEATURE_PARITY.md` for upstream tracking.
 
 ## License
 

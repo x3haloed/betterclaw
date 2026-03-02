@@ -25,7 +25,7 @@ jobs:
             ~/.cargo/registry
           key: e2e-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
-      - name: Build ironclaw (libsql)
+      - name: Build betterclaw (libsql)
         run: cargo build --no-default-features --features libsql
 
       - uses: actions/setup-python@v5

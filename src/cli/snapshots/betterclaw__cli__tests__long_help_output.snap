@@ -2,12 +2,12 @@
 source: src/cli/mod.rs
 expression: help
 ---
-IronClaw is a secure AI assistant. Use 'ironclaw <subcommand> --help' for details.
+BetterClaw is a secure AI assistant. Use 'betterclaw <subcommand> --help' for details.
 Examples:
-  ironclaw run  # Start the agent
-  ironclaw config list  # List configs
+  betterclaw run  # Start the agent
+  betterclaw config list  # List configs
 
-Usage: ironclaw [OPTIONS] [COMMAND]
+Usage: betterclaw [OPTIONS] [COMMAND]
 
 Commands:
   run         Run the AI agent

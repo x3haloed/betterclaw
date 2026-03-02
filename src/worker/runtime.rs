@@ -62,7 +62,7 @@ pub struct WorkerRuntime {
 impl WorkerRuntime {
     /// Create a new worker runtime.
     ///
-    /// Reads `IRONCLAW_WORKER_TOKEN` from the environment for auth.
+    /// Reads `BETTERCLAW_WORKER_TOKEN` from the environment for auth.
     pub fn new(config: WorkerConfig) -> Result<Self, WorkerError> {
         let client = Arc::new(WorkerHttpClient::from_env(
             config.orchestrator_url.clone(),

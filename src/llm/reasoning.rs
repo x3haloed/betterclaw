@@ -665,7 +665,7 @@ Respond with a JSON plan in this format:
         let group_section = self.build_group_section();
 
         format!(
-            r#"You are IronClaw Agent, a secure autonomous assistant.
+            r#"You are BetterClaw Agent, a secure autonomous assistant.
 
 ## Response Format — CRITICAL
 
@@ -1611,10 +1611,10 @@ That's my plan."#;
 
     #[test]
     fn test_clean_response_thinking_tags_reasoning_properly_tagged() {
-        let input = "<thinking>The user is asking about my name.</thinking>\n\nI'm IronClaw, a secure personal AI assistant.";
+        let input = "<thinking>The user is asking about my name.</thinking>\n\nI'm BetterClaw, a secure personal AI assistant.";
         assert_eq!(
             clean_response(input),
-            "I'm IronClaw, a secure personal AI assistant."
+            "I'm BetterClaw, a secure personal AI assistant."
         );
     }
 

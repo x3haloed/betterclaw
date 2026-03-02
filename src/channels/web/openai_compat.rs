@@ -1,7 +1,7 @@
 //! OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`).
 //!
 //! This module provides a direct LLM proxy through the web gateway so any
-//! standard OpenAI client library can use IronClaw as a backend by simply
+//! standard OpenAI client library can use BetterClaw as a backend by simply
 //! changing the `base_url`.
 
 use std::sync::Arc;
@@ -713,7 +713,7 @@ async fn handle_streaming(
     let sse = Sse::new(stream).keep_alive(KeepAlive::new().text(""));
     let mut response = sse.into_response();
     response.headers_mut().insert(
-        "x-ironclaw-streaming",
+        "x-betterclaw-streaming",
         HeaderValue::from_static("simulated"),
     );
     Ok(response)
@@ -825,7 +825,7 @@ pub async fn models_handler(
                     "id": name,
                     "object": "model",
                     "created": created,
-                    "owned_by": "ironclaw"
+                    "owned_by": "betterclaw"
                 })
             })
             .collect(),
@@ -835,7 +835,7 @@ pub async fn models_handler(
                 "id": model_name,
                 "object": "model",
                 "created": created,
-                "owned_by": "ironclaw"
+                "owned_by": "betterclaw"
             })]
         }
         Err(e) => return Err(map_llm_error(e)),

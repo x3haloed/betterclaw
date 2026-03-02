@@ -1,4 +1,4 @@
-//! GitHub WASM Tool for IronClaw.
+//! GitHub WASM Tool for BetterClaw.
 //!
 //! Provides GitHub integration for reading repos, managing issues,
 //! reviewing PRs, and triggering workflows.
@@ -6,7 +6,7 @@
 //! # Authentication
 //!
 //! Store your GitHub Personal Access Token:
-//! `ironclaw secret set github_token <token>`
+//! `betterclaw secret set github_token <token>`
 //!
 //! Token needs these permissions:
 //! - repo (for private repos)
@@ -267,7 +267,7 @@ fn get_github_token() -> Result<String, String> {
         return Ok("present".to_string());
     }
 
-    Err("GitHub token not found in secret store. Set it with: ironclaw secret set github_token <token>. \
+    Err("GitHub token not found in secret store. Set it with: betterclaw secret set github_token <token>. \
          Token needs 'repo', 'workflow', and 'read:org' scopes.".into())
 }
 
@@ -279,7 +279,7 @@ fn github_request(method: &str, path: &str, body: Option<String>) -> Result<Stri
     let headers = serde_json::json!({
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "IronClaw-GitHub-Tool"
+        "User-Agent": "BetterClaw-GitHub-Tool"
     });
 
     let body_bytes = body.map(|b| b.into_bytes());

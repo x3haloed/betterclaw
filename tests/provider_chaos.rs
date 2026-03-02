@@ -15,8 +15,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 
-use ironclaw::error::LlmError;
-use ironclaw::llm::{
+use betterclaw::error::LlmError;
+use betterclaw::llm::{
     ChatMessage, CircuitBreakerConfig, CircuitBreakerProvider, CompletionRequest,
     CompletionResponse, CooldownConfig, FailoverProvider, FinishReason, LlmProvider, RetryConfig,
     RetryProvider, ToolCompletionRequest, ToolCompletionResponse,
@@ -454,7 +454,7 @@ async fn test_circuit_breaker_trips_and_recovers() {
     let state = cb.circuit_state().await;
     assert_eq!(
         state,
-        ironclaw::llm::circuit_breaker::CircuitState::Open,
+        betterclaw::llm::circuit_breaker::CircuitState::Open,
         "circuit should be open after 3 failures"
     );
 
@@ -479,7 +479,7 @@ async fn test_circuit_breaker_trips_and_recovers() {
     let _ = cb.complete(make_request()).await;
     assert_eq!(
         cb.circuit_state().await,
-        ironclaw::llm::circuit_breaker::CircuitState::Open,
+        betterclaw::llm::circuit_breaker::CircuitState::Open,
         "probe failed, should reopen"
     );
 
@@ -490,7 +490,7 @@ async fn test_circuit_breaker_trips_and_recovers() {
     let _ = cb.complete(make_request()).await;
     assert_eq!(
         cb.circuit_state().await,
-        ironclaw::llm::circuit_breaker::CircuitState::Open,
+        betterclaw::llm::circuit_breaker::CircuitState::Open,
         "still one failure left, should reopen again"
     );
 
@@ -503,7 +503,7 @@ async fn test_circuit_breaker_trips_and_recovers() {
     assert_eq!(result.unwrap().content, "recovered");
     assert_eq!(
         cb.circuit_state().await,
-        ironclaw::llm::circuit_breaker::CircuitState::Closed,
+        betterclaw::llm::circuit_breaker::CircuitState::Closed,
         "circuit should close after successful probe"
     );
 }
@@ -701,7 +701,7 @@ async fn test_retry_plus_circuit_breaker_integration() {
     assert_eq!(response.content, "stack success");
     assert_eq!(
         cb.circuit_state().await,
-        ironclaw::llm::circuit_breaker::CircuitState::Closed,
+        betterclaw::llm::circuit_breaker::CircuitState::Closed,
         "circuit should remain closed"
     );
 }
@@ -772,7 +772,7 @@ async fn test_garbage_through_full_chain() {
     );
     assert_eq!(
         cb.circuit_state().await,
-        ironclaw::llm::circuit_breaker::CircuitState::Closed,
+        betterclaw::llm::circuit_breaker::CircuitState::Closed,
         "Ok responses should not trip the breaker"
     );
 }

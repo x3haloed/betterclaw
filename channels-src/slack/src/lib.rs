@@ -1,4 +1,4 @@
-//! Slack Events API channel for IronClaw.
+//! Slack Events API channel for BetterClaw.
 //!
 //! This WASM component implements the channel interface for handling Slack
 //! webhooks and sending messages back to Slack.
@@ -488,7 +488,7 @@ fn send_pairing_reply(channel_id: &str, code: &str) -> Result<(), String> {
     let payload = serde_json::json!({
         "channel": channel_id,
         "text": format!(
-            "To pair with this bot, run: `ironclaw pairing approve slack {}`",
+            "To pair with this bot, run: `betterclaw pairing approve slack {}`",
             code
         ),
     });

@@ -1,10 +1,10 @@
-//! OS service management for running IronClaw as a daemon.
+//! OS service management for running BetterClaw as a daemon.
 //!
 //! Generates and manages platform-native service definitions:
-//! - **macOS**: launchd plist at `~/Library/LaunchAgents/com.ironclaw.daemon.plist`
-//! - **Linux**: systemd user unit at `~/.config/systemd/user/ironclaw.service`
+//! - **macOS**: launchd plist at `~/Library/LaunchAgents/com.betterclaw.daemon.plist`
+//! - **Linux**: systemd user unit at `~/.config/systemd/user/betterclaw.service`
 //!
-//! The installed service runs `ironclaw run` (the default agent mode) and is
+//! The installed service runs `betterclaw run` (the default agent mode) and is
 //! configured to restart automatically on failure.
 
 use std::path::PathBuf;
@@ -12,10 +12,10 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 
-const SERVICE_LABEL: &str = "com.ironclaw.daemon";
-const SYSTEMD_UNIT: &str = "ironclaw.service";
+const SERVICE_LABEL: &str = "com.betterclaw.daemon";
+const SYSTEMD_UNIT: &str = "betterclaw.service";
 
 // ── Public dispatch ─────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ fn install_macos() -> Result<()> {
     }
 
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let logs_dir = ironclaw_logs_dir();
+    let logs_dir = betterclaw_logs_dir();
     std::fs::create_dir_all(&logs_dir)?;
 
     let stdout = logs_dir.join("daemon.stdout.log");
@@ -96,7 +96,7 @@ fn install_macos() -> Result<()> {
 
     std::fs::write(&file, plist)?;
     println!("Installed launchd service: {}", file.display());
-    println!("  Start with: ironclaw service start");
+    println!("  Start with: betterclaw service start");
     Ok(())
 }
 
@@ -109,7 +109,7 @@ fn install_linux() -> Result<()> {
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let unit = format!(
         "[Unit]\n\
-         Description=IronClaw daemon\n\
+         Description=BetterClaw daemon\n\
          After=network.target\n\
          \n\
          [Service]\n\
@@ -127,7 +127,7 @@ fn install_linux() -> Result<()> {
     run_checked(Command::new("systemctl").args(["--user", "daemon-reload"])).ok();
     run_checked(Command::new("systemctl").args(["--user", "enable", SYSTEMD_UNIT])).ok();
     println!("Installed systemd user service: {}", file.display());
-    println!("  Start with: ironclaw service start");
+    println!("  Start with: betterclaw service start");
     Ok(())
 }
 
@@ -137,7 +137,7 @@ fn start() -> Result<()> {
     if cfg!(target_os = "macos") {
         let plist = macos_plist_path()?;
         if !plist.exists() {
-            bail!("Service not installed. Run `ironclaw service install` first.");
+            bail!("Service not installed. Run `betterclaw service install` first.");
         }
         run_checked(Command::new("launchctl").arg("load").arg("-w").arg(&plist))?;
         run_checked(Command::new("launchctl").arg("start").arg(SERVICE_LABEL))?;
@@ -252,8 +252,8 @@ fn linux_unit_path() -> Result<PathBuf> {
         .join(SYSTEMD_UNIT))
 }
 
-fn ironclaw_logs_dir() -> PathBuf {
-    ironclaw_base_dir().join("logs")
+fn betterclaw_logs_dir() -> PathBuf {
+    betterclaw_base_dir().join("logs")
 }
 
 // ── Shell helpers ───────────────────────────────────────────────
@@ -333,7 +333,7 @@ mod tests {
         let path = macos_plist_path().unwrap();
         let s = path.to_string_lossy();
         assert!(
-            s.ends_with("Library/LaunchAgents/com.ironclaw.daemon.plist"),
+            s.ends_with("Library/LaunchAgents/com.betterclaw.daemon.plist"),
             "unexpected path: {s}"
         );
     }
@@ -344,15 +344,15 @@ mod tests {
         let path = linux_unit_path().unwrap();
         let s = path.to_string_lossy();
         assert!(
-            s.ends_with(".config/systemd/user/ironclaw.service"),
+            s.ends_with(".config/systemd/user/betterclaw.service"),
             "unexpected path: {s}"
         );
     }
 
     #[test]
-    fn logs_dir_under_ironclaw() {
-        let path = ironclaw_logs_dir();
+    fn logs_dir_under_betterclaw() {
+        let path = betterclaw_logs_dir();
         let s = path.to_string_lossy();
-        assert!(s.ends_with(".ironclaw/logs"), "unexpected path: {s}");
+        assert!(s.ends_with(".betterclaw/logs"), "unexpected path: {s}");
     }
 }

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::workspace::Workspace;
 
 /// Configuration for workspace hygiene.
@@ -32,7 +32,7 @@ pub struct HygieneConfig {
     pub retention_days: u32,
     /// Minimum hours between hygiene passes.
     pub cadence_hours: u32,
-    /// Directory to store state file (default: `~/.ironclaw`).
+    /// Directory to store state file (default: `~/.betterclaw`).
     pub state_dir: PathBuf,
 }
 
@@ -42,7 +42,7 @@ impl Default for HygieneConfig {
             enabled: true,
             retention_days: 30,
             cadence_hours: 12,
-            state_dir: ironclaw_base_dir(),
+            state_dir: betterclaw_base_dir(),
         }
     }
 }

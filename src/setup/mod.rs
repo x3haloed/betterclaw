@@ -1,4 +1,4 @@
-//! Interactive setup wizard for IronClaw.
+//! Interactive setup wizard for BetterClaw.
 //!
 //! Provides a guided setup experience for:
 //! 1. Database connection
@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use ironclaw::setup::SetupWizard;
+//! use betterclaw::setup::SetupWizard;
 //!
 //! let mut wizard = SetupWizard::new();
 //! wizard.run().await?;

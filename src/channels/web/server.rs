@@ -26,7 +26,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
 use crate::agent::SessionManager;
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::channels::IncomingMessage;
 use crate::channels::web::auth::{AuthState, auth_middleware};
 use crate::channels::web::handlers::jobs::{
@@ -1287,7 +1287,7 @@ async fn extensions_install_handler(
                 crate::extensions::ExtensionSource::WasmBuildable { .. } => {
                     format!(
                         "'{}' requires building from source. \
-                         Run `ironclaw registry install {}` from the CLI.",
+                         Run `betterclaw registry install {}` from the CLI.",
                         req.name, req.name
                     )
                 }
@@ -1392,7 +1392,7 @@ async fn project_file_handler(
     serve_project_file(&project_id, &path).await
 }
 
-/// Shared logic: resolve the file inside `~/.ironclaw/projects/{project_id}/`,
+/// Shared logic: resolve the file inside `~/.betterclaw/projects/{project_id}/`,
 /// guard against path traversal, and stream the content with the right MIME type.
 async fn serve_project_file(project_id: &str, path: &str) -> axum::response::Response {
     // Reject project_id values that could escape the projects directory.
@@ -1404,7 +1404,7 @@ async fn serve_project_file(project_id: &str, path: &str) -> axum::response::Res
         return (StatusCode::BAD_REQUEST, "Invalid project ID").into_response();
     }
 
-    let base = ironclaw_base_dir().join("projects").join(project_id);
+    let base = betterclaw_base_dir().join("projects").join(project_id);
 
     let file_path = base.join(path);
 

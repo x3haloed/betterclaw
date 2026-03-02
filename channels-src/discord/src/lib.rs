@@ -1,4 +1,4 @@
-//! Discord Gateway/Webhook channel for IronClaw.
+//! Discord Gateway/Webhook channel for BetterClaw.
 //!
 //! This WASM component implements the channel interface for handling Discord
 //! interactions via webhooks and sending messages back to Discord.
@@ -577,7 +577,7 @@ fn send_pairing_reply(ctx: &PairingReplyCtx, code: &str) -> Result<(), String> {
 
     let payload = serde_json::json!({
         "content": format!(
-            "To pair with this bot, run: `ironclaw pairing approve discord {}`",
+            "To pair with this bot, run: `betterclaw pairing approve discord {}`",
             code
         ),
         "flags": 64 // Ephemeral — only visible to the sender

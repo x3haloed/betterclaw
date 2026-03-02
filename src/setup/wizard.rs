@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::channels::wasm::{
     ChannelCapabilitiesFile, available_channel_names, install_bundled_channel,
 };
@@ -72,7 +72,7 @@ pub struct SetupConfig {
     pub channels_only: bool,
 }
 
-/// Interactive setup wizard for IronClaw.
+/// Interactive setup wizard for BetterClaw.
 pub struct SetupWizard {
     config: SetupConfig,
     settings: Settings,
@@ -114,7 +114,7 @@ impl SetupWizard {
     /// settings are loaded from the database after Step 1 establishes a
     /// connection, so users don't have to re-enter everything.
     pub async fn run(&mut self) -> Result<(), SetupError> {
-        print_header("IronClaw Setup Wizard");
+        print_header("BetterClaw Setup Wizard");
 
         if self.config.channels_only {
             // Channels-only mode: reconnect to existing DB and load settings
@@ -289,7 +289,7 @@ impl SetupWizard {
         }
 
         println!();
-        print_info("IronClaw uses an embedded SQLite database (libSQL).");
+        print_info("BetterClaw uses an embedded SQLite database (libSQL).");
         print_info("No external database server required.");
         println!();
 
@@ -972,7 +972,7 @@ impl SetupWizard {
         println!();
 
         // Discover available WASM channels
-        let channels_dir = ironclaw_base_dir().join("channels");
+        let channels_dir = betterclaw_base_dir().join("channels");
 
         let mut discovered_channels = discover_wasm_channels(&channels_dir).await;
         let installed_names: HashSet<String> = discovered_channels
@@ -1180,7 +1180,7 @@ impl SetupWizard {
             Some(c) => c,
             None => {
                 print_info("Extension registry not found. Skipping tool installation.");
-                print_info("Install tools manually with: ironclaw tool install <path>");
+                print_info("Install tools manually with: betterclaw tool install <path>");
                 return Ok(());
             }
         };
@@ -1198,11 +1198,11 @@ impl SetupWizard {
 
         print_info("Available tools from the extension registry:");
         print_info("Select which tools to install. You can install more later with:");
-        print_info("  ironclaw registry install <name>");
+        print_info("  betterclaw registry install <name>");
         println!();
 
         // Check which tools are already installed
-        let tools_dir = ironclaw_base_dir().join("tools");
+        let tools_dir = betterclaw_base_dir().join("tools");
 
         let installed_tools = discover_installed_tools(&tools_dir).await;
 
@@ -1242,7 +1242,7 @@ impl SetupWizard {
         let installer = crate::registry::installer::RegistryInstaller::new(
             repo_root.to_path_buf(),
             tools_dir.clone(),
-            ironclaw_base_dir().join("channels"),
+            betterclaw_base_dir().join("channels"),
         );
 
         let mut installed_count = 0;
@@ -1269,7 +1269,7 @@ impl SetupWizard {
                     {
                         let provider = auth.provider.as_deref().unwrap_or(&tool.name);
                         // Only mention unique providers (Google tools share auth)
-                        let hint = format!("  {} - ironclaw tool auth {}", provider, tool.name);
+                        let hint = format!("  {} - betterclaw tool auth {}", provider, tool.name);
                         if !auth_needed
                             .iter()
                             .any(|h| h.starts_with(&format!("  {} -", provider)))
@@ -1302,7 +1302,7 @@ impl SetupWizard {
 
     /// Step 8: Docker Sandbox -- check Docker installation and availability.
     async fn step_docker_sandbox(&mut self) -> Result<(), SetupError> {
-        print_info("IronClaw can execute code, run builds, and use tools inside Docker");
+        print_info("BetterClaw can execute code, run builds, and use tools inside Docker");
         print_info("containers. This keeps your system safe -- commands from the LLM run");
         print_info("in an isolated sandbox with no access to your credentials, limited");
         print_info("filesystem access, and network traffic restricted to an allowlist.");
@@ -1435,7 +1435,7 @@ impl SetupWizard {
         }
     }
 
-    /// Write bootstrap environment variables to `~/.ironclaw/.env`.
+    /// Write bootstrap environment variables to `~/.betterclaw/.env`.
     ///
     /// These are the chicken-and-egg settings needed before the database is
     /// connected (DATABASE_BACKEND, LIBSQL_PATH, LLM_BACKEND, etc.).
@@ -1568,7 +1568,7 @@ impl SetupWizard {
         }
     }
 
-    /// Save settings to the database and `~/.ironclaw/.env`, then print summary.
+    /// Save settings to the database and `~/.betterclaw/.env`, then print summary.
     async fn save_and_summarize(&mut self) -> Result<(), SetupError> {
         self.settings.onboard_completed = true;
 
@@ -1684,11 +1684,11 @@ impl SetupWizard {
 
         println!();
         println!("To start the agent, run:");
-        println!("  ironclaw");
+        println!("  betterclaw");
         println!();
         println!("To change settings later:");
-        println!("  ironclaw config set <setting> <value>");
-        println!("  ironclaw onboard");
+        println!("  betterclaw config set <setting> <value>");
+        println!("  betterclaw onboard");
         println!();
 
         Ok(())
@@ -2148,7 +2148,7 @@ async fn install_selected_registry_channels(
 
         let installer = crate::registry::installer::RegistryInstaller::new(
             repo_root.clone(),
-            ironclaw_base_dir().join("tools"),
+            betterclaw_base_dir().join("tools"),
             channels_dir.to_path_buf(),
         );
 
@@ -2404,7 +2404,7 @@ mod tests {
     #[tokio::test]
     async fn test_discover_wasm_channels_nonexistent_dir() {
         let channels =
-            discover_wasm_channels(std::path::Path::new("/tmp/ironclaw_nonexistent_dir")).await;
+            discover_wasm_channels(std::path::Path::new("/tmp/betterclaw_nonexistent_dir")).await;
         assert!(channels.is_empty());
     }
 

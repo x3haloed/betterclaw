@@ -38,12 +38,12 @@ pub use tool::{ToolCommand, run_tool_command};
 use clap::{ColorChoice, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "ironclaw")]
+#[command(name = "betterclaw")]
 #[command(
     about = "Secure personal AI assistant that protects your data and expands its capabilities"
 )]
 #[command(
-    long_about = "IronClaw is a secure AI assistant. Use 'ironclaw <subcommand> --help' for details.\nExamples:\n  ironclaw run  # Start the agent\n  ironclaw config list  # List configs"
+    long_about = "BetterClaw is a secure AI assistant. Use 'betterclaw <subcommand> --help' for details.\nExamples:\n  betterclaw run  # Start the agent\n  betterclaw config list  # List configs"
 )]
 #[command(version)]
 #[command(color = ColorChoice::Auto)] // Enable auto-color for help (if the terminal supports it)
@@ -77,14 +77,14 @@ pub enum Command {
     /// Run the agent (default if no subcommand given)
     #[command(
         about = "Run the AI agent",
-        long_about = "Starts the IronClaw agent in default mode.\nExample: ironclaw run"
+        long_about = "Starts the BetterClaw agent in default mode.\nExample: betterclaw run"
     )]
     Run,
 
     /// Interactive onboarding wizard
     #[command(
         about = "Run interactive setup wizard",
-        long_about = "Guides through initial configuration.\nExamples:\n  ironclaw onboard --skip-auth  # Skip auth step\n  ironclaw onboard --channels-only  # Reconfigure channels"
+        long_about = "Guides through initial configuration.\nExamples:\n  betterclaw onboard --skip-auth  # Skip auth step\n  betterclaw onboard --channels-only  # Reconfigure channels"
     )]
     Onboard {
         /// Skip authentication (use existing session)
@@ -100,7 +100,7 @@ pub enum Command {
     #[command(
         subcommand,
         about = "Manage app configs",
-        long_about = "Commands for listing, getting, and setting configurations.\nExample: ironclaw config list"
+        long_about = "Commands for listing, getting, and setting configurations.\nExample: betterclaw config list"
     )]
     Config(ConfigCommand),
 
@@ -108,7 +108,7 @@ pub enum Command {
     #[command(
         subcommand,
         about = "Manage WASM tools",
-        long_about = "Install, list, or remove WASM-based tools.\nExample: ironclaw tool install mytool.wasm"
+        long_about = "Install, list, or remove WASM-based tools.\nExample: betterclaw tool install mytool.wasm"
     )]
     Tool(ToolCommand),
 
@@ -116,7 +116,7 @@ pub enum Command {
     #[command(
         subcommand,
         about = "Browse/install extensions",
-        long_about = "Interact with extension registry.\nExample: ironclaw registry list"
+        long_about = "Interact with extension registry.\nExample: betterclaw registry list"
     )]
     Registry(RegistryCommand),
 
@@ -124,7 +124,7 @@ pub enum Command {
     #[command(
         subcommand,
         about = "Manage MCP servers",
-        long_about = "Add, auth, list, or test MCP servers.\nExample: ironclaw mcp add notion https://mcp.notion.com"
+        long_about = "Add, auth, list, or test MCP servers.\nExample: betterclaw mcp add notion https://mcp.notion.com"
     )]
     Mcp(McpCommand),
 
@@ -132,7 +132,7 @@ pub enum Command {
     #[command(
         subcommand,
         about = "Manage workspace memory",
-        long_about = "Search, read, or write to memory.\nExample: ironclaw memory search 'query'"
+        long_about = "Search, read, or write to memory.\nExample: betterclaw memory search 'query'"
     )]
     Memory(MemoryCommand),
 
@@ -140,7 +140,7 @@ pub enum Command {
     #[command(
         subcommand,
         about = "Manage DM pairing",
-        long_about = "Approve or manage pairing requests.\nExamples:\n  ironclaw pairing list telegram\n  ironclaw pairing approve telegram ABC12345"
+        long_about = "Approve or manage pairing requests.\nExamples:\n  betterclaw pairing list telegram\n  betterclaw pairing approve telegram ABC12345"
     )]
     Pairing(PairingCommand),
 
@@ -148,28 +148,28 @@ pub enum Command {
     #[command(
         subcommand,
         about = "Manage OS service",
-        long_about = "Install, start, or stop service.\nExample: ironclaw service install"
+        long_about = "Install, start, or stop service.\nExample: betterclaw service install"
     )]
     Service(ServiceCommand),
 
     /// Probe external dependencies and validate configuration
     #[command(
         about = "Run diagnostics",
-        long_about = "Checks dependencies and config validity.\nExample: ironclaw doctor"
+        long_about = "Checks dependencies and config validity.\nExample: betterclaw doctor"
     )]
     Doctor,
 
     /// Show system health and diagnostics
     #[command(
         about = "Show system status",
-        long_about = "Displays health and diagnostics info.\nExample: ironclaw status"
+        long_about = "Displays health and diagnostics info.\nExample: betterclaw status"
     )]
     Status,
 
     /// Generate shell completion scripts
     #[command(
         about = "Generate completions",
-        long_about = "Generates shell completion scripts.\nExample: ironclaw completion --shell bash > ironclaw.bash"
+        long_about = "Generates shell completion scripts.\nExample: betterclaw completion --shell bash > betterclaw.bash"
     )]
     Completion(Completion),
 

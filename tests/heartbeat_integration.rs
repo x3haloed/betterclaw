@@ -1,4 +1,4 @@
-#![cfg(feature = "postgres")]
+#![cfg(feature = "integration")]
 //! Heartbeat integration test.
 //!
 //! Exercises the heartbeat system in isolation: connects to the real
@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use ironclaw::{
+use betterclaw::{
     agent::HeartbeatRunner,
     config::Config,
     history::Store,
@@ -25,7 +25,7 @@ async fn test_heartbeat_end_to_end() {
     // Load .env and set up logging
     let _ = dotenvy::dotenv();
     let _ = tracing_subscriber::fmt()
-        .with_env_filter("ironclaw=debug")
+        .with_env_filter("betterclaw=debug")
         .try_init();
 
     println!("=== Heartbeat Integration Test ===\n");
@@ -95,8 +95,8 @@ async fn test_heartbeat_end_to_end() {
     // 6. Run heartbeat check
     println!("[6/6] Running check_heartbeat()...\n");
 
-    let hb_config = ironclaw::agent::HeartbeatConfig::default();
-    let hygiene_config = ironclaw::workspace::hygiene::HygieneConfig::default();
+    let hb_config = betterclaw::agent::HeartbeatConfig::default();
+    let hygiene_config = betterclaw::workspace::hygiene::HygieneConfig::default();
     let safety = Arc::new(SafetyLayer::new(&config.safety));
     let runner = HeartbeatRunner::new(hb_config, hygiene_config, workspace, llm, safety);
 
@@ -104,22 +104,22 @@ async fn test_heartbeat_end_to_end() {
 
     println!("=== Result ===\n");
     match &result {
-        ironclaw::agent::HeartbeatResult::Ok => {
+        betterclaw::agent::HeartbeatResult::Ok => {
             println!("HeartbeatResult::Ok");
             println!("  LLM responded HEARTBEAT_OK, nothing needs attention.");
         }
-        ironclaw::agent::HeartbeatResult::NeedsAttention(msg) => {
+        betterclaw::agent::HeartbeatResult::NeedsAttention(msg) => {
             println!("HeartbeatResult::NeedsAttention");
             println!("  Message:\n{}", msg);
         }
-        ironclaw::agent::HeartbeatResult::Skipped => {
+        betterclaw::agent::HeartbeatResult::Skipped => {
             println!("HeartbeatResult::Skipped");
             println!("  No checklist found, or checklist was effectively empty.");
             println!("  This means the HEARTBEAT.md either:");
             println!("    - Does not exist in the workspace database");
             println!("    - Contains only headers, comments, and empty checkboxes");
         }
-        ironclaw::agent::HeartbeatResult::Failed(err) => {
+        betterclaw::agent::HeartbeatResult::Failed(err) => {
             println!("HeartbeatResult::Failed");
             println!("  Error: {}", err);
         }

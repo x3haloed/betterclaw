@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use secrecy::SecretString;
 
-use crate::bootstrap::ironclaw_base_dir;
+use crate::bootstrap::betterclaw_base_dir;
 use crate::config::helpers::optional_env;
 use crate::error::ConfigError;
 
@@ -44,7 +44,7 @@ pub struct DatabaseConfig {
     /// Which backend to use (default: libsql).
     pub backend: DatabaseBackend,
 
-    /// Path to local libSQL database file (default: ~/.ironclaw/ironclaw.db).
+    /// Path to local libSQL database file (default: ~/.betterclaw/betterclaw.db).
     pub libsql_path: Option<PathBuf>,
     /// Turso cloud URL for remote sync (optional).
     pub libsql_url: Option<String>,
@@ -86,8 +86,8 @@ impl DatabaseConfig {
     }
 }
 
-/// Default libSQL database path (~/.ironclaw/ironclaw.db).
+/// Default libSQL database path (~/.betterclaw/betterclaw.db).
 pub fn default_libsql_path() -> PathBuf {
-    ironclaw_base_dir().join("ironclaw.db")
+    betterclaw_base_dir().join("betterclaw.db")
 }
 

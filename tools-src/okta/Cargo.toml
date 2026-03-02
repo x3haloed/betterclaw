@@ -2,7 +2,7 @@
 name = "okta-tool"
 version = "0.1.0"
 edition = "2021"
-description = "Okta SSO tool for IronClaw (WASM component) — user profile, app catalog, and SSO launch links"
+description = "Okta SSO tool for BetterClaw (WASM component) — user profile, app catalog, and SSO launch links"
 license = "MIT OR Apache-2.0"
 publish = false
 

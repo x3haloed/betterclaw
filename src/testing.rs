@@ -8,7 +8,7 @@
 //! # Usage
 //!
 //! ```rust,no_run
-//! use ironclaw::testing::TestHarnessBuilder;
+//! use betterclaw::testing::TestHarnessBuilder;
 //!
 //! #[tokio::test]
 //! async fn test_something() {

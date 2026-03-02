@@ -1,7 +1,7 @@
-//! Configuration for IronClaw.
+//! Configuration for BetterClaw.
 //!
 //! Settings are loaded with priority: env var > database > default.
-//! `DATABASE_BACKEND` and libsql connection details live in `~/.ironclaw/.env` (loaded via dotenvy early
+//! `DATABASE_BACKEND` and libsql connection details live in `~/.betterclaw/.env` (loaded via dotenvy early
 //! in startup). Everything else comes from env vars, the DB settings
 //! table, or auto-detection.
 
@@ -98,7 +98,7 @@ impl Config {
         toml_path: Option<&std::path::Path>,
     ) -> Result<Self, ConfigError> {
         let _ = dotenvy::dotenv();
-        crate::bootstrap::load_ironclaw_env();
+        crate::bootstrap::load_betterclaw_env();
 
         // Load all settings from DB into a Settings struct
         let mut db_settings = match store.get_all_settings(user_id).await {
@@ -121,7 +121,7 @@ impl Config {
     /// and by CLI commands that don't have DB access.
     /// Falls back to legacy `settings.json` on disk if present.
     ///
-    /// Loads both `./.env` (standard, higher priority) and `~/.ironclaw/.env`
+    /// Loads both `./.env` (standard, higher priority) and `~/.betterclaw/.env`
     /// (lower priority) via dotenvy, which never overwrites existing vars.
     pub async fn from_env() -> Result<Self, ConfigError> {
         Self::from_env_with_toml(None).await
@@ -132,7 +132,7 @@ impl Config {
         toml_path: Option<&std::path::Path>,
     ) -> Result<Self, ConfigError> {
         let _ = dotenvy::dotenv();
-        crate::bootstrap::load_ironclaw_env();
+        crate::bootstrap::load_betterclaw_env();
         let mut settings = Settings::load();
 
         // Overlay TOML config file (values win over JSON settings)
@@ -144,7 +144,7 @@ impl Config {
     /// Load and merge a TOML config file into settings.
     ///
     /// If `explicit_path` is `Some`, loads from that path (errors are fatal).
-    /// If `None`, tries the default path `~/.ironclaw/config.toml` (missing
+    /// If `None`, tries the default path `~/.betterclaw/config.toml` (missing
     /// file is silently ignored).
     fn apply_toml_overlay(
         settings: &mut Settings,

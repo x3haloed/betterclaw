@@ -32,10 +32,10 @@ pub fn bundled_channel_names() -> Vec<&'static str> {
 /// Resolve the channels source directory.
 ///
 /// Checks (in order):
-/// 1. `IRONCLAW_CHANNELS_SRC` env var
+/// 1. `BETTERCLAW_CHANNELS_SRC` env var
 /// 2. `<CARGO_MANIFEST_DIR>/channels-src/` (dev builds)
 fn channels_src_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("IRONCLAW_CHANNELS_SRC") {
+    if let Ok(dir) = std::env::var("BETTERCLAW_CHANNELS_SRC") {
         return PathBuf::from(dir);
     }
     PathBuf::from(CARGO_MANIFEST_DIR).join("channels-src")

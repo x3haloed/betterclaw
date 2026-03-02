@@ -13,7 +13,7 @@ use crate::settings::Settings;
 pub enum ConfigCommand {
     /// Generate a default config.toml file
     Init {
-        /// Output path (default: ~/.ironclaw/config.toml)
+        /// Output path (default: ~/.betterclaw/config.toml)
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
 
@@ -166,7 +166,7 @@ async fn set_setting(
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let store = store.ok_or_else(|| {
-        anyhow::anyhow!("Database connection required to save settings. Check LIBSQL_PATH (or run `ironclaw onboard`).")
+        anyhow::anyhow!("Database connection required to save settings. Check LIBSQL_PATH (or run `betterclaw onboard`).")
     })?;
     let json_value = match serde_json::from_str::<serde_json::Value>(value) {
         Ok(v) => v,
@@ -189,7 +189,7 @@ async fn reset_setting(store: Option<&dyn crate::db::Database>, path: &str) -> a
         .ok_or_else(|| anyhow::anyhow!("Unknown setting: {}", path))?;
 
     let store = store.ok_or_else(|| {
-        anyhow::anyhow!("Database connection required to reset settings. Check LIBSQL_PATH (or run `ironclaw onboard`).")
+        anyhow::anyhow!("Database connection required to reset settings. Check LIBSQL_PATH (or run `betterclaw onboard`).")
     })?;
     store
         .delete_setting(DEFAULT_USER_ID, path)
@@ -239,14 +239,14 @@ fn show_path(has_db: bool) -> anyhow::Result<()> {
     }
     println!(
         "Env config:         {}",
-        crate::bootstrap::ironclaw_env_path().display()
+        crate::bootstrap::betterclaw_env_path().display()
     );
 
     let toml_path = Settings::default_toml_path();
     let toml_status = if toml_path.exists() {
         "found"
     } else {
-        "not found (run `ironclaw config init` to create)"
+        "not found (run `betterclaw config init` to create)"
     };
     println!(
         "TOML config:        {} ({})",
@@ -282,7 +282,7 @@ mod tests {
 
         // Reset to default
         settings.reset("agent.name").unwrap();
-        assert_eq!(settings.agent.name, "ironclaw");
+        assert_eq!(settings.agent.name, "betterclaw");
     }
 
     #[tokio::test]

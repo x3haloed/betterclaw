@@ -17,6 +17,7 @@ pub mod context_monitor;
 pub mod cost_guard;
 mod dispatcher;
 mod heartbeat;
+mod ledger_capture;
 pub mod job_monitor;
 mod router;
 pub mod routine;

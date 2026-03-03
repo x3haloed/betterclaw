@@ -14,6 +14,7 @@ use crate::agent::compaction::ContextCompactor;
 use crate::agent::dispatcher::{
     AgenticLoopResult, check_auth_required, execute_chat_tool_standalone, parse_auth_result,
 };
+use crate::agent::ledger_capture::append_event_best_effort;
 use crate::agent::session::{PendingApproval, Session, ThreadState};
 use crate::agent::submission::SubmissionResult;
 use crate::channels::web::util::truncate_preview;
@@ -271,6 +272,24 @@ impl Agent {
         self.persist_user_message(thread_id, &message.user_id, content)
             .await;
 
+        // Capture user turn to append-only ledger (best-effort).
+        let _ = append_event_best_effort(
+            self.deps.store.clone(),
+            message.user_id.clone(),
+            None,
+            "user_turn".to_string(),
+            message.channel.clone(),
+            Some(content.to_string()),
+            serde_json::json!({
+                "thread_id": thread_id.to_string(),
+                "incoming_message_id": message.id.to_string(),
+                "user_name": message.user_name.clone(),
+                "received_at": message.received_at.to_rfc3339(),
+                "channel_metadata": message.metadata.clone(),
+            }),
+        )
+        .await;
+
         // Send thinking status
         let _ = self
             .channels
@@ -349,6 +368,22 @@ impl Agent {
                     .await;
                 self.persist_assistant_response(thread_id, &message.user_id, &response)
                     .await;
+
+                // Capture agent turn to append-only ledger (best-effort).
+                let _ = append_event_best_effort(
+                    self.deps.store.clone(),
+                    message.user_id.clone(),
+                    None,
+                    "agent_turn".to_string(),
+                    message.channel.clone(),
+                    Some(response.clone()),
+                    serde_json::json!({
+                        "thread_id": thread_id.to_string(),
+                        "incoming_message_id": message.id.to_string(),
+                        "tool_calls": tool_calls,
+                    }),
+                )
+                .await;
 
                 Ok(SubmissionResult::response(response))
             }

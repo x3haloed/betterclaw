@@ -10,6 +10,7 @@ use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::agent::Agent;
+use crate::agent::ledger_capture::{LEDGER_CONTENT_MAX_CHARS, append_event_best_effort, truncate_chars};
 use crate::agent::session::{PendingApproval, Session, ThreadState};
 use crate::channels::{IncomingMessage, StatusUpdate};
 use crate::context::JobContext;
@@ -429,6 +430,23 @@ impl Agent {
                     if runnable.len() <= 1 {
                         // Single tool (or none): execute inline
                         for (pf_idx, tc) in &runnable {
+                            let _ = append_event_best_effort(
+                                self.deps.store.clone(),
+                                message.user_id.clone(),
+                                None,
+                                "tool_call".to_string(),
+                                message.channel.clone(),
+                                None,
+                                serde_json::json!({
+                                    "thread_id": thread_id.to_string(),
+                                    "incoming_message_id": message.id.to_string(),
+                                    "tool_call_id": tc.id,
+                                    "tool_name": tc.name,
+                                    "arguments": tc.arguments,
+                                }),
+                            )
+                            .await;
+
                             let _ = self
                                 .channels
                                 .send_status(
@@ -443,6 +461,66 @@ impl Agent {
                             let result = self
                                 .execute_chat_tool(&tc.name, &tc.arguments, &job_ctx)
                                 .await;
+
+                            match &result {
+                                Ok(output) => {
+                                    let sanitized =
+                                        self.safety().sanitize_tool_output(&tc.name, output);
+                                    let warnings: Vec<serde_json::Value> = sanitized
+                                        .warnings
+                                        .iter()
+                                        .map(|w| {
+                                            serde_json::json!({
+                                                "pattern": w.pattern,
+                                                "severity": format!("{:?}", w.severity),
+                                                "start": w.location.start,
+                                                "end": w.location.end,
+                                                "description": w.description,
+                                            })
+                                        })
+                                        .collect();
+                                    let preview = truncate_chars(&sanitized.content, 2_000);
+                                    let _ = append_event_best_effort(
+                                        self.deps.store.clone(),
+                                        message.user_id.clone(),
+                                        None,
+                                        "tool_result".to_string(),
+                                        message.channel.clone(),
+                                        Some(preview),
+                                        serde_json::json!({
+                                            "thread_id": thread_id.to_string(),
+                                            "incoming_message_id": message.id.to_string(),
+                                            "tool_call_id": tc.id,
+                                            "tool_name": tc.name,
+                                            "ok": true,
+                                            "was_modified": sanitized.was_modified,
+                                            "warnings": warnings,
+                                            "output": truncate_chars(&sanitized.content, LEDGER_CONTENT_MAX_CHARS),
+                                        }),
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    let msg = truncate_chars(&e.to_string(), 2_000);
+                                    let _ = append_event_best_effort(
+                                        self.deps.store.clone(),
+                                        message.user_id.clone(),
+                                        None,
+                                        "tool_result".to_string(),
+                                        message.channel.clone(),
+                                        Some(msg),
+                                        serde_json::json!({
+                                            "thread_id": thread_id.to_string(),
+                                            "incoming_message_id": message.id.to_string(),
+                                            "tool_call_id": tc.id,
+                                            "tool_name": tc.name,
+                                            "ok": false,
+                                            "error": e.to_string(),
+                                        }),
+                                    )
+                                    .await;
+                                }
+                            }
 
                             let _ = self
                                 .channels
@@ -466,13 +544,34 @@ impl Agent {
                             let pf_idx = *pf_idx;
                             let tools = self.tools().clone();
                             let safety = self.safety().clone();
+                            let store = self.deps.store.clone();
                             let channels = self.channels.clone();
                             let job_ctx = job_ctx.clone();
                             let tc = tc.clone();
                             let channel = message.channel.clone();
+                            let user_id = message.user_id.clone();
+                            let thread_id = thread_id;
+                            let incoming_message_id = message.id.to_string();
                             let metadata = message.metadata.clone();
 
                             join_set.spawn(async move {
+                                let _ = append_event_best_effort(
+                                    store.clone(),
+                                    user_id.clone(),
+                                    None,
+                                    "tool_call".to_string(),
+                                    channel.clone(),
+                                    None,
+                                    serde_json::json!({
+                                        "thread_id": thread_id.to_string(),
+                                        "incoming_message_id": incoming_message_id.clone(),
+                                        "tool_call_id": tc.id.clone(),
+                                        "tool_name": tc.name.clone(),
+                                        "arguments": tc.arguments.clone(),
+                                    }),
+                                )
+                                .await;
+
                                 let _ = channels
                                     .send_status(
                                         &channel,
@@ -491,6 +590,66 @@ impl Agent {
                                     &job_ctx,
                                 )
                                 .await;
+
+                                match &result {
+                                    Ok(output) => {
+                                        let sanitized =
+                                            safety.sanitize_tool_output(&tc.name, output);
+                                        let warnings: Vec<serde_json::Value> = sanitized
+                                            .warnings
+                                            .iter()
+                                            .map(|w| {
+                                                serde_json::json!({
+                                                    "pattern": w.pattern,
+                                                    "severity": format!("{:?}", w.severity),
+                                                    "start": w.location.start,
+                                                    "end": w.location.end,
+                                                    "description": w.description,
+                                                })
+                                            })
+                                            .collect();
+                                        let preview = truncate_chars(&sanitized.content, 2_000);
+                                        let _ = append_event_best_effort(
+                                            store.clone(),
+                                            user_id.clone(),
+                                            None,
+                                            "tool_result".to_string(),
+                                            channel.clone(),
+                                            Some(preview),
+                                            serde_json::json!({
+                                                "thread_id": thread_id.to_string(),
+                                                "incoming_message_id": incoming_message_id.clone(),
+                                                "tool_call_id": tc.id.clone(),
+                                                "tool_name": tc.name.clone(),
+                                                "ok": true,
+                                                "was_modified": sanitized.was_modified,
+                                                "warnings": warnings,
+                                                "output": truncate_chars(&sanitized.content, LEDGER_CONTENT_MAX_CHARS),
+                                            }),
+                                        )
+                                        .await;
+                                    }
+                                    Err(e) => {
+                                        let msg = truncate_chars(&e.to_string(), 2_000);
+                                        let _ = append_event_best_effort(
+                                            store.clone(),
+                                            user_id.clone(),
+                                            None,
+                                            "tool_result".to_string(),
+                                            channel.clone(),
+                                            Some(msg),
+                                            serde_json::json!({
+                                                "thread_id": thread_id.to_string(),
+                                                "incoming_message_id": incoming_message_id.clone(),
+                                                "tool_call_id": tc.id.clone(),
+                                                "tool_name": tc.name.clone(),
+                                                "ok": false,
+                                                "error": e.to_string(),
+                                            }),
+                                        )
+                                        .await;
+                                    }
+                                }
 
                                 let _ = channels
                                     .send_status(

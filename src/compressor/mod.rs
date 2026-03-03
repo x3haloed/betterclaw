@@ -132,6 +132,8 @@ pub struct LedgerCursorV0 {
     pub id: String,
 }
 
+const EVIDENCE_EVENT_CONTENT_MAX_CHARS: usize = 80_000;
+
 fn format_events_for_prompt(events: &[crate::ledger::LedgerEvent]) -> String {
     let mut out = String::new();
     for e in events {
@@ -146,7 +148,7 @@ fn format_events_for_prompt(events: &[crate::ledger::LedgerEvent]) -> String {
         if let Some(ref c) = e.content {
             out.push_str("  content: ");
             // Keep prompt bounded; this is not a dump.
-            out.push_str(&truncate_chars(c, 2_000));
+            out.push_str(&truncate_chars(c, EVIDENCE_EVENT_CONTENT_MAX_CHARS));
             out.push('\n');
         }
     }

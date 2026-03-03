@@ -37,7 +37,7 @@ impl Default for CompressorLoopConfig {
             interval_secs: 300,
             startup_delay_secs: 5,
             user_id: "default".to_string(),
-            window_events: 200,
+            window_events: 5,
             anchor_invariants: 30,
             drift_candidates: 30,
             max_tokens: 2048,
@@ -71,4 +71,3 @@ impl CompressorLoopConfig {
         })
     }
 }
-

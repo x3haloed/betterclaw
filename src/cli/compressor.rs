@@ -25,7 +25,7 @@ pub struct RunOnceArgs {
     pub user_id: String,
 
     /// Number of most-recent ledger events to include in the local window.
-    #[arg(long, default_value_t = 200)]
+    #[arg(long, default_value_t = 5)]
     pub window_events: i64,
 
     /// Anchor invariants to include (kind prefix `invariant.`).

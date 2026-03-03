@@ -286,7 +286,10 @@ impl TestHarnessBuilder {
             cheap_llm: None,
             safety,
             tools,
-            workspace: None,
+            fs_workspace: Arc::new(crate::workspace::FsWorkspace::new_in_base(
+                "default",
+                temp_dir.path().to_path_buf(),
+            )),
             extension_manager: None,
             skill_registry: None,
             skill_catalog: None,

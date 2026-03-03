@@ -15,35 +15,6 @@ use crate::tools::builtin::path_utils::validate_path;
 use crate::tools::tool::{
     ApprovalRequirement, Tool, ToolDomain, ToolError, ToolOutput, require_str,
 };
-use crate::workspace::paths as ws_paths;
-
-/// Well-known workspace filenames that must go through memory_write, not write_file.
-///
-/// If the LLM tries to write one of these via the filesystem tool we reject
-/// immediately and point it at the correct tool.
-const WORKSPACE_FILES: &[&str] = &[
-    ws_paths::HEARTBEAT,
-    ws_paths::MEMORY,
-    ws_paths::IDENTITY,
-    ws_paths::SOUL,
-    ws_paths::AGENTS,
-    ws_paths::USER,
-    ws_paths::README,
-];
-
-/// Check whether `path` resolves to a workspace file that should be written
-/// through `memory_write` instead of `write_file`.
-fn is_workspace_path(path: &str) -> bool {
-    let filename = std::path::Path::new(path)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or(path);
-
-    WORKSPACE_FILES.contains(&filename)
-        || path.starts_with("daily/")
-        || path.starts_with("context/")
-}
-
 /// Maximum file size for reading (1MB).
 const MAX_READ_SIZE: u64 = 1024 * 1024;
 
@@ -77,8 +48,7 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file from the LOCAL FILESYSTEM. NOT for workspace memory paths \
-         (use memory_read for those). Returns file content as text. \
+        "Read a file from the LOCAL FILESYSTEM. Returns file content as text. \
          For large files, you can specify offset and limit to read a portion."
     }
 
@@ -203,8 +173,7 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file on the LOCAL FILESYSTEM. NOT for workspace memory \
-         (use memory_write for that). Creates the file if it doesn't exist, overwrites if it does. \
+        "Write content to a file on the LOCAL FILESYSTEM. Creates the file if it doesn't exist, overwrites if it does. \
          Parent directories are created automatically. Use apply_patch for targeted edits."
     }
 
@@ -231,15 +200,6 @@ impl Tool for WriteFileTool {
         _ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let path_str = require_str(&params, "path")?;
-
-        // Reject workspace paths: these live in the database, not on disk.
-        if is_workspace_path(path_str) {
-            return Err(ToolError::InvalidParameters(format!(
-                "'{}' is a workspace memory file. Use the memory_write tool instead of write_file. \
-                 For HEARTBEAT.md use target='heartbeat', for MEMORY.md use target='memory'.",
-                path_str
-            )));
-        }
 
         let content = require_str(&params, "content")?;
 
@@ -318,8 +278,7 @@ impl Tool for ListDirTool {
     }
 
     fn description(&self) -> &str {
-        "List contents of a directory on the LOCAL FILESYSTEM. NOT for workspace memory \
-         (use memory_tree for that). Shows files and subdirectories with their sizes."
+        "List contents of a directory on the LOCAL FILESYSTEM. Shows files and subdirectories with their sizes."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -701,75 +660,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_file_rejects_workspace_paths() {
+    async fn test_write_file_allows_identity_and_workspace_paths() {
         let dir = TempDir::new().unwrap();
         let tool = WriteFileTool::new().with_base_dir(dir.path().to_path_buf());
         let ctx = JobContext::default();
 
-        let workspace_files = &[
-            "HEARTBEAT.md",
-            "MEMORY.md",
-            "IDENTITY.md",
-            "SOUL.md",
-            "AGENTS.md",
-            "USER.md",
-            "README.md",
-        ];
-
-        for filename in workspace_files {
+        // Identity/workspace-ish files should be writable like any other file now.
+        for filename in &["HEARTBEAT.md", "SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md"] {
             let path = dir.path().join(filename);
-            let err = tool
+            let result = tool
                 .execute(
                     serde_json::json!({
                         "path": path.to_str().unwrap(),
-                        "content": "test"
+                        "content": "ok"
                     }),
                     &ctx,
                 )
-                .await
-                .unwrap_err();
-
-            let msg = err.to_string();
-            assert!(
-                msg.contains("memory_write"),
-                "Rejection for {} should mention memory_write, got: {}",
-                filename,
-                msg
-            );
+                .await;
+            assert!(result.is_ok(), "expected write to succeed for {filename}");
         }
 
-        // daily/ and context/ prefixes should also be rejected
-        for prefix_path in &["daily/2024-01-15.md", "context/vision.md"] {
-            let err = tool
+        // Nested paths should work too.
+        for rel in &["daily/2024-01-15.md", "context/vision.md"] {
+            let path = dir.path().join(rel);
+            let result = tool
                 .execute(
                     serde_json::json!({
-                        "path": prefix_path,
-                        "content": "test"
+                        "path": path.to_str().unwrap(),
+                        "content": "ok"
                     }),
                     &ctx,
                 )
-                .await
-                .unwrap_err();
-
-            assert!(
-                err.to_string().contains("memory_write"),
-                "Rejection for {} should mention memory_write",
-                prefix_path
-            );
+                .await;
+            assert!(result.is_ok(), "expected write to succeed for {rel}");
         }
-
-        // Regular files should still work
-        let regular_path = dir.path().join("normal.txt");
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "path": regular_path.to_str().unwrap(),
-                    "content": "fine"
-                }),
-                &ctx,
-            )
-            .await;
-        assert!(result.is_ok());
     }
 
     #[tokio::test]

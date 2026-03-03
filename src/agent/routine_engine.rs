@@ -28,14 +28,14 @@ use crate::config::RoutineConfig;
 use crate::db::Database;
 use crate::error::RoutineError;
 use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
-use crate::workspace::Workspace;
+use crate::workspace::FsWorkspace;
 
 /// The routine execution engine.
 pub struct RoutineEngine {
     config: RoutineConfig,
     store: Arc<dyn Database>,
     llm: Arc<dyn LlmProvider>,
-    workspace: Arc<Workspace>,
+    workspace: Arc<FsWorkspace>,
     /// Sender for notifications (routed to channel manager).
     notify_tx: mpsc::Sender<OutgoingResponse>,
     /// Currently running routine count (across all routines).
@@ -51,7 +51,7 @@ impl RoutineEngine {
         config: RoutineConfig,
         store: Arc<dyn Database>,
         llm: Arc<dyn LlmProvider>,
-        workspace: Arc<Workspace>,
+        workspace: Arc<FsWorkspace>,
         notify_tx: mpsc::Sender<OutgoingResponse>,
         scheduler: Option<Arc<Scheduler>>,
     ) -> Self {
@@ -306,7 +306,7 @@ impl RoutineEngine {
 struct EngineContext {
     store: Arc<dyn Database>,
     llm: Arc<dyn LlmProvider>,
-    workspace: Arc<Workspace>,
+    workspace: Arc<FsWorkspace>,
     notify_tx: mpsc::Sender<OutgoingResponse>,
     running_count: Arc<AtomicUsize>,
     scheduler: Option<Arc<Scheduler>>,
@@ -467,10 +467,11 @@ async fn execute_lightweight(
     // Load context from workspace
     let mut context_parts = Vec::new();
     for path in context_paths {
-        match ctx.workspace.read(path).await {
-            Ok(doc) => {
-                context_parts.push(format!("## {}\n\n{}", path, doc.content));
+        match ctx.workspace.read_optional_rel(path).await {
+            Ok(Some(content)) => {
+                context_parts.push(format!("## {}\n\n{}", path, content));
             }
+            Ok(None) => {}
             Err(e) => {
                 tracing::debug!(
                     routine = %routine.name,
@@ -483,9 +484,10 @@ async fn execute_lightweight(
     // Load routine state from workspace (name sanitized to prevent path traversal)
     let safe_name = sanitize_routine_name(&routine.name);
     let state_path = format!("routines/{safe_name}/state.md");
-    let state_content = match ctx.workspace.read(&state_path).await {
-        Ok(doc) => Some(doc.content),
+    let state_content = match ctx.workspace.read_optional_rel(&state_path).await {
+        Ok(Some(content)) => Some(content),
         Err(_) => None,
+        Ok(None) => None,
     };
 
     // Build the prompt

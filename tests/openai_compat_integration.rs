@@ -182,7 +182,6 @@ async fn start_test_server_with_provider(
     let state = Arc::new(GatewayState {
         msg_tx: tokio::sync::RwLock::new(None),
         sse: SseManager::new(),
-        workspace: None,
         session_manager: None,
         log_broadcaster: None,
         log_level_handle: None,
@@ -671,7 +670,6 @@ async fn test_no_llm_provider_returns_503() {
     let state = Arc::new(GatewayState {
         msg_tx: tokio::sync::RwLock::new(None),
         sse: SseManager::new(),
-        workspace: None,
         session_manager: None,
         log_broadcaster: None,
         log_level_handle: None,

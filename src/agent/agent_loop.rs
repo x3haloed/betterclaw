@@ -29,7 +29,7 @@ use crate::llm::LlmProvider;
 use crate::safety::SafetyLayer;
 use crate::skills::SkillRegistry;
 use crate::tools::ToolRegistry;
-use crate::workspace::Workspace;
+use crate::workspace::FsWorkspace;
 
 /// Collapse a tool output string into a single-line preview for display.
 pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
@@ -65,7 +65,8 @@ pub struct AgentDeps {
     pub cheap_llm: Option<Arc<dyn LlmProvider>>,
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
-    pub workspace: Option<Arc<Workspace>>,
+    /// Filesystem-backed workspace for identity files and heartbeat.
+    pub fs_workspace: Arc<FsWorkspace>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
     pub skill_registry: Option<Arc<std::sync::RwLock<SkillRegistry>>>,
     pub skill_catalog: Option<Arc<crate::skills::catalog::SkillCatalog>>,
@@ -164,8 +165,8 @@ impl Agent {
         &self.deps.tools
     }
 
-    pub(super) fn workspace(&self) -> Option<&Arc<Workspace>> {
-        self.deps.workspace.as_ref()
+    pub(super) fn fs_workspace(&self) -> &Arc<FsWorkspace> {
+        &self.deps.fs_workspace
     }
 
     pub(super) fn hooks(&self) -> &Arc<HookRegistry> {
@@ -326,66 +327,52 @@ impl Agent {
         // Spawn heartbeat if enabled
         let heartbeat_handle = if let Some(ref hb_config) = self.heartbeat_config {
             if hb_config.enabled {
-                if let Some(workspace) = self.workspace() {
-                    let config = AgentHeartbeatConfig::default()
-                        .with_interval(std::time::Duration::from_secs(hb_config.interval_secs));
+                let config = AgentHeartbeatConfig::default()
+                    .with_interval(std::time::Duration::from_secs(hb_config.interval_secs));
 
-                    // Set up notification channel
-                    let (notify_tx, mut notify_rx) =
-                        tokio::sync::mpsc::channel::<OutgoingResponse>(16);
+                // Set up notification channel
+                let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<OutgoingResponse>(16);
 
-                    // Spawn notification forwarder that routes through channel manager
-                    let notify_channel = hb_config.notify_channel.clone();
-                    let notify_user = hb_config.notify_user.clone();
-                    let channels = self.channels.clone();
-                    tokio::spawn(async move {
-                        while let Some(response) = notify_rx.recv().await {
-                            let user = notify_user.as_deref().unwrap_or("default");
+                // Spawn notification forwarder that routes through channel manager
+                let notify_channel = hb_config.notify_channel.clone();
+                let notify_user = hb_config.notify_user.clone();
+                let channels = self.channels.clone();
+                tokio::spawn(async move {
+                    while let Some(response) = notify_rx.recv().await {
+                        let user = notify_user.as_deref().unwrap_or("default");
 
-                            // Try the configured channel first, fall back to
-                            // broadcasting on all channels.
-                            let targeted_ok = if let Some(ref channel) = notify_channel {
-                                channels
-                                    .broadcast(channel, user, response.clone())
-                                    .await
-                                    .is_ok()
-                            } else {
-                                false
-                            };
+                        // Try the configured channel first, fall back to broadcasting on all channels.
+                        let targeted_ok = if let Some(ref channel) = notify_channel {
+                            channels
+                                .broadcast(channel, user, response.clone())
+                                .await
+                                .is_ok()
+                        } else {
+                            false
+                        };
 
-                            if !targeted_ok {
-                                let results = channels.broadcast_all(user, response).await;
-                                for (ch, result) in results {
-                                    if let Err(e) = result {
-                                        tracing::warn!(
-                                            "Failed to broadcast heartbeat to {}: {}",
-                                            ch,
-                                            e
-                                        );
-                                    }
+                        if !targeted_ok {
+                            let results = channels.broadcast_all(user, response).await;
+                            for (ch, result) in results {
+                                if let Err(e) = result {
+                                    tracing::warn!(
+                                        "Failed to broadcast heartbeat to {}: {}",
+                                        ch,
+                                        e
+                                    );
                                 }
                             }
                         }
-                    });
+                    }
+                });
 
-                    let hygiene = self
-                        .hygiene_config
-                        .as_ref()
-                        .map(|h| h.to_workspace_config())
-                        .unwrap_or_default();
-
-                    Some(spawn_heartbeat(
-                        config,
-                        hygiene,
-                        workspace.clone(),
-                        self.cheap_llm().clone(),
-                        self.safety().clone(),
-                        Some(notify_tx),
-                    ))
-                } else {
-                    tracing::warn!("Heartbeat enabled but no workspace available");
-                    None
-                }
+                Some(spawn_heartbeat(
+                    config,
+                    Arc::clone(self.fs_workspace()),
+                    self.cheap_llm().clone(),
+                    self.safety().clone(),
+                    Some(notify_tx),
+                ))
             } else {
                 None
             }
@@ -396,7 +383,7 @@ impl Agent {
         // Spawn routine engine if enabled
         let routine_handle = if let Some(ref rt_config) = self.routine_config {
             if rt_config.enabled {
-                if let (Some(store), Some(workspace)) = (self.store(), self.workspace()) {
+                if let Some(store) = self.store() {
                     // Set up notification channel (same pattern as heartbeat)
                     let (notify_tx, mut notify_rx) =
                         tokio::sync::mpsc::channel::<OutgoingResponse>(32);
@@ -405,7 +392,7 @@ impl Agent {
                         rt_config.clone(),
                         Arc::clone(store),
                         self.llm().clone(),
-                        Arc::clone(workspace),
+                        Arc::clone(self.fs_workspace()),
                         notify_tx,
                         Some(self.scheduler.clone()),
                     ));

@@ -31,8 +31,7 @@ use tokio::sync::mpsc;
 use crate::channels::OutgoingResponse;
 use crate::llm::{ChatMessage, CompletionRequest, LlmProvider, Reasoning};
 use crate::safety::SafetyLayer;
-use crate::workspace::Workspace;
-use crate::workspace::hygiene::HygieneConfig;
+use crate::workspace::FsWorkspace;
 
 /// Configuration for the heartbeat runner.
 #[derive(Debug, Clone)]
@@ -98,8 +97,7 @@ pub enum HeartbeatResult {
 /// Heartbeat runner for proactive periodic execution.
 pub struct HeartbeatRunner {
     config: HeartbeatConfig,
-    hygiene_config: HygieneConfig,
-    workspace: Arc<Workspace>,
+    fs_workspace: Arc<FsWorkspace>,
     llm: Arc<dyn LlmProvider>,
     safety: Arc<SafetyLayer>,
     response_tx: Option<mpsc::Sender<OutgoingResponse>>,
@@ -110,15 +108,13 @@ impl HeartbeatRunner {
     /// Create a new heartbeat runner.
     pub fn new(
         config: HeartbeatConfig,
-        hygiene_config: HygieneConfig,
-        workspace: Arc<Workspace>,
+        fs_workspace: Arc<FsWorkspace>,
         llm: Arc<dyn LlmProvider>,
         safety: Arc<SafetyLayer>,
     ) -> Self {
         Self {
             config,
-            hygiene_config,
-            workspace,
+            fs_workspace,
             llm,
             safety,
             response_tx: None,
@@ -153,22 +149,6 @@ impl HeartbeatRunner {
         loop {
             interval.tick().await;
 
-            // Run memory hygiene in the background so it never delays the
-            // heartbeat checklist. Failures are logged inside run_if_due.
-            let hygiene_workspace = Arc::clone(&self.workspace);
-            let hygiene_config = self.hygiene_config.clone();
-            tokio::spawn(async move {
-                let report =
-                    crate::workspace::hygiene::run_if_due(&hygiene_workspace, &hygiene_config)
-                        .await;
-                if report.had_work() {
-                    tracing::info!(
-                        daily_logs_deleted = report.daily_logs_deleted,
-                        "heartbeat: memory hygiene deleted stale documents"
-                    );
-                }
-            });
-
             match self.check_heartbeat().await {
                 HeartbeatResult::Ok => {
                     tracing::debug!("Heartbeat OK");
@@ -201,7 +181,7 @@ impl HeartbeatRunner {
     /// Run a single heartbeat check.
     pub async fn check_heartbeat(&self) -> HeartbeatResult {
         // Get the heartbeat checklist
-        let checklist = match self.workspace.heartbeat_checklist().await {
+        let checklist = match self.fs_workspace.heartbeat_checklist().await {
             Ok(Some(content)) if !is_effectively_empty(&content) => content,
             Ok(_) => return HeartbeatResult::Skipped,
             Err(e) => return HeartbeatResult::Failed(format!("Failed to read checklist: {}", e)),
@@ -223,7 +203,8 @@ impl HeartbeatRunner {
         );
 
         // Get the system prompt for context
-        let system_prompt = match self.workspace.system_prompt().await {
+        let system_prompt =
+            match self.fs_workspace.system_prompt_for_context(false).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("Failed to get system prompt for heartbeat: {}", e);
@@ -350,13 +331,12 @@ fn strip_html_comments(content: &str) -> String {
 /// Returns a handle that can be used to stop the runner.
 pub fn spawn_heartbeat(
     config: HeartbeatConfig,
-    hygiene_config: HygieneConfig,
-    workspace: Arc<Workspace>,
+    fs_workspace: Arc<FsWorkspace>,
     llm: Arc<dyn LlmProvider>,
     safety: Arc<SafetyLayer>,
     response_tx: Option<mpsc::Sender<OutgoingResponse>>,
 ) -> tokio::task::JoinHandle<()> {
-    let mut runner = HeartbeatRunner::new(config, hygiene_config, workspace, llm, safety);
+    let mut runner = HeartbeatRunner::new(config, fs_workspace, llm, safety);
     if let Some(tx) = response_tx {
         runner = runner.with_response_channel(tx);
     }

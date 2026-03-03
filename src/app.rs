@@ -24,7 +24,7 @@ use crate::tools::ToolRegistry;
 use crate::tools::mcp::McpSessionManager;
 use crate::tools::wasm::SharedCredentialRegistry;
 use crate::tools::wasm::WasmToolRuntime;
-use crate::workspace::{EmbeddingProvider, Workspace};
+use crate::workspace::{EmbeddingProvider, FsWorkspace};
 
 /// Fully initialized application components, ready for channel wiring
 /// and agent construction.
@@ -38,7 +38,8 @@ pub struct AppComponents {
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
     pub embeddings: Option<Arc<dyn EmbeddingProvider>>,
-    pub workspace: Option<Arc<Workspace>>,
+    /// Filesystem-backed workspace files (identity, heartbeat, etc.).
+    pub fs_workspace: Arc<FsWorkspace>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
     pub mcp_session_manager: Arc<McpSessionManager>,
     pub wasm_tool_runtime: Option<Arc<WasmToolRuntime>>,
@@ -231,7 +232,7 @@ impl AppBuilder {
         Ok((llm, cheap_llm))
     }
 
-    /// Phase 4: Initialize safety, tools, embeddings, and workspace.
+    /// Phase 4: Initialize safety, tools, embeddings, and filesystem workspace.
     pub async fn init_tools(
         &self,
         llm: &Arc<dyn LlmProvider>,
@@ -240,7 +241,7 @@ impl AppBuilder {
             Arc<SafetyLayer>,
             Arc<ToolRegistry>,
             Option<Arc<dyn EmbeddingProvider>>,
-            Option<Arc<Workspace>>,
+            Arc<FsWorkspace>,
         ),
         anyhow::Error,
     > {
@@ -277,19 +278,6 @@ impl AppBuilder {
             );
         }
 
-        // Register memory tools if database is available
-        let workspace = if let Some(ref db) = self.db {
-            let mut ws = Workspace::new_with_db("default", db.clone());
-            if let Some(ref emb) = embeddings {
-                ws = ws.with_embeddings(emb.clone());
-            }
-            let ws = Arc::new(ws);
-            tools.register_memory_tools(Arc::clone(&ws));
-            Some(ws)
-        } else {
-            None
-        };
-
         // Register builder tool if enabled
         if self.config.builder.enabled
             && (self.config.agent.allow_local_tools || !self.config.sandbox.enabled)
@@ -304,7 +292,10 @@ impl AppBuilder {
             tracing::info!("Builder mode enabled");
         }
 
-        Ok((safety, tools, embeddings, workspace))
+        // Filesystem workspace is always available.
+        let fs_workspace = Arc::new(FsWorkspace::new("default"));
+
+        Ok((safety, tools, embeddings, fs_workspace))
     }
 
     /// Phase 5: Load WASM tools, MCP servers, and create extension manager.
@@ -575,7 +566,7 @@ impl AppBuilder {
         self.init_secrets().await?;
 
         let (llm, cheap_llm) = self.init_llm()?;
-        let (safety, tools, embeddings, workspace) = self.init_tools(&llm).await?;
+        let (safety, tools, embeddings, fs_workspace) = self.init_tools(&llm).await?;
 
         // Create hook registry early so runtime extension activation can register hooks.
         let hooks = Arc::new(HookRegistry::new());
@@ -587,31 +578,6 @@ impl AppBuilder {
             catalog_entries,
             dev_loaded_tool_names,
         ) = self.init_extensions(&tools, &hooks).await?;
-
-        // Seed workspace and backfill embeddings
-        if let Some(ref ws) = workspace {
-            match ws.seed_if_empty().await {
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!("Failed to seed workspace: {}", e);
-                }
-            }
-
-            if embeddings.is_some() {
-                let ws_bg = Arc::clone(ws);
-                tokio::spawn(async move {
-                    match ws_bg.backfill_embeddings().await {
-                        Ok(count) if count > 0 => {
-                            tracing::info!("Backfilled embeddings for {} chunks", count);
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!("Failed to backfill embeddings: {}", e);
-                        }
-                    }
-                });
-            }
-        }
 
         // Skills system
         let (skill_registry, skill_catalog) = if self.config.skills.enabled {
@@ -651,7 +617,7 @@ impl AppBuilder {
             safety,
             tools,
             embeddings,
-            workspace,
+            fs_workspace,
             extension_manager,
             mcp_session_manager,
             wasm_tool_runtime,

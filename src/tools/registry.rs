@@ -17,8 +17,8 @@ use crate::skills::registry::SkillRegistry;
 use crate::tools::builder::{BuildSoftwareTool, BuilderConfig, LlmSoftwareBuilder};
 use crate::tools::builtin::{
     ApplyPatchTool, CancelJobTool, CreateJobTool, EchoTool, HttpTool, JobEventsTool, JobPromptTool,
-    JobStatusTool, JsonTool, ListDirTool, ListJobsTool, MemoryReadTool, MemorySearchTool,
-    MemoryTreeTool, MemoryWriteTool, PromptQueue, ReadFileTool, ShellTool, SkillInstallTool,
+    JobStatusTool, JsonTool, ListDirTool, ListJobsTool, PromptQueue, ReadFileTool, ShellTool,
+    SkillInstallTool,
     SkillListTool, SkillRemoveTool, SkillSearchTool, TimeTool, ToolActivateTool, ToolAuthTool,
     ToolInstallTool, ToolListTool, ToolRemoveTool, ToolSearchTool, WebFetchTool, WriteFileTool,
 };
@@ -28,8 +28,6 @@ use crate::tools::wasm::{
     Capabilities, OAuthRefreshConfig, ResourceLimits, SharedCredentialRegistry, WasmError,
     WasmStorageError, WasmToolRuntime, WasmToolStore, WasmToolWrapper,
 };
-use crate::workspace::Workspace;
-
 /// Names of built-in tools that cannot be shadowed by dynamic registrations.
 /// This prevents a dynamically built or installed tool from replacing a
 /// security-critical built-in like "shell" or "memory_write".
@@ -43,10 +41,6 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "write_file",
     "list_dir",
     "apply_patch",
-    "memory_search",
-    "memory_write",
-    "memory_read",
-    "memory_tree",
     "create_job",
     "list_jobs",
     "job_status",
@@ -269,19 +263,6 @@ impl ToolRegistry {
         self.register_sync(Arc::new(ApplyPatchTool::new()));
 
         tracing::info!("Registered 5 development tools");
-    }
-
-    /// Register memory tools with a workspace.
-    ///
-    /// Memory tools require a workspace for persistence. Call this after
-    /// `register_builtin_tools()` if you have a workspace available.
-    pub fn register_memory_tools(&self, workspace: Arc<Workspace>) {
-        self.register_sync(Arc::new(MemorySearchTool::new(Arc::clone(&workspace))));
-        self.register_sync(Arc::new(MemoryWriteTool::new(Arc::clone(&workspace))));
-        self.register_sync(Arc::new(MemoryReadTool::new(Arc::clone(&workspace))));
-        self.register_sync(Arc::new(MemoryTreeTool::new(workspace)));
-
-        tracing::info!("Registered 4 memory tools");
     }
 
     /// Register job management tools.

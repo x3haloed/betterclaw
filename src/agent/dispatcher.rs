@@ -49,17 +49,14 @@ impl Agent {
 
         // Load workspace system prompt (identity files: AGENTS.md, SOUL.md, etc.)
         // In group chats, MEMORY.md is excluded to prevent leaking personal context.
-        let system_prompt = if let Some(ws) = self.workspace() {
-            match ws.system_prompt_for_context(is_group_chat).await {
-                Ok(prompt) if !prompt.is_empty() => Some(prompt),
-                Ok(_) => None,
-                Err(e) => {
-                    tracing::debug!("Could not load workspace system prompt: {}", e);
-                    None
-                }
+        let system_prompt = match self.fs_workspace().system_prompt_for_context(is_group_chat).await
+        {
+            Ok(prompt) if !prompt.is_empty() => Some(prompt),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::debug!("Could not load filesystem workspace system prompt: {}", e);
+                None
             }
-        } else {
-            None
         };
 
         // Select and prepare active skills (if skills system is enabled)
@@ -966,6 +963,10 @@ mod tests {
 
     /// Build a minimal `Agent` for unit testing (no DB, no workspace, no extensions).
     fn make_test_agent() -> Agent {
+        let fs_workspace = Arc::new(crate::workspace::FsWorkspace::new_in_base(
+            "default",
+            std::env::temp_dir().join(format!("betterclaw-test-{}", uuid::Uuid::new_v4())),
+        ));
         let deps = AgentDeps {
             store: None,
             llm: Arc::new(StaticLlmProvider),
@@ -975,7 +976,7 @@ mod tests {
                 injection_check_enabled: true,
             })),
             tools: Arc::new(ToolRegistry::new()),
-            workspace: None,
+            fs_workspace,
             extension_manager: None,
             skill_registry: None,
             skill_catalog: None,
@@ -1703,6 +1704,10 @@ mod tests {
     /// Helper to build a test Agent with a custom LLM provider and
     /// `max_tool_iterations` override.
     fn make_test_agent_with_llm(llm: Arc<dyn LlmProvider>, max_tool_iterations: usize) -> Agent {
+        let fs_workspace = Arc::new(crate::workspace::FsWorkspace::new_in_base(
+            "default",
+            std::env::temp_dir().join(format!("betterclaw-test-{}", uuid::Uuid::new_v4())),
+        ));
         let deps = AgentDeps {
             store: None,
             llm,
@@ -1712,7 +1717,7 @@ mod tests {
                 injection_check_enabled: false,
             })),
             tools: Arc::new(ToolRegistry::new()),
-            workspace: None,
+            fs_workspace,
             extension_manager: None,
             skill_registry: None,
             skill_catalog: None,
@@ -1810,6 +1815,10 @@ mod tests {
         let llm: Arc<dyn LlmProvider> = Arc::new(AlwaysToolCallProvider);
         let max_iter = 3;
         let agent = {
+            let fs_workspace = Arc::new(crate::workspace::FsWorkspace::new_in_base(
+                "default",
+                std::env::temp_dir().join(format!("betterclaw-test-{}", uuid::Uuid::new_v4())),
+            ));
             let deps = AgentDeps {
                 store: None,
                 llm,
@@ -1823,7 +1832,7 @@ mod tests {
                     registry.register_sync(Arc::new(EchoTool));
                     registry
                 },
-                workspace: None,
+                fs_workspace,
                 extension_manager: None,
                 skill_registry: None,
                 skill_catalog: None,

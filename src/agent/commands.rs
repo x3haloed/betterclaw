@@ -331,16 +331,9 @@ impl Agent {
 
     /// Trigger a manual heartbeat check.
     pub(super) async fn process_heartbeat(&self) -> Result<SubmissionResult, Error> {
-        let Some(workspace) = self.workspace() else {
-            return Ok(SubmissionResult::error(
-                "Heartbeat requires a workspace (database must be connected).",
-            ));
-        };
-
         let runner = crate::agent::HeartbeatRunner::new(
             crate::agent::HeartbeatConfig::default(),
-            crate::workspace::hygiene::HygieneConfig::default(),
-            workspace.clone(),
+            Arc::clone(self.fs_workspace()),
             self.llm().clone(),
             self.safety().clone(),
         );

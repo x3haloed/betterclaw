@@ -1,4 +1,4 @@
-//! Hook bootstrap helpers for loading bundled, plugin, and workspace hooks.
+//! Hook bootstrap helpers for loading bundled and plugin hooks.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,6 @@ use crate::hooks::bundled::{
 };
 use crate::hooks::registry::HookRegistry;
 use crate::tools::wasm::{discover_dev_tools, discover_tools};
-use crate::workspace::Workspace;
 
 /// Summary of hook bootstrap work done at startup.
 #[derive(Debug, Default, Clone, Copy)]
@@ -19,8 +18,6 @@ pub struct HookBootstrapSummary {
     pub bundled_hooks: usize,
     /// Number of plugin-provided rule hooks registered.
     pub plugin_hooks: usize,
-    /// Number of workspace-provided rule hooks registered.
-    pub workspace_hooks: usize,
     /// Number of outbound webhook hooks registered.
     pub outbound_webhooks: usize,
     /// Number of invalid hook configs skipped.
@@ -30,14 +27,13 @@ pub struct HookBootstrapSummary {
 impl HookBootstrapSummary {
     /// Total number of hooks registered across all categories.
     pub fn total_hooks(&self) -> usize {
-        self.bundled_hooks + self.plugin_hooks + self.workspace_hooks + self.outbound_webhooks
+        self.bundled_hooks + self.plugin_hooks + self.outbound_webhooks
     }
 }
 
-/// Register bundled hooks, then load plugin and workspace hook bundles.
+/// Register bundled hooks, then load plugin hook bundles.
 pub async fn bootstrap_hooks(
     registry: &Arc<HookRegistry>,
-    workspace: Option<&Arc<Workspace>>,
     wasm_tools_dir: &Path,
     wasm_channels_dir: &Path,
     active_tool_names: &[String],
@@ -63,13 +59,6 @@ pub async fn bootstrap_hooks(
     summary.plugin_hooks += plugin.hooks;
     summary.outbound_webhooks += plugin.outbound_webhooks;
     summary.errors += plugin.errors;
-
-    if let Some(workspace) = workspace {
-        let workspace_loaded = register_workspace_bundles(registry, workspace).await;
-        summary.workspace_hooks += workspace_loaded.hooks;
-        summary.outbound_webhooks += workspace_loaded.outbound_webhooks;
-        summary.errors += workspace_loaded.errors;
-    }
 
     summary
 }
@@ -251,75 +240,6 @@ fn extract_hooks_section(root: &serde_json::Value) -> Option<&serde_json::Value>
         .or_else(|| root.get("capabilities").and_then(|c| c.get("hooks")))
 }
 
-async fn register_workspace_bundles(
-    registry: &Arc<HookRegistry>,
-    workspace: &Arc<Workspace>,
-) -> HookRegistrationSummary {
-    let mut summary = HookRegistrationSummary::default();
-
-    let paths = match workspace.list_all().await {
-        Ok(paths) => paths,
-        Err(err) => {
-            summary.errors += 1;
-            tracing::warn!(error = %err, "Failed to list workspace paths for hooks");
-            return summary;
-        }
-    };
-
-    let mut hook_paths: Vec<String> = paths
-        .into_iter()
-        .filter(|path| is_workspace_hook_file(path))
-        .collect();
-    hook_paths.sort();
-
-    for path in hook_paths {
-        let doc = match workspace.read(&path).await {
-            Ok(doc) => doc,
-            Err(err) => {
-                summary.errors += 1;
-                tracing::warn!(path = %path, error = %err, "Skipping unreadable workspace hook file");
-                continue;
-            }
-        };
-
-        let parsed: serde_json::Value = match serde_json::from_str(&doc.content) {
-            Ok(value) => value,
-            Err(err) => {
-                summary.errors += 1;
-                tracing::warn!(path = %path, error = %err, "Workspace hook file is not valid JSON");
-                continue;
-            }
-        };
-
-        let bundle = match parse_workspace_bundle(&parsed) {
-            Ok(bundle) => bundle,
-            Err(err) => {
-                summary.errors += 1;
-                tracing::warn!(path = %path, error = %err, "Skipping invalid workspace hook bundle");
-                continue;
-            }
-        };
-
-        let source = format!("workspace:{}", path);
-        let registered = register_bundle(registry, &source, bundle).await;
-        summary.merge(registered);
-    }
-
-    summary
-}
-
-fn parse_workspace_bundle(value: &serde_json::Value) -> Result<HookBundleConfig, String> {
-    if let Some(nested) = value.get("hooks") {
-        HookBundleConfig::from_value(nested).map_err(|e| e.to_string())
-    } else {
-        HookBundleConfig::from_value(value).map_err(|e| e.to_string())
-    }
-}
-
-fn is_workspace_hook_file(path: &str) -> bool {
-    path == "hooks/hooks.json" || (path.starts_with("hooks/") && path.ends_with(".hook.json"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,29 +270,5 @@ mod tests {
         assert!(extracted.get("rules").is_some());
     }
 
-    #[test]
-    fn test_workspace_hook_file_filter() {
-        assert!(is_workspace_hook_file("hooks/hooks.json"));
-        assert!(is_workspace_hook_file("hooks/redact.hook.json"));
-        assert!(!is_workspace_hook_file("hooks/readme.md"));
-        assert!(!is_workspace_hook_file("MEMORY.md"));
-    }
-
-    #[test]
-    fn test_parse_workspace_bundle_wrapped_hooks() {
-        let value = serde_json::json!({
-            "hooks": {
-                "rules": [
-                    {
-                        "name": "append-bang",
-                        "points": ["beforeInbound"],
-                        "append": "!"
-                    }
-                ]
-            }
-        });
-
-        let bundle = parse_workspace_bundle(&value).unwrap();
-        assert_eq!(bundle.rules.len(), 1);
-    }
+    // Workspace hooks have been removed; hooks now come from bundled rules and plugins.
 }

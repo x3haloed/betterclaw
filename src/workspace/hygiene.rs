@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::bootstrap::betterclaw_base_dir;
-use crate::workspace::Workspace;
+use crate::workspace::FsWorkspace;
 
 /// Configuration for workspace hygiene.
 #[derive(Debug, Clone)]
@@ -73,7 +73,7 @@ impl HygieneReport {
 ///
 /// This is best-effort: failures are logged but never propagate. The
 /// agent should not crash because cleanup failed.
-pub async fn run_if_due(workspace: &Workspace, config: &HygieneConfig) -> HygieneReport {
+pub async fn run_if_due(workspace: &FsWorkspace, config: &HygieneConfig) -> HygieneReport {
     if !config.enabled {
         return HygieneReport {
             skipped: true,
@@ -130,32 +130,32 @@ pub async fn run_if_due(workspace: &Workspace, config: &HygieneConfig) -> Hygien
 
 /// Delete daily log documents older than `retention_days`.
 async fn cleanup_daily_logs(
-    workspace: &Workspace,
+    workspace: &FsWorkspace,
     retention_days: u32,
 ) -> Result<u32, anyhow::Error> {
     let cutoff = Utc::now() - chrono::Duration::days(i64::from(retention_days));
-    let entries = workspace.list("daily/").await?;
+    let daily_dir = workspace.files_dir().join("daily");
+    if !daily_dir.exists() {
+        return Ok(0);
+    }
 
     let mut deleted = 0u32;
-    for entry in entries {
-        if entry.is_directory {
+    let mut rd = tokio::fs::read_dir(&daily_dir).await?;
+    while let Some(entry) = rd.next_entry().await? {
+        let path = entry.path();
+        let md = entry.metadata().await?;
+        if !md.is_file() {
             continue;
         }
 
-        // Check if the document is old enough to delete
-        if let Some(updated_at) = entry.updated_at
-            && updated_at < cutoff
+        let modified = md.modified().ok().map(DateTime::<Utc>::from);
+        if let Some(modified) = modified
+            && modified < cutoff
         {
-            let path = if entry.path.starts_with("daily/") {
-                entry.path.clone()
+            if let Err(e) = tokio::fs::remove_file(&path).await {
+                tracing::warn!(path = %path.display(), "memory hygiene: failed to delete: {e}");
             } else {
-                format!("daily/{}", entry.path)
-            };
-
-            if let Err(e) = workspace.delete(&path).await {
-                tracing::warn!(path, "memory hygiene: failed to delete: {e}");
-            } else {
-                tracing::debug!(path, "memory hygiene: deleted old daily log");
+                tracing::debug!(path = %path.display(), "memory hygiene: deleted old daily log");
                 deleted += 1;
             }
         }

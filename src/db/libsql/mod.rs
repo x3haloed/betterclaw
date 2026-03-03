@@ -8,11 +8,11 @@
 
 mod conversations;
 mod jobs;
+mod ledger;
 mod routines;
 mod sandbox;
 mod settings;
 mod tool_failures;
-mod workspace;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use libsql::{Connection, Database as LibSqlDatabase};
 use rust_decimal::Decimal;
+use uuid::Uuid;
 
 use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineGuardrails, RoutineRun, RunStatus, Trigger,
@@ -28,8 +29,6 @@ use crate::agent::routine::{
 use crate::context::JobState;
 use crate::db::Database;
 use crate::error::DatabaseError;
-use crate::workspace::MemoryDocument;
-
 use crate::db::libsql_migrations;
 
 /// Explicit column list for routines table (matches positional access in `row_to_routine_libsql`).
@@ -75,7 +74,10 @@ impl LibSqlBackend {
 
     /// Create a new in-memory database (for testing).
     pub async fn new_memory() -> Result<Self, DatabaseError> {
-        let db = libsql::Builder::new_local(":memory:")
+        // BetterClaw opens a fresh connection per operation; a true SQLite `:memory:` database
+        // would be per-connection and therefore unusable. Use a unique on-disk temp DB instead.
+        let path = std::env::temp_dir().join(format!("betterclaw-test-{}.db", Uuid::new_v4()));
+        let db = libsql::Builder::new_local(path)
             .build()
             .await
             .map_err(|e| {
@@ -297,19 +299,6 @@ impl Database for LibSqlBackend {
 }
 
 // ==================== Row conversion helpers ====================
-
-pub(crate) fn row_to_memory_document(row: &libsql::Row) -> MemoryDocument {
-    MemoryDocument {
-        id: get_text(row, 0).parse().unwrap_or_default(),
-        user_id: get_text(row, 1),
-        agent_id: get_opt_text(row, 2).and_then(|s| s.parse().ok()),
-        path: get_text(row, 3),
-        content: get_text(row, 4),
-        created_at: get_ts(row, 5),
-        updated_at: get_ts(row, 6),
-        metadata: get_json(row, 7),
-    }
-}
 
 pub(crate) fn row_to_routine_libsql(row: &libsql::Row) -> Result<Routine, DatabaseError> {
     let trigger_type = get_text(row, 5);

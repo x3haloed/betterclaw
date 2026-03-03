@@ -6,7 +6,6 @@
 //! - Managing configuration (`config list`, `config get`, `config set`)
 //! - Managing WASM tools (`tool install`, `tool list`, `tool remove`)
 //! - Managing MCP servers (`mcp add`, `mcp auth`, `mcp list`, `mcp test`)
-//! - Querying workspace memory (`memory search`, `memory read`, `memory write`)
 //! - Managing OS service (`service install`, `service start`, `service stop`)
 //! - Active health diagnostics (`doctor`)
 //! - Checking system health (`status`)
@@ -15,7 +14,6 @@ mod completion;
 mod config;
 mod doctor;
 mod mcp;
-pub mod memory;
 pub mod oauth_defaults;
 mod pairing;
 mod registry;
@@ -27,8 +25,6 @@ pub use completion::Completion;
 pub use config::{ConfigCommand, run_config_command};
 pub use doctor::run_doctor_command;
 pub use mcp::{McpCommand, run_mcp_command};
-pub use memory::MemoryCommand;
-pub use memory::run_memory_command_with_db;
 pub use pairing::{PairingCommand, run_pairing_command, run_pairing_command_with_store};
 pub use registry::{RegistryCommand, run_registry_command};
 pub use service::{ServiceCommand, run_service_command};
@@ -127,14 +123,6 @@ pub enum Command {
         long_about = "Add, auth, list, or test MCP servers.\nExample: betterclaw mcp add notion https://mcp.notion.com"
     )]
     Mcp(McpCommand),
-
-    /// Query and manage workspace memory
-    #[command(
-        subcommand,
-        about = "Manage workspace memory",
-        long_about = "Search, read, or write to memory.\nExample: betterclaw memory search 'query'"
-    )]
-    Memory(MemoryCommand),
 
     /// DM pairing (approve inbound requests from unknown senders)
     #[command(

@@ -19,8 +19,6 @@ pub mod extensions;
 #[allow(dead_code)]
 pub mod jobs;
 #[allow(dead_code)]
-pub mod memory;
-#[allow(dead_code)]
 pub mod routines;
 #[allow(dead_code)]
 pub mod settings;

@@ -75,10 +75,6 @@ async fn async_main() -> anyhow::Result<()> {
             init_cli_tracing();
             return run_mcp_command(mcp_cmd.clone()).await;
         }
-        Some(Command::Memory(mem_cmd)) => {
-            init_cli_tracing();
-            return run_memory_command(mem_cmd).await;
-        }
         Some(Command::Pairing(pairing_cmd)) => {
             init_cli_tracing();
             return run_pairing_command(pairing_cmd.clone()).map_err(|e| anyhow::anyhow!("{}", e));
@@ -428,7 +424,6 @@ async fn async_main() -> anyhow::Result<()> {
 
     let hook_bootstrap = bootstrap_hooks(
         &components.hooks,
-        components.workspace.as_ref(),
         &config.wasm.tools_dir,
         &config.channels.wasm_channels_dir,
         &active_tool_names,
@@ -439,7 +434,6 @@ async fn async_main() -> anyhow::Result<()> {
     tracing::info!(
         bundled = hook_bootstrap.bundled_hooks,
         plugin = hook_bootstrap.plugin_hooks,
-        workspace = hook_bootstrap.workspace_hooks,
         outbound_webhooks = hook_bootstrap.outbound_webhooks,
         errors = hook_bootstrap.errors,
         "Lifecycle hooks initialized"
@@ -482,9 +476,6 @@ async fn async_main() -> anyhow::Result<()> {
     if let Some(ref gw_config) = config.channels.gateway {
         let mut gw =
             GatewayChannel::new(gw_config.clone()).with_llm_provider(Arc::clone(&components.llm));
-        if let Some(ref ws) = components.workspace {
-            gw = gw.with_workspace(Arc::clone(ws));
-        }
         gw = gw.with_session_manager(Arc::clone(&session_manager));
         gw = gw.with_log_broadcaster(Arc::clone(&log_broadcaster));
         gw = gw.with_log_level_handle(Arc::clone(&log_level_handle));
@@ -653,7 +644,7 @@ async fn async_main() -> anyhow::Result<()> {
         cheap_llm: components.cheap_llm,
         safety: components.safety,
         tools: components.tools,
-        workspace: components.workspace,
+        fs_workspace: components.fs_workspace,
         extension_manager: components.extension_manager,
         skill_registry: components.skill_registry,
         skill_catalog: components.skill_catalog,
@@ -715,36 +706,6 @@ fn init_worker_tracing() {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("betterclaw=info")),
         )
         .init();
-}
-
-/// Run the Memory CLI subcommand.
-async fn run_memory_command(mem_cmd: &betterclaw::cli::MemoryCommand) -> anyhow::Result<()> {
-    let config = Config::from_env()
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    let embeddings = config.embeddings.create_provider();
-
-    // Warn if libSQL backend is used with non-1536 embedding dimension.
-    if config.database.backend == betterclaw::config::DatabaseBackend::LibSql
-        && config.embeddings.enabled
-        && config.embeddings.dimension != 1536
-    {
-        tracing::warn!(
-            configured_dimension = config.embeddings.dimension,
-            "Embedding dimension {} is not 1536. The libSQL schema uses \
-             F32_BLOB(1536) which requires exactly 1536 dimensions. \
-             Embedding storage will fail. Use libSQL or set \
-             EMBEDDING_DIMENSION=1536.",
-            config.embeddings.dimension
-        );
-    }
-
-    let db: Arc<dyn betterclaw::db::Database> = betterclaw::db::connect_from_config(&config.database)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-    betterclaw::cli::run_memory_command_with_db(mem_cmd.clone(), db, embeddings).await
 }
 
 /// Run the Worker subcommand (inside Docker containers).

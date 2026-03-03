@@ -231,7 +231,7 @@ impl Agent {
 
                 let compactor = ContextCompactor::new(self.llm().clone(), self.safety().clone());
                 if let Err(e) = compactor
-                    .compact(thread, strategy, self.workspace().map(|w| w.as_ref()))
+                    .compact(thread, strategy)
                     .await
                 {
                     tracing::warn!("Auto-compaction failed: {}", e);
@@ -619,7 +619,7 @@ impl Agent {
 
         let compactor = ContextCompactor::new(self.llm().clone(), self.safety().clone());
         match compactor
-            .compact(thread, strategy, self.workspace().map(|w| w.as_ref()))
+            .compact(thread, strategy)
             .await
         {
             Ok(result) => {

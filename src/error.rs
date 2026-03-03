@@ -317,6 +317,9 @@ pub enum WorkspaceError {
     #[error("Workspace not initialized for user {user_id}")]
     NotInitialized { user_id: String },
 
+    #[error("Workspace IO error: {reason}")]
+    Io { reason: String },
+
     #[error("Heartbeat error: {reason}")]
     HeartbeatError { reason: String },
 }

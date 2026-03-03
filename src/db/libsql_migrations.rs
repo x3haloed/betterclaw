@@ -53,6 +53,117 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
     ON conversation_messages(conversation_id);
 
+-- ==================== Ledger (Append-only) ====================
+
+CREATE TABLE IF NOT EXISTS ledger_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    episode_id TEXT,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL,
+    content TEXT,
+    payload TEXT NOT NULL DEFAULT '{}',
+    sha256 TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_events_user_created
+    ON ledger_events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ledger_events_episode
+    ON ledger_events(episode_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_events_kind
+    ON ledger_events(user_id, kind);
+
+CREATE TABLE IF NOT EXISTS ledger_entities (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, kind, value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_entities_user
+    ON ledger_entities(user_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_entities_value
+    ON ledger_entities(user_id, value);
+
+CREATE TABLE IF NOT EXISTS ledger_event_entities (
+    event_id TEXT NOT NULL REFERENCES ledger_events(id) ON DELETE CASCADE,
+    entity_id TEXT NOT NULL REFERENCES ledger_entities(id) ON DELETE CASCADE,
+    role TEXT,
+    PRIMARY KEY (event_id, entity_id)
+);
+
+CREATE TABLE IF NOT EXISTS ledger_doc_pointers (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    event_id TEXT NOT NULL REFERENCES ledger_events(id) ON DELETE CASCADE,
+    pointer TEXT NOT NULL,
+    kind TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_doc_pointers_event
+    ON ledger_doc_pointers(event_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_doc_pointers_user
+    ON ledger_doc_pointers(user_id);
+
+CREATE TABLE IF NOT EXISTS ledger_quote_spans (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    event_id TEXT NOT NULL REFERENCES ledger_events(id) ON DELETE CASCADE,
+    start_offset INTEGER,
+    end_offset INTEGER,
+    quote TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_quote_spans_event
+    ON ledger_quote_spans(event_id);
+
+CREATE TABLE IF NOT EXISTS ledger_event_chunks (
+    _rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    event_id TEXT NOT NULL REFERENCES ledger_events(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding F32_BLOB(1536),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (event_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_event_chunks_event
+    ON ledger_event_chunks(event_id);
+
+-- Vector index for semantic candidate generation (libSQL native)
+CREATE INDEX IF NOT EXISTS idx_ledger_event_chunks_embedding
+    ON ledger_event_chunks (libsql_vector_idx(embedding));
+
+-- FTS5 virtual table for keyword candidate generation
+CREATE VIRTUAL TABLE IF NOT EXISTS ledger_event_chunks_fts USING fts5(
+    content,
+    content='ledger_event_chunks',
+    content_rowid='_rowid'
+);
+
+-- Triggers to keep FTS5 in sync with ledger_event_chunks
+CREATE TRIGGER IF NOT EXISTS ledger_event_chunks_fts_insert AFTER INSERT ON ledger_event_chunks BEGIN
+    INSERT INTO ledger_event_chunks_fts(rowid, content) VALUES (new._rowid, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS ledger_event_chunks_fts_delete AFTER DELETE ON ledger_event_chunks BEGIN
+    INSERT INTO ledger_event_chunks_fts(ledger_event_chunks_fts, rowid, content)
+        VALUES ('delete', old._rowid, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS ledger_event_chunks_fts_update AFTER UPDATE ON ledger_event_chunks BEGIN
+    INSERT INTO ledger_event_chunks_fts(ledger_event_chunks_fts, rowid, content)
+        VALUES ('delete', old._rowid, old.content);
+    INSERT INTO ledger_event_chunks_fts(rowid, content) VALUES (new._rowid, new.content);
+END;
+
 -- ==================== Agent Jobs ====================
 
 CREATE TABLE IF NOT EXISTS agent_jobs (
@@ -185,92 +296,6 @@ CREATE TABLE IF NOT EXISTS repair_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_repair_attempts_target ON repair_attempts(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_repair_attempts_created ON repair_attempts(created_at);
-
--- ==================== Workspace: Memory Documents ====================
-
-CREATE TABLE IF NOT EXISTS memory_documents (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    agent_id TEXT,
-    path TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    metadata TEXT NOT NULL DEFAULT '{}',
-    UNIQUE (user_id, agent_id, path)
-);
-
-CREATE INDEX IF NOT EXISTS idx_memory_documents_user ON memory_documents(user_id);
-CREATE INDEX IF NOT EXISTS idx_memory_documents_path ON memory_documents(user_id, path);
-CREATE INDEX IF NOT EXISTS idx_memory_documents_updated ON memory_documents(updated_at DESC);
-
--- Trigger to auto-update updated_at on memory_documents
-CREATE TRIGGER IF NOT EXISTS update_memory_documents_updated_at
-    AFTER UPDATE ON memory_documents
-    FOR EACH ROW
-    WHEN NEW.updated_at = OLD.updated_at
-    BEGIN
-        UPDATE memory_documents SET updated_at = datetime('now') WHERE id = NEW.id;
-    END;
-
--- ==================== Workspace: Memory Chunks ====================
-
-CREATE TABLE IF NOT EXISTS memory_chunks (
-    _rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-    id TEXT NOT NULL UNIQUE,
-    document_id TEXT NOT NULL REFERENCES memory_documents(id) ON DELETE CASCADE,
-    chunk_index INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    embedding F32_BLOB(1536),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (document_id, chunk_index)
-);
-
-CREATE INDEX IF NOT EXISTS idx_memory_chunks_document ON memory_chunks(document_id);
-
--- Vector index for semantic search (libSQL native)
-CREATE INDEX IF NOT EXISTS idx_memory_chunks_embedding
-    ON memory_chunks (libsql_vector_idx(embedding));
-
--- FTS5 virtual table for full-text search
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts USING fts5(
-    content,
-    content='memory_chunks',
-    content_rowid='_rowid'
-);
-
--- Triggers to keep FTS5 in sync with memory_chunks
-CREATE TRIGGER IF NOT EXISTS memory_chunks_fts_insert AFTER INSERT ON memory_chunks BEGIN
-    INSERT INTO memory_chunks_fts(rowid, content) VALUES (new._rowid, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memory_chunks_fts_delete AFTER DELETE ON memory_chunks BEGIN
-    INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, content)
-        VALUES ('delete', old._rowid, old.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS memory_chunks_fts_update AFTER UPDATE ON memory_chunks BEGIN
-    INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, content)
-        VALUES ('delete', old._rowid, old.content);
-    INSERT INTO memory_chunks_fts(rowid, content) VALUES (new._rowid, new.content);
-END;
-
--- ==================== Workspace: Heartbeat State ====================
-
-CREATE TABLE IF NOT EXISTS heartbeat_state (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    agent_id TEXT,
-    last_run TEXT,
-    next_run TEXT,
-    interval_seconds INTEGER NOT NULL DEFAULT 1800,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    last_checks TEXT NOT NULL DEFAULT '{}',
-    UNIQUE (user_id, agent_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_heartbeat_user ON heartbeat_state(user_id);
 
 -- ==================== Secrets ====================
 
@@ -519,9 +544,6 @@ CREATE INDEX IF NOT EXISTS idx_routines_event_triggers ON routines(user_id);
 
 -- routine_runs
 CREATE INDEX IF NOT EXISTS idx_routine_runs_status ON routine_runs(status);
-
--- heartbeat_state
-CREATE INDEX IF NOT EXISTS idx_heartbeat_next_run ON heartbeat_state(next_run);
 
 -- ==================== Seed data ====================
 

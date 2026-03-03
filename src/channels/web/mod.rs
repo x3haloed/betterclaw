@@ -2,14 +2,12 @@
 //!
 //! Provides a single-page web UI with:
 //! - Chat with the agent (via REST + SSE)
-//! - Workspace/memory browsing
 //! - Job management
 //!
 //! ```text
 //! Browser ─── POST /api/chat/send ──► Agent Loop
 //!         ◄── GET  /api/chat/events ── SSE stream
 //!         ─── GET  /api/chat/ws ─────► WebSocket (bidirectional)
-//!         ─── GET  /api/memory/* ────► Workspace
 //!         ─── GET  /api/jobs/* ──────► Database
 //!         ◄── GET  / ───────────────── Static HTML/CSS/JS
 //! ```
@@ -41,7 +39,6 @@ use crate::orchestrator::job_manager::ContainerJobManager;
 use crate::skills::catalog::SkillCatalog;
 use crate::skills::registry::SkillRegistry;
 use crate::tools::ToolRegistry;
-use crate::workspace::Workspace;
 
 use self::log_layer::{LogBroadcaster, LogLevelHandle};
 
@@ -75,7 +72,6 @@ impl GatewayChannel {
         let state = Arc::new(GatewayState {
             msg_tx: tokio::sync::RwLock::new(None),
             sse: SseManager::new(),
-            workspace: None,
             session_manager: None,
             log_broadcaster: None,
             log_level_handle: None,
@@ -109,7 +105,6 @@ impl GatewayChannel {
         let mut new_state = GatewayState {
             msg_tx: tokio::sync::RwLock::new(None),
             sse: SseManager::new(),
-            workspace: self.state.workspace.clone(),
             session_manager: self.state.session_manager.clone(),
             log_broadcaster: self.state.log_broadcaster.clone(),
             log_level_handle: self.state.log_level_handle.clone(),
@@ -132,12 +127,6 @@ impl GatewayChannel {
         };
         mutate(&mut new_state);
         self.state = Arc::new(new_state);
-    }
-
-    /// Inject the workspace reference for the memory API.
-    pub fn with_workspace(mut self, workspace: Arc<Workspace>) -> Self {
-        self.rebuild_state(|s| s.workspace = Some(workspace));
-        self
     }
 
     /// Inject the session manager for thread/session info.

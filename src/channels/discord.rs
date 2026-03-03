@@ -920,7 +920,10 @@ impl DiscordChannel {
                                 .get("channel_id")
                                 .and_then(|x| x.as_str())
                                 .unwrap_or("");
-                            let mut msg = IncomingMessage::new("discord", author_id, content);
+                            // Route all Discord traffic into a single BetterClaw user_id by default.
+                            // The Discord sender is tracked separately in metadata + allowlists.
+                            let mut msg =
+                                IncomingMessage::new("discord", &self.state.config.user_id, content);
                             if !channel_id.is_empty() {
                                 msg.thread_id = Some(channel_id.to_string());
                             }
@@ -1030,7 +1033,9 @@ impl DiscordChannel {
                         "discord_sender_id": author_id
                     });
 
-                    let mut msg = IncomingMessage::new("discord", author_id, final_content)
+                    // Route all Discord traffic into a single BetterClaw user_id by default.
+                    // The Discord sender is tracked separately in metadata + allowlists.
+                    let mut msg = IncomingMessage::new("discord", &self.state.config.user_id, final_content)
                         .with_metadata(metadata);
                     msg.thread_id = Some(channel_id.to_string());
                     if let Some(name) = user_name {

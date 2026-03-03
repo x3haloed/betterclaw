@@ -94,6 +94,13 @@ pub struct SignalConfig {
 pub struct DiscordConfig {
     /// Discord bot token (required to enable).
     pub bot_token: SecretString,
+    /// BetterClaw user_id to attribute Discord conversations to.
+    ///
+    /// Default: "default".
+    ///
+    /// NOTE: This is distinct from the Discord sender ID. The sender ID is still
+    /// recorded in message metadata (discord_sender_id) and enforced by allowlists.
+    pub user_id: String,
     /// Optional guild to restrict group messages to (DMs still allowed).
     pub guild_id: Option<String>,
     /// Users allowed to interact with the bot.
@@ -196,6 +203,7 @@ impl ChannelsConfig {
         };
 
         let discord = if let Some(token) = optional_env("DISCORD_BOT_TOKEN")? {
+            let user_id = optional_env("DISCORD_USER_ID")?.unwrap_or_else(|| "default".to_string());
             let allowed_users = optional_env("DISCORD_ALLOWED_USERS")?
                 .map(|s| {
                     s.split(',')
@@ -219,6 +227,7 @@ impl ChannelsConfig {
 
             Some(DiscordConfig {
                 bot_token: SecretString::from(token),
+                user_id,
                 guild_id: optional_env("DISCORD_GUILD_ID")?,
                 allowed_users,
                 listen_to_bots: parse_bool_env("DISCORD_LISTEN_TO_BOTS", false)?,

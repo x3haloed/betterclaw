@@ -80,7 +80,8 @@ termimad = "0.34"
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "set-header"] }
-tokio-tungstenite = "0.26"
+# Needed for Discord's `wss://gateway.discord.gg` websocket.
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 
 # Cron scheduling for routines
 cron = "0.13"

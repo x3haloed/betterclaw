@@ -371,6 +371,7 @@ async fn async_main() -> anyhow::Result<()> {
         tracing::info!(
             guild_id = ?discord_config.guild_id,
             mention_only = discord_config.mention_only,
+            user_id = %discord_config.user_id,
             "Discord channel enabled"
         );
         if discord_config.allowed_users.is_empty() {

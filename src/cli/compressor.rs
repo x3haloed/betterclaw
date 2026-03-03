@@ -6,11 +6,9 @@ use clap::{Args, Subcommand};
 
 use crate::app::{AppBuilder, AppBuilderFlags};
 use crate::cli::Cli;
-use crate::compressor::complete_delta_v0;
+use crate::compressor::{MicroDistillParams, run_micro_distill_pass};
 use crate::config::Config;
 use crate::db::Database;
-use crate::ledger::NewLedgerEvent;
-use crate::llm::ChatMessage;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CompressorCommand {
@@ -64,119 +62,38 @@ pub async fn run_compressor_command(cli: &Cli, cmd: CompressorCommand) -> anyhow
     Ok(())
 }
 
-fn format_events_for_prompt(events: &[crate::ledger::LedgerEvent]) -> String {
-    let mut out = String::new();
-    for e in events {
-        out.push_str("- ");
-        out.push_str(&format!(
-            "{} {} {} {}\n",
-            e.id,
-            e.created_at.to_rfc3339(),
-            e.kind,
-            e.source
-        ));
-        if let Some(ref c) = e.content {
-            out.push_str("  content: ");
-            // Keep prompt bounded; this is not a dump.
-            out.push_str(&crate::compressor::truncate_chars(c, 2_000));
-            out.push('\n');
-        }
-    }
-    out
-}
-
 async fn run_once(
     store: Arc<dyn Database>,
     compressor_llm: Arc<dyn crate::llm::LlmProvider>,
     args: RunOnceArgs,
 ) -> anyhow::Result<()> {
-    // Local window (newest-first from DB); present oldest-first to the model.
-    let mut local = store
-        .list_recent_ledger_events(&args.user_id, args.window_events)
-        .await?;
-    local.reverse();
+    let params = MicroDistillParams {
+        window_events: args.window_events,
+        anchor_invariants: args.anchor_invariants,
+        drift_candidates: args.drift_candidates,
+        max_tokens: 2048,
+    };
 
-    let mut invariants = store
-        .list_recent_ledger_events_by_kind_prefix(&args.user_id, "invariant.", args.anchor_invariants)
-        .await?;
-    invariants.reverse();
-
-    let mut drift = store
-        .list_recent_ledger_events_by_kind_prefix(&args.user_id, "drift.", args.drift_candidates)
-        .await?;
-    drift.reverse();
-
-    // System prompt: sterile transformer role.
-    let system = r#"
-You are the BetterClaw compressor subsystem.
-You are a transformer over evidence (ledger events). You do not have a persona.
-
-Goal: produce a small, conservative delta of actions over invariants/isnads.
-
-Hard rules:
-- Never invent facts.
-- Every action MUST include citations with valid event_id values from the provided ledger window or anchors.
-- If you cannot cite evidence, do not create/update invariants; prefer flag_drift or do nothing.
-
-Output constraints:
-- Max 8 total actions.
-- Max 2 create_invariant per scope.
-- Prefer reweight/merge over rewriting text unless evidence is strong.
-"#;
-
-    let user = format!(
-        "# Evidence Window (Local)\n{}\n\n# Anchor Invariants (Recent)\n{}\n\n# Drift/Contradiction Candidates (Recent)\n{}\n",
-        format_events_for_prompt(&local),
-        format_events_for_prompt(&invariants),
-        format_events_for_prompt(&drift),
-    );
-
-    let messages = vec![ChatMessage::system(system.trim()), ChatMessage::user(user)];
-
-    let delta = complete_delta_v0(compressor_llm.as_ref(), messages, None, 2048).await?;
+    let res = run_micro_distill_pass(
+        store.as_ref(),
+        compressor_llm.as_ref(),
+        &args.user_id,
+        params,
+        args.commit,
+    )
+    .await?;
+    let delta = res.delta;
 
     // Always print the delta to stdout for inspection.
     println!("{}", serde_json::to_string_pretty(&delta)?);
     eprintln!("\n--- wake_pack.v0 (content) ---\n{}\n", delta.wake_pack.content);
-
     if args.commit {
-        let wake_payload = serde_json::json!({
-            "citations": delta.wake_pack.citations,
-        });
-
-        let wake_event = NewLedgerEvent {
-            user_id: &args.user_id,
-            episode_id: None,
-            kind: "wake_pack.v0",
-            source: "compressor",
-            content: Some(delta.wake_pack.content.as_str()),
-            payload: &wake_payload,
-        };
-
-        let wake_pack_event_id = store.append_ledger_event(&wake_event).await?;
-
-        let payload = serde_json::json!({
-            "actions": delta.actions,
-            "wake_pack_event_id": wake_pack_event_id.to_string(),
-            "window": {
-                "local_event_ids": local.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
-                "anchor_invariant_ids": invariants.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
-                "drift_candidate_ids": drift.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
-            }
-        });
-
-        let ev = NewLedgerEvent {
-            user_id: &args.user_id,
-            episode_id: None,
-            kind: "distill.micro",
-            source: "compressor",
-            content: None,
-            payload: &payload,
-        };
-
-        let id = store.append_ledger_event(&ev).await?;
-        eprintln!("Committed wake_pack.v0 event: {}", wake_pack_event_id);
-        eprintln!("Committed distill.micro event: {}", id);
+        if let Some(id) = res.wake_pack_event_id {
+            eprintln!("Committed wake_pack.v0 event: {}", id);
+        }
+        if let Some(id) = res.distill_event_id {
+            eprintln!("Committed distill.micro event: {}", id);
+        }
     }
 
     Ok(())

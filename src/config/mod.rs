@@ -9,6 +9,7 @@ mod agent;
 mod builder;
 mod channels;
 mod compressor;
+mod compressor_loop;
 mod database;
 mod embeddings;
 mod heartbeat;
@@ -35,6 +36,7 @@ pub use self::builder::BuilderModeConfig;
 pub use self::channels::{
     ChannelsConfig, CliConfig, DiscordConfig, GatewayConfig, HttpConfig, SignalConfig,
 };
+pub use self::compressor_loop::CompressorLoopConfig;
 pub use self::database::{DatabaseBackend, DatabaseConfig, default_libsql_path};
 pub use self::embeddings::EmbeddingsConfig;
 pub use self::heartbeat::HeartbeatConfig;
@@ -65,6 +67,7 @@ pub struct Config {
     pub llm: LlmConfig,
     /// Dedicated LLM config for the compressor role (defaults to `llm` if unset).
     pub compressor_llm: LlmConfig,
+    pub compressor_loop: CompressorLoopConfig,
     pub embeddings: EmbeddingsConfig,
     pub tunnel: TunnelConfig,
     pub channels: ChannelsConfig,
@@ -192,6 +195,7 @@ impl Config {
             database: DatabaseConfig::resolve()?,
             llm,
             compressor_llm,
+            compressor_loop: CompressorLoopConfig::resolve()?,
             embeddings: EmbeddingsConfig::resolve(settings)?,
             tunnel: TunnelConfig::resolve(settings)?,
             channels: ChannelsConfig::resolve(settings)?,

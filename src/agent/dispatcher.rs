@@ -1191,6 +1191,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(Arc::new(ContextManager::new(1))),
             None,
         )
@@ -1934,6 +1935,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(Arc::new(ContextManager::new(1))),
             None,
         )
@@ -2048,6 +2050,7 @@ mod tests {
                 },
                 deps,
                 Arc::new(ChannelManager::new()),
+                None,
                 None,
                 None,
                 None,

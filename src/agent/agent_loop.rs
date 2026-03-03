@@ -19,7 +19,7 @@ use crate::agent::session_manager::SessionManager;
 use crate::agent::submission::{Submission, SubmissionParser, SubmissionResult};
 use crate::agent::{HeartbeatConfig as AgentHeartbeatConfig, Router, Scheduler};
 use crate::channels::{ChannelManager, IncomingMessage, OutgoingResponse, StatusUpdate};
-use crate::config::{AgentConfig, HeartbeatConfig, RoutineConfig, SkillsConfig};
+use crate::config::{AgentConfig, CompressorLoopConfig, HeartbeatConfig, RoutineConfig, SkillsConfig};
 use crate::context::ContextManager;
 use crate::db::Database;
 use crate::error::Error;
@@ -91,6 +91,7 @@ pub struct Agent {
     pub(super) heartbeat_config: Option<HeartbeatConfig>,
     pub(super) hygiene_config: Option<crate::config::HygieneConfig>,
     pub(super) routine_config: Option<RoutineConfig>,
+    pub(super) compressor_loop_config: Option<CompressorLoopConfig>,
 }
 
 impl Agent {
@@ -106,6 +107,7 @@ impl Agent {
         heartbeat_config: Option<HeartbeatConfig>,
         hygiene_config: Option<crate::config::HygieneConfig>,
         routine_config: Option<RoutineConfig>,
+        compressor_loop_config: Option<CompressorLoopConfig>,
         context_manager: Option<Arc<ContextManager>>,
         session_manager: Option<Arc<SessionManager>>,
     ) -> Self {
@@ -136,6 +138,7 @@ impl Agent {
             heartbeat_config,
             hygiene_config,
             routine_config,
+            compressor_loop_config,
         }
     }
 
@@ -485,6 +488,70 @@ impl Agent {
         // Extract engine ref for use in message loop
         let routine_engine_for_loop = routine_handle.as_ref().map(|(_, e)| Arc::clone(e));
 
+        // Spawn compressor loop if enabled
+        let compressor_loop_handle = if let Some(ref cl_cfg) = self.compressor_loop_config {
+            if cl_cfg.enabled {
+                if let Some(store) = self.store() {
+                    let store = Arc::clone(store);
+                    let llm = self.compressor_llm().clone();
+                    let cfg = cl_cfg.clone();
+                    tracing::info!(
+                        "Compressor loop enabled: interval={}s commit={} user_id={}",
+                        cfg.interval_secs,
+                        cfg.commit,
+                        cfg.user_id
+                    );
+                    Some(tokio::spawn(async move {
+                        if cfg.startup_delay_secs > 0 {
+                            tokio::time::sleep(std::time::Duration::from_secs(
+                                cfg.startup_delay_secs,
+                            ))
+                            .await;
+                        }
+                        loop {
+                            let params = crate::compressor::MicroDistillParams {
+                                window_events: cfg.window_events,
+                                anchor_invariants: cfg.anchor_invariants,
+                                drift_candidates: cfg.drift_candidates,
+                                max_tokens: cfg.max_tokens,
+                            };
+                            match crate::compressor::run_micro_distill_pass(
+                                store.as_ref(),
+                                llm.as_ref(),
+                                &cfg.user_id,
+                                params,
+                                cfg.commit,
+                            )
+                            .await
+                            {
+                                Ok(res) => {
+                                    tracing::info!(
+                                        wake_pack_event_id = ?res.wake_pack_event_id,
+                                        distill_event_id = ?res.distill_event_id,
+                                        actions = res.delta.actions.len(),
+                                        "Compressor micro distill pass completed"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Compressor micro distill pass failed: {}", e);
+                                }
+                            }
+
+                            tokio::time::sleep(std::time::Duration::from_secs(cfg.interval_secs))
+                                .await;
+                        }
+                    }))
+                } else {
+                    tracing::warn!("Compressor loop enabled but store not available");
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Main message loop
         tracing::info!("Agent {} ready and listening", self.config.name);
 
@@ -597,6 +664,9 @@ impl Agent {
         }
         if let Some((cron_handle, _)) = routine_handle {
             cron_handle.abort();
+        }
+        if let Some(handle) = compressor_loop_handle {
+            handle.abort();
         }
         self.scheduler.stop_all().await;
         self.channels.shutdown_all().await?;

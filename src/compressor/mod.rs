@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
+use crate::ledger::NewLedgerEvent;
 use crate::llm::{ChatMessage, FinishReason, LlmProvider, ToolCall, ToolCompletionRequest, ToolDefinition};
 
 pub const COMPRESSOR_DELTA_TOOL_NAME: &str = "compressor_delta_v0";
@@ -104,6 +105,183 @@ pub struct ActionV0 {
 pub struct CompressorDeltaV0 {
     pub wake_pack: WakePackV0,
     pub actions: Vec<ActionV0>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MicroDistillParams {
+    pub window_events: i64,
+    pub anchor_invariants: i64,
+    pub drift_candidates: i64,
+    pub max_tokens: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct MicroDistillResult {
+    pub delta: CompressorDeltaV0,
+    pub wake_pack_event_id: Option<uuid::Uuid>,
+    pub distill_event_id: Option<uuid::Uuid>,
+}
+
+fn format_events_for_prompt(events: &[crate::ledger::LedgerEvent]) -> String {
+    let mut out = String::new();
+    for e in events {
+        out.push_str("- ");
+        out.push_str(&format!(
+            "{} {} {} {}\n",
+            e.id,
+            e.created_at.to_rfc3339(),
+            e.kind,
+            e.source
+        ));
+        if let Some(ref c) = e.content {
+            out.push_str("  content: ");
+            // Keep prompt bounded; this is not a dump.
+            out.push_str(&truncate_chars(c, 2_000));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+const COMPRESSOR_SYSTEM_PROMPT_V0: &str = r#"
+You are the BetterClaw compressor subsystem.
+You are a transformer over evidence (ledger events). You do not have a persona.
+
+Goal: produce a small, conservative delta of actions over invariants/isnads and a wake_pack.v0 artifact.
+
+Hard rules:
+- Never invent facts.
+- Every action MUST include citations with valid event_id values from the provided ledger window or anchors.
+- The wake_pack content MUST only summarize what is supported by citations; do not add uncited claims.
+- If you cannot cite evidence, do not create/update invariants; prefer flag_drift or do nothing.
+
+Output constraints:
+- Max 8 total actions.
+- Max 2 create_invariant per scope.
+- Prefer reweight/merge over rewriting text unless evidence is strong.
+"#;
+
+/// Run a single bounded "micro distill" pass.
+///
+/// If `commit=true`, appends:
+/// - `wake_pack.v0` (content in `LedgerEvent.content`, citations in `payload`)
+/// - `distill.micro` (actions + window ids + wake_pack_event_id)
+pub async fn run_micro_distill_pass(
+    store: &dyn crate::db::Database,
+    compressor_llm: &dyn LlmProvider,
+    user_id: &str,
+    params: MicroDistillParams,
+    commit: bool,
+) -> Result<MicroDistillResult, LlmError> {
+    // Local window (newest-first from DB); present oldest-first to the model.
+    let mut local = store
+        .list_recent_ledger_events(user_id, params.window_events)
+        .await
+        .map_err(|e| LlmError::RequestFailed {
+            provider: "compressor".to_string(),
+            reason: format!("Failed to load ledger window: {e}"),
+        })?;
+    local.reverse();
+
+    let mut invariants = store
+        .list_recent_ledger_events_by_kind_prefix(user_id, "invariant.", params.anchor_invariants)
+        .await
+        .map_err(|e| LlmError::RequestFailed {
+            provider: "compressor".to_string(),
+            reason: format!("Failed to load invariant anchors: {e}"),
+        })?;
+    invariants.reverse();
+
+    let mut drift = store
+        .list_recent_ledger_events_by_kind_prefix(user_id, "drift.", params.drift_candidates)
+        .await
+        .map_err(|e| LlmError::RequestFailed {
+            provider: "compressor".to_string(),
+            reason: format!("Failed to load drift candidates: {e}"),
+        })?;
+    drift.reverse();
+
+    let user_msg = format!(
+        "# Evidence Window (Local)\n{}\n\n# Anchor Invariants (Recent)\n{}\n\n# Drift/Contradiction Candidates (Recent)\n{}\n",
+        format_events_for_prompt(&local),
+        format_events_for_prompt(&invariants),
+        format_events_for_prompt(&drift),
+    );
+
+    let messages = vec![
+        ChatMessage::system(COMPRESSOR_SYSTEM_PROMPT_V0.trim()),
+        ChatMessage::user(user_msg),
+    ];
+
+    let delta = complete_delta_v0(
+        compressor_llm,
+        messages,
+        None,
+        params.max_tokens,
+    )
+    .await?;
+
+    if !commit {
+        return Ok(MicroDistillResult {
+            delta,
+            wake_pack_event_id: None,
+            distill_event_id: None,
+        });
+    }
+
+    let wake_payload = serde_json::json!({
+        "citations": delta.wake_pack.citations,
+    });
+
+    let wake_event = NewLedgerEvent {
+        user_id,
+        episode_id: None,
+        kind: "wake_pack.v0",
+        source: "compressor",
+        content: Some(delta.wake_pack.content.as_str()),
+        payload: &wake_payload,
+    };
+
+    let wake_pack_event_id = store
+        .append_ledger_event(&wake_event)
+        .await
+        .map_err(|e| LlmError::RequestFailed {
+            provider: "compressor".to_string(),
+            reason: format!("Failed to commit wake_pack.v0: {e}"),
+        })?;
+
+    let payload = serde_json::json!({
+        "actions": delta.actions,
+        "wake_pack_event_id": wake_pack_event_id.to_string(),
+        "window": {
+            "local_event_ids": local.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
+            "anchor_invariant_ids": invariants.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
+            "drift_candidate_ids": drift.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
+        }
+    });
+
+    let ev = NewLedgerEvent {
+        user_id,
+        episode_id: None,
+        kind: "distill.micro",
+        source: "compressor",
+        content: None,
+        payload: &payload,
+    };
+
+    let distill_event_id = store
+        .append_ledger_event(&ev)
+        .await
+        .map_err(|e| LlmError::RequestFailed {
+            provider: "compressor".to_string(),
+            reason: format!("Failed to commit distill.micro: {e}"),
+        })?;
+
+    Ok(MicroDistillResult {
+        delta,
+        wake_pack_event_id: Some(wake_pack_event_id),
+        distill_event_id: Some(distill_event_id),
+    })
 }
 
 pub fn compressor_delta_tool_schema_v0() -> ToolDefinition {

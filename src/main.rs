@@ -374,9 +374,14 @@ async fn async_main() -> anyhow::Result<()> {
             user_id = %discord_config.user_id,
             "Discord channel enabled"
         );
-        if discord_config.allowed_users.is_empty() {
+        if discord_config.dm_allowed_users.is_empty() {
             tracing::warn!(
-                "Discord channel has empty allowed_users list - ALL messages will be DENIED."
+                "Discord DM allowlist is empty - ALL DMs will be DENIED."
+            );
+        }
+        if discord_config.guild_allowed_users.is_empty() {
+            tracing::warn!(
+                "Discord guild allowlist is empty - ALL guild messages will be DENIED."
             );
         }
     }

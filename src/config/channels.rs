@@ -109,11 +109,16 @@ pub struct DiscordConfig {
     pub primary_discord_user_id: Option<String>,
     /// Optional guild to restrict group messages to (DMs still allowed).
     pub guild_id: Option<String>,
-    /// Users allowed to interact with the bot.
+    /// Users allowed to interact with the bot via Discord DMs.
     ///
-    /// - Empty list denies everyone (secure-by-default).
+    /// - Empty list denies everyone.
     /// - `"*"` allows everyone.
-    pub allowed_users: Vec<String>,
+    pub dm_allowed_users: Vec<String>,
+    /// Users allowed to interact with the bot in guild channels.
+    ///
+    /// - Empty list denies everyone in guild channels.
+    /// - `"*"` allows everyone in the configured guild(s).
+    pub guild_allowed_users: Vec<String>,
     /// Whether to process messages from other bots.
     pub listen_to_bots: bool,
     /// If true, in guild channels only respond when mentioned (unless sender is in group_reply_allowed_sender_ids).
@@ -213,7 +218,9 @@ impl ChannelsConfig {
             let primary_discord_user_id = optional_env("DISCORD_PRIMARY_DISCORD_USER_ID")?
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
-            let allowed_users = optional_env("DISCORD_ALLOWED_USERS")?
+            // Legacy allowlist (applied to both DM + guild before the split).
+            // Kept as fallback so existing setups keep working.
+            let legacy_allowed_users = optional_env("DISCORD_ALLOWED_USERS")?
                 .map(|s| {
                     s.split(',')
                         .map(|e| e.trim().to_string())
@@ -223,6 +230,26 @@ impl ChannelsConfig {
                 // Usability default: if you set a token but not an allowlist, allow all.
                 // You can lock it down by setting DISCORD_ALLOWED_USERS to an empty string
                 // (explicit deny) or to a specific list of IDs.
+                .unwrap_or_else(|| vec!["*".to_string()]);
+
+            let dm_allowed_users = optional_env("DISCORD_DM_ALLOWED_USERS")?
+                .map(|s| {
+                    s.split(',')
+                        .map(|e| e.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| legacy_allowed_users.clone());
+
+            let guild_allowed_users = optional_env("DISCORD_GUILD_ALLOWED_USERS")?
+                .map(|s| {
+                    s.split(',')
+                        .map(|e| e.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                // For shared-workspace servers, default to allowing guild users to initiate
+                // interactions unless explicitly locked down.
                 .unwrap_or_else(|| vec!["*".to_string()]);
 
             let group_reply_allowed_sender_ids = optional_env("DISCORD_GROUP_REPLY_ALLOWED_SENDERS")?
@@ -239,7 +266,8 @@ impl ChannelsConfig {
                 user_id,
                 primary_discord_user_id,
                 guild_id: optional_env("DISCORD_GUILD_ID")?,
-                allowed_users,
+                dm_allowed_users,
+                guild_allowed_users,
                 listen_to_bots: parse_bool_env("DISCORD_LISTEN_TO_BOTS", false)?,
                 mention_only: parse_bool_env("DISCORD_MENTION_ONLY", true)?,
                 group_reply_allowed_sender_ids,

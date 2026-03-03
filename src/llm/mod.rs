@@ -15,6 +15,7 @@ pub mod response_cache;
 pub mod retry;
 mod rig_adapter;
 pub mod smart_routing;
+mod request_id;
 
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerProvider};
 pub use failover::{CooldownConfig, FailoverProvider};
@@ -30,6 +31,7 @@ pub use response_cache::{CachedProvider, ResponseCacheConfig};
 pub use retry::{RetryConfig, RetryProvider};
 pub use rig_adapter::RigAdapter;
 pub use smart_routing::{SmartRoutingConfig, SmartRoutingProvider, TaskComplexity};
+pub use request_id::RequestIdProvider;
 
 use std::sync::Arc;
 
@@ -45,20 +47,21 @@ use crate::error::LlmError;
 pub fn create_llm_provider(
     config: &LlmConfig,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    match config.backend {
+    let provider = match config.backend {
         LlmBackend::OpenAi => create_openai_provider(config),
         LlmBackend::Anthropic => create_anthropic_provider(config),
         LlmBackend::Ollama => create_ollama_provider(config),
         LlmBackend::OpenAiCompatible => create_openai_compatible_provider(config),
         LlmBackend::Tinfoil => create_tinfoil_provider(config),
-    }
+    }?;
+    Ok(Arc::new(RequestIdProvider::new(provider)))
 }
 
 fn create_llm_provider_with_model(
     config: &LlmConfig,
     model_override: &str,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    match config.backend {
+    let provider = match config.backend {
         LlmBackend::OpenAi => {
             let mut c = config.openai.as_ref().ok_or_else(|| LlmError::AuthFailed {
                 provider: "openai".to_string(),
@@ -94,7 +97,8 @@ fn create_llm_provider_with_model(
             c.model = model_override.to_string();
             create_tinfoil_provider_from(&c)
         }
-    }
+    }?;
+    Ok(Arc::new(RequestIdProvider::new(provider)))
 }
 
 fn create_openai_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {

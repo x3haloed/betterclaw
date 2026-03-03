@@ -72,8 +72,12 @@ impl DiscordChannel {
         self.state.client.clone()
     }
 
-    fn is_user_allowed(&self, user_id: &str) -> bool {
-        let allow = &self.state.config.allowed_users;
+    fn is_user_allowed(&self, user_id: &str, is_group_message: bool) -> bool {
+        let allow = if is_group_message {
+            &self.state.config.guild_allowed_users
+        } else {
+            &self.state.config.dm_allowed_users
+        };
         allow.iter().any(|u| u == "*" || u == user_id)
     }
 
@@ -916,7 +920,8 @@ impl DiscordChannel {
                             self.ack_interaction(interaction_id, interaction_token).await;
                         }
 
-                        if !author_id.is_empty() && !self.is_user_allowed(author_id) {
+                        let is_group_interaction = d.get("guild_id").and_then(|x| x.as_str()).is_some();
+                        if !author_id.is_empty() && !self.is_user_allowed(author_id, is_group_interaction) {
                             tracing::warn!(author_id, "Discord: ignoring interaction from unauthorized user");
                             continue;
                         }
@@ -978,11 +983,6 @@ impl DiscordChannel {
                         continue;
                     }
 
-                    if !self.is_user_allowed(author_id) {
-                        tracing::debug!(author_id, "Discord: ignoring message from unauthorized user");
-                        continue;
-                    }
-
                     let guild_id = d.get("guild_id").and_then(|x| x.as_str());
                     if let (Some(filter), Some(gid)) = (guild_filter.as_deref(), guild_id) {
                         if gid != filter {
@@ -997,6 +997,16 @@ impl DiscordChannel {
 
                     let content = d.get("content").and_then(|x| x.as_str()).unwrap_or("");
                     let is_group_message = guild_id.is_some();
+
+                    if !self.is_user_allowed(author_id, is_group_message) {
+                        tracing::debug!(
+                            author_id,
+                            is_group_message,
+                            "Discord: ignoring message from unauthorized user"
+                        );
+                        continue;
+                    }
+
                     let allow_sender_without_mention =
                         is_group_message && self.is_group_sender_trigger_enabled(author_id);
                     let require_mention =

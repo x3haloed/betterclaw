@@ -196,6 +196,8 @@ pub enum RespondResult {
 /// A `RespondResult` bundled with the token usage from the LLM call that produced it.
 #[derive(Debug, Clone)]
 pub struct RespondOutput {
+    /// Unique ID for correlating logs for a single outbound LLM request.
+    pub llm_request_id: uuid::Uuid,
     pub result: RespondResult,
     pub usage: TokenUsage,
 }
@@ -474,10 +476,11 @@ Respond in JSON format:
     ///
     /// Returns `RespondOutput` containing the result and token usage from the LLM call.
     /// The caller should use `usage` to track cost/budget against the job.
-    pub async fn respond_with_tools(
+pub async fn respond_with_tools(
         &self,
         context: &ReasoningContext,
     ) -> Result<RespondOutput, LlmError> {
+        let llm_request_id = uuid::Uuid::new_v4();
         let system_prompt = self.build_conversation_prompt(context);
 
         let mut messages = vec![ChatMessage::system(system_prompt)];
@@ -491,21 +494,38 @@ Respond in JSON format:
 
         // If we have tools, use tool completion mode
         if !effective_tools.is_empty() {
+            tracing::debug!(
+                llm_request_id = %llm_request_id,
+                model = %self.llm.active_model_name(),
+                tools = effective_tools.len(),
+                "LLM request start (tools)"
+            );
             let mut request = ToolCompletionRequest::new(messages, effective_tools)
                 .with_max_tokens(4096)
                 .with_temperature(0.7)
                 .with_tool_choice("auto");
             request.metadata = context.metadata.clone();
+            request
+                .metadata
+                .insert("llm_request_id".to_string(), llm_request_id.to_string());
 
             let response = self.llm.complete_with_tools(request).await?;
             let usage = TokenUsage {
                 input_tokens: response.input_tokens,
                 output_tokens: response.output_tokens,
             };
+            tracing::debug!(
+                llm_request_id = %llm_request_id,
+                model = %self.llm.active_model_name(),
+                input_tokens = usage.input_tokens,
+                output_tokens = usage.output_tokens,
+                "LLM request end (tools)"
+            );
 
             // If there were tool calls, return them for execution
             if !response.tool_calls.is_empty() {
                 return Ok(RespondOutput {
+                    llm_request_id,
                     result: RespondResult::ToolCalls {
                         tool_calls: response.tool_calls,
                         content: response.content.map(|c| clean_response(&c)),
@@ -525,6 +545,7 @@ Respond in JSON format:
             if !recovered.is_empty() {
                 let cleaned = clean_response(&content);
                 return Ok(RespondOutput {
+                    llm_request_id,
                     result: RespondResult::ToolCalls {
                         tool_calls: recovered,
                         content: if cleaned.is_empty() {
@@ -545,6 +566,7 @@ Respond in JSON format:
             let cleaned = clean_response(&content);
             let final_text = if cleaned.trim().is_empty() {
                 tracing::warn!(
+                    llm_request_id = %llm_request_id,
                     "LLM response was empty after cleaning (original len={}), using fallback",
                     content.len()
                 );
@@ -553,20 +575,37 @@ Respond in JSON format:
                 cleaned
             };
             Ok(RespondOutput {
+                llm_request_id,
                 result: RespondResult::Text(final_text),
                 usage,
             })
         } else {
             // No tools, use simple completion
+            tracing::debug!(
+                llm_request_id = %llm_request_id,
+                model = %self.llm.active_model_name(),
+                "LLM request start (text)"
+            );
             let mut request = CompletionRequest::new(messages)
                 .with_max_tokens(4096)
                 .with_temperature(0.7);
             request.metadata = context.metadata.clone();
+            request
+                .metadata
+                .insert("llm_request_id".to_string(), llm_request_id.to_string());
 
             let response = self.llm.complete(request).await?;
+            tracing::debug!(
+                llm_request_id = %llm_request_id,
+                model = %self.llm.active_model_name(),
+                input_tokens = response.input_tokens,
+                output_tokens = response.output_tokens,
+                "LLM request end (text)"
+            );
             let cleaned = clean_response(&response.content);
             let final_text = if cleaned.trim().is_empty() {
                 tracing::warn!(
+                    llm_request_id = %llm_request_id,
                     "LLM response was empty after cleaning (original len={}), using fallback",
                     response.content.len()
                 );
@@ -575,6 +614,7 @@ Respond in JSON format:
                 cleaned
             };
             Ok(RespondOutput {
+                llm_request_id,
                 result: RespondResult::Text(final_text),
                 usage: TokenUsage {
                     input_tokens: response.input_tokens,

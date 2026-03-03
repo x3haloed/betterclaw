@@ -305,10 +305,11 @@ impl Agent {
                 )
                 .await;
             tracing::debug!(
-                "LLM call used {} input + {} output tokens (${:.6})",
-                output.usage.input_tokens,
-                output.usage.output_tokens,
-                call_cost,
+                llm_request_id = %output.llm_request_id,
+                input_tokens = output.usage.input_tokens,
+                output_tokens = output.usage.output_tokens,
+                cost = %call_cost,
+                "LLM call completed"
             );
 
             match output.result {

@@ -39,7 +39,8 @@ pub async fn append_event_best_effort(
         return None;
     };
 
-    let content = content.map(|c| truncate_chars(&c, LEDGER_CONTENT_MAX_CHARS));
+    // Do not truncate by default. Turns (`user_turn`, `agent_turn`) should be captured
+    // verbatim so the ledger remains a faithful transcript.
     let payload_ref = payload;
     let kind_ref = kind;
     let source_ref = source;
@@ -67,4 +68,3 @@ pub async fn append_event_best_effort(
         }
     }
 }
-

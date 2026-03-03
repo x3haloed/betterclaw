@@ -159,11 +159,34 @@ You are a transformer over evidence (ledger events). You do not have a persona.
 
 Goal: produce a small, conservative delta of actions over invariants/isnads and a wake_pack.v0 artifact.
 
+This system is a CIL-like loop:
+- Ledger events are the ground truth (what happened).
+- Invariants are the compressed causal manifold (operational truth).
+- wake_pack.v0 should be a compact snapshot built primarily from the current invariants set,
+  updated conservatively based on new evidence.
+
 Hard rules:
 - Never invent facts.
 - Every action MUST include citations with valid event_id values from the provided ledger window or anchors.
-- The wake_pack content MUST only summarize what is supported by citations; do not add uncited claims.
 - If you cannot cite evidence, do not create/update invariants; prefer flag_drift or do nothing.
+
+Invariant quality rules (INV lines):
+- Invariants are causal constraints, NOT procedural checklists.
+- Each new invariant MUST generalize beyond the single episode.
+- Each invariant MUST include a concrete cause and consequence:
+  trigger=when it fires; because=causal reality; if_not=observable failure mode.
+- Prefer short, testable language. Avoid vibe, narrative, or philosophy.
+- Put provenance in the invariant text via src=... and in citations.
+
+Write invariant text in this single-line format:
+INV: id=INV-...; name=short-label; trigger=...; because=...; if_not=...; scope=self|user|relationship; rev=active; src=ledger:<event_id>[,ledger:<event_id>...]
+
+wake_pack.v0 content rules:
+- The wake pack is always-loaded operational context. It must be compact and stable.
+- It should primarily be a selection/summary of the current invariants set (not a recap of the last chat).
+- No narrative. No long-term ideation. No speculation.
+- Prefer bullet lists and INV lines. Max ~25 lines total.
+- Citations for wake_pack may be empty; provenance should live in INV src=... fields.
 
 Output constraints:
 - Max 8 total actions.
@@ -262,6 +285,87 @@ pub async fn run_micro_distill_pass_with_local_window(
         });
     }
 
+    // Apply delta actions into first-class derived ledger objects so future passes can compound.
+    let mut invariant_event_ids: Vec<String> = Vec::new();
+    let mut drift_event_ids: Vec<String> = Vec::new();
+    for a in &delta.actions {
+        match a.action_type {
+            ActionTypeV0::CreateInvariant | ActionTypeV0::UpdateInvariant => {
+                let Some(scope) = a.scope.as_ref() else { continue };
+                let kind_scope = match scope {
+                    ScopeV0::Self_ => "self",
+                    ScopeV0::User => "user",
+                    ScopeV0::Relationship => "relationship",
+                };
+
+                let content = a
+                    .update
+                    .as_ref()
+                    .and_then(|u| u.new_text.as_deref())
+                    .or_else(|| a.text.as_deref());
+                let Some(content) = content else { continue };
+
+                let payload = serde_json::json!({
+                    "action_type": a.action_type,
+                    "scope": kind_scope,
+                    "confidence": a.confidence,
+                    "invariant_id": a.invariant_id,
+                    "duplicate_of": a.duplicate_of,
+                    "citations": a.citations,
+                });
+
+                let ev = NewLedgerEvent {
+                    user_id,
+                    episode_id: None,
+                    kind: &format!("invariant.{}.v0", kind_scope),
+                    source: "compressor",
+                    content: Some(content),
+                    payload: &payload,
+                };
+
+                match store.append_ledger_event(&ev).await {
+                    Ok(id) => invariant_event_ids.push(id.to_string()),
+                    Err(e) => {
+                        tracing::warn!("Failed to commit invariant event: {}", e);
+                    }
+                }
+            }
+            ActionTypeV0::FlagDrift | ActionTypeV0::MarkContradicted | ActionTypeV0::MergeInvariants => {
+                let kind = match a.action_type {
+                    ActionTypeV0::FlagDrift => "drift.flag.v0",
+                    ActionTypeV0::MarkContradicted => "drift.contradiction.v0",
+                    ActionTypeV0::MergeInvariants => "drift.merge.v0",
+                    _ => "drift.flag.v0",
+                };
+                let payload = serde_json::json!({
+                    "action_type": a.action_type,
+                    "scope": a.scope,
+                    "confidence": a.confidence,
+                    "invariant_id": a.invariant_id,
+                    "duplicate_of": a.duplicate_of,
+                    "update": a.update,
+                    "merge": a.merge,
+                    "citations": a.citations,
+                    "text": a.text,
+                });
+                let ev = NewLedgerEvent {
+                    user_id,
+                    episode_id: None,
+                    kind,
+                    source: "compressor",
+                    content: a.text.as_deref(),
+                    payload: &payload,
+                };
+                match store.append_ledger_event(&ev).await {
+                    Ok(id) => drift_event_ids.push(id.to_string()),
+                    Err(e) => {
+                        tracing::warn!("Failed to commit drift event: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
     let wake_payload = serde_json::json!({
         "citations": delta.wake_pack.citations,
     });
@@ -285,6 +389,10 @@ pub async fn run_micro_distill_pass_with_local_window(
 
     let payload = serde_json::json!({
         "actions": delta.actions,
+        "derived": {
+            "invariant_event_ids": invariant_event_ids,
+            "drift_event_ids": drift_event_ids,
+        },
         "wake_pack_event_id": wake_pack_event_id.to_string(),
         "window": {
             "local_event_ids": local.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),

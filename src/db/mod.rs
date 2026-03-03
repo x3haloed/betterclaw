@@ -151,6 +151,20 @@ pub trait LedgerStore: Send + Sync {
         user_id: &str,
         id: Uuid,
     ) -> Result<Option<LedgerEvent>, DatabaseError>;
+    /// Count ledger events whose `kind` starts with the provided prefix.
+    async fn count_ledger_events_by_kind_prefix(
+        &self,
+        user_id: &str,
+        kind_prefix: &str,
+    ) -> Result<i64, DatabaseError>;
+    /// Delete ledger events whose `kind` starts with the provided prefix.
+    ///
+    /// Returns number of deleted rows.
+    async fn delete_ledger_events_by_kind_prefix(
+        &self,
+        user_id: &str,
+        kind_prefix: &str,
+    ) -> Result<u64, DatabaseError>;
     async fn list_recent_ledger_events(
         &self,
         user_id: &str,

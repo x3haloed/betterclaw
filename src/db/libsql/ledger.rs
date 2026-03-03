@@ -166,6 +166,52 @@ impl LedgerStore for LibSqlBackend {
         }))
     }
 
+    async fn count_ledger_events_by_kind_prefix(
+        &self,
+        user_id: &str,
+        kind_prefix: &str,
+    ) -> Result<i64, DatabaseError> {
+        let conn = self.connect().await?;
+        let like = format!("{}%", kind_prefix);
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT COUNT(*) AS c
+                FROM ledger_events
+                WHERE user_id = ?1 AND kind LIKE ?2
+                "#,
+                params![user_id, like],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        else {
+            return Ok(0);
+        };
+        Ok(row.get::<i64>(0).unwrap_or(0))
+    }
+
+    async fn delete_ledger_events_by_kind_prefix(
+        &self,
+        user_id: &str,
+        kind_prefix: &str,
+    ) -> Result<u64, DatabaseError> {
+        let conn = self.connect().await?;
+        let like = format!("{}%", kind_prefix);
+        let deleted = conn
+            .execute(
+                r#"
+                DELETE FROM ledger_events
+                WHERE user_id = ?1 AND kind LIKE ?2
+                "#,
+                params![user_id, like],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(deleted)
+    }
+
     async fn list_recent_ledger_events(
         &self,
         user_id: &str,
@@ -315,6 +361,8 @@ impl LedgerStore for LibSqlBackend {
                 WHERE user_id = ?1
                   AND kind NOT LIKE 'wake_pack.%'
                   AND kind NOT LIKE 'distill.%'
+                  AND kind NOT LIKE 'invariant.%'
+                  AND kind NOT LIKE 'drift.%'
                 ORDER BY created_at DESC
                 LIMIT ?2
                 "#,
@@ -367,6 +415,8 @@ impl LedgerStore for LibSqlBackend {
                 WHERE user_id = ?1
                   AND kind NOT LIKE 'wake_pack.%'
                   AND kind NOT LIKE 'distill.%'
+                  AND kind NOT LIKE 'invariant.%'
+                  AND kind NOT LIKE 'drift.%'
                   AND (
                         ?2 = ''
                         OR created_at > ?2

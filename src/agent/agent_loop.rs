@@ -530,7 +530,7 @@ impl Agent {
                             };
 
                             // Sweep forward through evidence windows (excluding derived events).
-                            // If there's no backlog beyond the cursor, fall back to "recent" window.
+                            // If there's no backlog beyond the cursor, skip the pass entirely.
                             let (local, sweep_advanced) = match store
                                 .list_ledger_events_after_for_compression(
                                     &cfg.user_id,
@@ -542,22 +542,21 @@ impl Agent {
                             {
                                 Ok(v) if !v.is_empty() => (v, true), // already oldest-first
                                 Ok(_) => {
-                                    // Recent window returns newest-first.
-                                    let mut recent = store
-                                        .list_recent_ledger_events_for_compression(
-                                            &cfg.user_id,
-                                            cfg.window_events,
-                                        )
-                                        .await
-                                        .unwrap_or_default();
-                                    recent.reverse();
-                                    (recent, false)
+                                    tracing::debug!(
+                                        user_id = %cfg.user_id,
+                                        "Compressor loop: caught up (no evidence beyond cursor); skipping pass"
+                                    );
+                                    tokio::time::sleep(std::time::Duration::from_secs(cfg.interval_secs))
+                                        .await;
+                                    continue;
                                 }
                                 Err(e) => {
                                     tracing::warn!(
                                         "Failed to load compressor sweep window; falling back to recent: {}",
                                         e
                                     );
+                                    // In error cases, fall back to recent window so the system can continue
+                                    // operating (and potentially recover) instead of halting compression forever.
                                     let mut recent = store
                                         .list_recent_ledger_events_for_compression(
                                             &cfg.user_id,

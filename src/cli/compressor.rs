@@ -14,6 +14,8 @@ use crate::db::Database;
 pub enum CompressorCommand {
     /// Run a single compressor pass over a bounded ledger window.
     RunOnce(RunOnceArgs),
+    /// Delete derived compression artifacts and clear the compressor cursor.
+    Reset(ResetArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -39,6 +41,21 @@ pub struct RunOnceArgs {
     pub commit: bool,
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct ResetArgs {
+    /// User id namespace for the ledger.
+    #[arg(long, default_value = "default")]
+    pub user_id: String,
+
+    /// Actually perform deletion. Required unless --dry-run.
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Print counts but do not modify the database.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 pub async fn run_compressor_command(cli: &Cli, cmd: CompressorCommand) -> anyhow::Result<()> {
     let cfg = Config::from_env_with_toml(cli.config.as_deref()).await?;
 
@@ -56,6 +73,9 @@ pub async fn run_compressor_command(cli: &Cli, cmd: CompressorCommand) -> anyhow
     match cmd {
         CompressorCommand::RunOnce(args) => {
             run_once(store, components.compressor_llm, args).await?;
+        }
+        CompressorCommand::Reset(args) => {
+            reset_compressions(store, args).await?;
         }
     }
 
@@ -96,5 +116,54 @@ async fn run_once(
         }
     }
 
+    Ok(())
+}
+
+async fn reset_compressions(store: Arc<dyn Database>, args: ResetArgs) -> anyhow::Result<()> {
+    const CURSOR_KEY: &str = "compressor.loop.micro_cursor.v0";
+    let prefixes = ["wake_pack.", "distill.", "invariant.", "drift."];
+
+    let mut total: i64 = 0;
+    eprintln!("Resetting compressor artifacts for user_id='{}'", args.user_id);
+    for p in prefixes {
+        let c = store
+            .count_ledger_events_by_kind_prefix(&args.user_id, p)
+            .await?;
+        total += c;
+        eprintln!("  kind LIKE '{}%': {}", p, c);
+    }
+    let cursor_exists = store
+        .get_setting(&args.user_id, CURSOR_KEY)
+        .await?
+        .is_some();
+    if args.dry_run {
+        eprintln!("Dry run: no DB changes made.");
+        if cursor_exists {
+            eprintln!("  settings key '{}' exists: true", CURSOR_KEY);
+        }
+        return Ok(());
+    }
+    if !args.yes {
+        anyhow::bail!("Refusing to modify DB without --yes (or use --dry-run)");
+    }
+
+    // Clear cursor first so that if the process is interrupted, we don't end up with
+    // a cursor pointing past deleted derived artifacts.
+    if store.delete_setting(&args.user_id, CURSOR_KEY).await? {
+        eprintln!("  deleted setting '{}'", CURSOR_KEY);
+    }
+
+    let mut deleted_total: u64 = 0;
+    for p in prefixes {
+        let n = store
+            .delete_ledger_events_by_kind_prefix(&args.user_id, p)
+            .await?;
+        deleted_total += n;
+        eprintln!("  deleted {} rows for prefix '{}'", n, p);
+    }
+    eprintln!(
+        "Done. Deleted {} ledger rows (expected ~{}).",
+        deleted_total, total
+    );
     Ok(())
 }

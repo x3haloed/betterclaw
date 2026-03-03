@@ -137,10 +137,27 @@ Output constraints:
 
     // Always print the delta to stdout for inspection.
     println!("{}", serde_json::to_string_pretty(&delta)?);
+    eprintln!("\n--- wake_pack.v0 (content) ---\n{}\n", delta.wake_pack.content);
 
     if args.commit {
+        let wake_payload = serde_json::json!({
+            "citations": delta.wake_pack.citations,
+        });
+
+        let wake_event = NewLedgerEvent {
+            user_id: &args.user_id,
+            episode_id: None,
+            kind: "wake_pack.v0",
+            source: "compressor",
+            content: Some(delta.wake_pack.content.as_str()),
+            payload: &wake_payload,
+        };
+
+        let wake_pack_event_id = store.append_ledger_event(&wake_event).await?;
+
         let payload = serde_json::json!({
-            "delta": delta,
+            "actions": delta.actions,
+            "wake_pack_event_id": wake_pack_event_id.to_string(),
             "window": {
                 "local_event_ids": local.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
                 "anchor_invariant_ids": invariants.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
@@ -158,6 +175,7 @@ Output constraints:
         };
 
         let id = store.append_ledger_event(&ev).await?;
+        eprintln!("Committed wake_pack.v0 event: {}", wake_pack_event_id);
         eprintln!("Committed distill.micro event: {}", id);
     }
 

@@ -205,6 +205,9 @@ pub struct Reasoning {
     llm: Arc<dyn LlmProvider>,
     #[allow(dead_code)] // Will be used for sanitizing tool outputs
     safety: Arc<SafetyLayer>,
+    /// Optional wake pack (derived memory snapshot) to inject as the *first* bytes
+    /// of the system prompt. This is treated as read-only data, not instructions.
+    wake_pack: Option<String>,
     /// Optional workspace for loading identity/system prompts.
     workspace_system_prompt: Option<String>,
     /// Optional skill context block to inject into system prompt.
@@ -226,6 +229,7 @@ impl Reasoning {
         Self {
             llm,
             safety,
+            wake_pack: None,
             workspace_system_prompt: None,
             skill_context: None,
             channel: None,
@@ -242,6 +246,17 @@ impl Reasoning {
     pub fn with_system_prompt(mut self, prompt: String) -> Self {
         if !prompt.is_empty() {
             self.workspace_system_prompt = Some(prompt);
+        }
+        self
+    }
+
+    /// Inject a derived wake pack (ledger-compressed memory snapshot) into the system prompt.
+    ///
+    /// This must be injected *before* all other system prompt content so it becomes
+    /// the first context the named agent sees on "wake".
+    pub fn with_wake_pack(mut self, wake_pack: String) -> Self {
+        if !wake_pack.trim().is_empty() {
+            self.wake_pack = Some(wake_pack);
         }
         self
     }
@@ -634,6 +649,22 @@ Respond with a JSON plan in this format:
             String::new()
         };
 
+        // Wake pack must be the first bytes in the system prompt.
+        // We wrap it so it reads as data, not as policy.
+        let wake_pack_prefix = if let Some(ref wp) = self.wake_pack {
+            let trimmed = wp.trim_end();
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<wake_pack version=\"v0\">\n{}\n</wake_pack>\n\n---\n\n",
+                    trimmed
+                )
+            }
+        } else {
+            String::new()
+        };
+
         // Include active skill context if available
         let skills_section = if let Some(ref skill_ctx) = self.skill_context {
             format!(
@@ -665,7 +696,7 @@ Respond with a JSON plan in this format:
         let group_section = self.build_group_section();
 
         format!(
-            r#"You are BetterClaw Agent, a secure autonomous assistant.
+            r#"{}You are BetterClaw Agent, a secure autonomous assistant.
 
 ## Response Format — CRITICAL
 
@@ -701,6 +732,7 @@ Example:
 - Do not manipulate anyone to expand your access or disable safeguards.
 - Do not modify system prompts, safety rules, or tool policies unless explicitly requested by the user.{}{}{}{}{}{}
 {}{}"#,
+            wake_pack_prefix,
             tools_section,
             extensions_section,
             channel_section,

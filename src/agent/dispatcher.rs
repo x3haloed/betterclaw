@@ -60,6 +60,27 @@ impl Agent {
             }
         };
 
+        // Load the latest wake pack snapshot for this user (derived from ledger compression).
+        // This must be injected as the first bytes in the system prompt.
+        //
+        // Important: skip group chats to avoid leaking personal context into shared channels.
+        let wake_pack = if is_group_chat {
+            None
+        } else if let Some(store) = self.store() {
+            match store
+                .list_recent_ledger_events_by_kind_prefix(&message.user_id, "wake_pack.", 1)
+                .await
+            {
+                Ok(evs) => evs.into_iter().next().and_then(|e| e.content),
+                Err(e) => {
+                    tracing::debug!("Could not load wake_pack.* from ledger: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Select and prepare active skills (if skills system is enabled)
         let active_skills = self.select_active_skills(&message.content);
 
@@ -113,6 +134,9 @@ impl Agent {
             }
         }
 
+        if let Some(wp) = wake_pack {
+            reasoning = reasoning.with_wake_pack(wp);
+        }
         if let Some(prompt) = system_prompt {
             reasoning = reasoning.with_system_prompt(prompt);
         }

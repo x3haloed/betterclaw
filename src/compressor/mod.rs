@@ -26,6 +26,14 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WakePackV0 {
+    /// The exact text to inject as the first system message prefix.
+    pub content: String,
+    /// Citations for the wake pack (event_id required).
+    pub citations: Vec<CitationV0>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionTypeV0 {
     CreateInvariant,
@@ -94,6 +102,7 @@ pub struct ActionV0 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressorDeltaV0 {
+    pub wake_pack: WakePackV0,
     pub actions: Vec<ActionV0>,
 }
 
@@ -106,6 +115,24 @@ pub fn compressor_delta_tool_schema_v0() -> ToolDefinition {
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
+                "wake_pack": {
+                    "type": "object",
+                    "properties": {
+                        "content": { "type": "string" },
+                        "citations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "event_id": { "type": "string" },
+                                    "quote": { "type": "string" }
+                                },
+                                "required": ["event_id"]
+                            }
+                        }
+                    },
+                    "required": ["content", "citations"]
+                },
                 "actions": {
                     "type": "array",
                     "items": {
@@ -163,7 +190,7 @@ pub fn compressor_delta_tool_schema_v0() -> ToolDefinition {
                     }
                 }
             },
-            "required": ["actions"]
+            "required": ["wake_pack", "actions"]
         }),
     }
 }
@@ -232,7 +259,7 @@ mod tests {
             Err(LlmError::RequestFailed{ provider: "fake".to_string(), reason: "not implemented".to_string()})
         }
 
-        async fn complete_with_tools(
+    async fn complete_with_tools(
             &self,
             _request: ToolCompletionRequest,
         ) -> Result<crate::llm::ToolCompletionResponse, LlmError> {
@@ -242,6 +269,10 @@ mod tests {
                     id: "call_1".to_string(),
                     name: COMPRESSOR_DELTA_TOOL_NAME.to_string(),
                     arguments: serde_json::json!({
+                        "wake_pack": {
+                            "content": "# Wake Pack (v0)\n\n- Example\n",
+                            "citations": [{"event_id":"00000000-0000-0000-0000-000000000000"}]
+                        },
                         "actions": [{
                             "action_type": "flag_drift",
                             "confidence": 0.5,

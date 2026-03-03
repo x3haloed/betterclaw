@@ -145,6 +145,12 @@ pub trait ConversationStore: Send + Sync {
 pub trait LedgerStore: Send + Sync {
     async fn append_ledger_event(&self, event: &NewLedgerEvent<'_>) -> Result<Uuid, DatabaseError>;
     async fn get_ledger_event(&self, id: Uuid) -> Result<Option<LedgerEvent>, DatabaseError>;
+    /// Fetch a ledger event by id, scoped to a user_id.
+    async fn get_ledger_event_for_user(
+        &self,
+        user_id: &str,
+        id: Uuid,
+    ) -> Result<Option<LedgerEvent>, DatabaseError>;
     async fn list_recent_ledger_events(
         &self,
         user_id: &str,
@@ -157,6 +163,18 @@ pub trait LedgerStore: Send + Sync {
         user_id: &str,
         kind_prefix: &str,
         limit: i64,
+    ) -> Result<Vec<LedgerEvent>, DatabaseError>;
+
+    /// List ledger events whose `kind` starts with the provided prefix, with pagination.
+    ///
+    /// Results are ordered newest-first (DESC) for browsing.
+    /// If `kind_prefix` is empty, no kind filter is applied.
+    async fn list_ledger_events_by_kind_prefix_page(
+        &self,
+        user_id: &str,
+        kind_prefix: &str,
+        limit: i64,
+        skip: i64,
     ) -> Result<Vec<LedgerEvent>, DatabaseError>;
 
     /// List recent ledger events suitable as compressor evidence.

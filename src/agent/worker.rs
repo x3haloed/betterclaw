@@ -503,13 +503,16 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
         tool_name: &str,
         params: &serde_json::Value,
     ) -> Result<String, Error> {
-        let tool =
-            deps.tools
-                .get(tool_name)
-                .await
-                .ok_or_else(|| crate::error::ToolError::NotFound {
+        let tool = match deps.tools.get(tool_name).await {
+            Some(t) => t,
+            None => {
+                tracing::warn!(tool = %tool_name, "Tool not found in registry");
+                return Err(crate::error::ToolError::NotFound {
                     name: tool_name.to_string(),
-                })?;
+                }
+                .into());
+            }
+        };
 
         // Tools requiring approval are blocked in autonomous jobs
         if tool.requires_approval(params).is_required() {

@@ -391,6 +391,17 @@ impl ToolRegistry {
         tracing::info!("Registered 5 routine management tools");
     }
 
+    /// Register ledger browsing tools.
+    ///
+    /// These are read-only tools that allow the agent to list and fetch
+    /// append-only ledger events (including isnad chains stored in the DB).
+    pub fn register_ledger_tools(&self, store: Arc<dyn Database>) {
+        use crate::tools::builtin::{LedgerGetTool, LedgerListTool};
+        self.register_sync(Arc::new(LedgerListTool::new(Arc::clone(&store))));
+        self.register_sync(Arc::new(LedgerGetTool::new(store)));
+        tracing::info!("Registered 2 ledger tools");
+    }
+
     /// Register message tool for sending messages to channels.
     pub async fn register_message_tools(
         &self,

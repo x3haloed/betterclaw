@@ -270,6 +270,9 @@ impl AppBuilder {
             Arc::new(ToolRegistry::new())
         };
         tools.register_builtin_tools();
+        if let Some(ref db) = self.db {
+            tools.register_ledger_tools(Arc::clone(db));
+        }
 
         // Create embeddings provider using the unified method
         let embeddings = self.config.embeddings.create_provider();

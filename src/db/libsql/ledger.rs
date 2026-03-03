@@ -124,6 +124,48 @@ impl LedgerStore for LibSqlBackend {
         }))
     }
 
+    async fn get_ledger_event_for_user(
+        &self,
+        user_id: &str,
+        id: Uuid,
+    ) -> Result<Option<LedgerEvent>, DatabaseError> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT id, user_id, episode_id, kind, source, content, payload, sha256, created_at
+                FROM ledger_events
+                WHERE user_id = ?1 AND id = ?2
+                "#,
+                params![user_id, id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+
+        let id_str = get_text(&row, 0);
+        let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
+        let payload = get_json(&row, 6);
+        let created_at = get_ts(&row, 8);
+
+        Ok(Some(LedgerEvent {
+            id: Uuid::parse_str(&id_str)
+                .map_err(|e| DatabaseError::Query(format!("invalid ledger event id: {e}")))?,
+            user_id: get_text(&row, 1),
+            episode_id,
+            kind: get_text(&row, 3),
+            source: get_text(&row, 4),
+            content: get_opt_text(&row, 5),
+            payload,
+            sha256: get_opt_text(&row, 7),
+            created_at,
+        }))
+    }
+
     async fn list_recent_ledger_events(
         &self,
         user_id: &str,
@@ -185,6 +227,53 @@ impl LedgerStore for LibSqlBackend {
                 LIMIT ?3
                 "#,
                 params![user_id, like, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
+                DatabaseError::Query(format!("invalid ledger event id: {e}"))
+            })?;
+            let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
+            out.push(LedgerEvent {
+                id,
+                user_id: get_text(&row, 1),
+                episode_id,
+                kind: get_text(&row, 3),
+                source: get_text(&row, 4),
+                content: get_opt_text(&row, 5),
+                payload: get_json(&row, 6),
+                sha256: get_opt_text(&row, 7),
+                created_at: get_ts(&row, 8),
+            });
+        }
+
+        Ok(out)
+    }
+
+    async fn list_ledger_events_by_kind_prefix_page(
+        &self,
+        user_id: &str,
+        kind_prefix: &str,
+        limit: i64,
+        skip: i64,
+    ) -> Result<Vec<LedgerEvent>, DatabaseError> {
+        let conn = self.connect().await?;
+        let like = format!("{}%", kind_prefix);
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT id, user_id, episode_id, kind, source, content, payload, sha256, created_at
+                FROM ledger_events
+                WHERE user_id = ?1
+                  AND (?2 = '' OR kind LIKE ?3)
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?4 OFFSET ?5
+                "#,
+                params![user_id, kind_prefix, like, limit, skip],
             )
             .await
             .map_err(|e| DatabaseError::Query(e.to_string()))?;

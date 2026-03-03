@@ -201,8 +201,13 @@ impl Validator {
         ) {
             match value {
                 serde_json::Value::String(s) => {
-                    let string_result = validator.validate(s);
-                    *result = std::mem::take(result).merge(string_result);
+                    // Tool parameters often include optional string fields where
+                    // an empty string is a meaningful "no filter" sentinel.
+                    // We still validate non-empty strings for length/forbidden patterns.
+                    if !s.is_empty() {
+                        let string_result = validator.validate(s);
+                        *result = std::mem::take(result).merge(string_result);
+                    }
                 }
                 serde_json::Value::Array(arr) => {
                     for item in arr {

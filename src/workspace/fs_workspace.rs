@@ -40,6 +40,37 @@ const HEARTBEAT_SEED: &str = "\
      - Clean up context/documents that are outdated
 -->";
 
+/// Default template seeded into AGENTS.md on first access.
+///
+/// Comment-only so it won't change behavior until the user edits it.
+const AGENTS_SEED: &str = "\
+# Agent Instructions
+
+<!--
+Add project-specific behavior instructions for the named agent here.
+
+Examples:
+- Preferred style (concise vs thorough)
+- Coding conventions (tests, formatting)
+- Safety rails (when to ask before acting)
+- Workflow (branch naming, review checklist)
+-->";
+
+/// Default template seeded into SOUL.md on first access.
+///
+/// Comment-only so it won't change behavior until the user edits it.
+const SOUL_SEED: &str = "\
+# Core Values
+
+<!--
+Define values/principles that should remain stable over time.
+
+Examples:
+- Be honest about uncertainty
+- Prefer small, reversible changes
+- Keep provenance/citations for memory
+-->";
+
 /// Filesystem workspace.
 ///
 /// Layout (default):
@@ -199,6 +230,11 @@ impl FsWorkspace {
         &self,
         _is_group_chat: bool,
     ) -> Result<String, WorkspaceError> {
+        // Seed core identity files so they exist for the user to edit.
+        // These templates are comment-only to avoid changing behavior by default.
+        self.write_if_missing(paths::AGENTS, AGENTS_SEED).await?;
+        self.write_if_missing(paths::SOUL, SOUL_SEED).await?;
+
         let mut parts = Vec::new();
 
         let identity_files = [
@@ -228,5 +264,35 @@ impl FsWorkspace {
     pub async fn heartbeat_checklist(&self) -> Result<Option<String>, WorkspaceError> {
         self.write_if_missing(paths::HEARTBEAT, HEARTBEAT_SEED).await?;
         self.read_optional(paths::HEARTBEAT).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn seeds_agents_and_soul_on_first_prompt_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = FsWorkspace::new_in_base("user1", dir.path());
+
+        // Trigger seeding.
+        let _ = ws.system_prompt_for_context(false).await.unwrap();
+
+        let agents = ws.files_dir().join(paths::AGENTS);
+        let soul = ws.files_dir().join(paths::SOUL);
+
+        assert!(agents.exists(), "AGENTS.md should be seeded");
+        assert!(soul.exists(), "SOUL.md should be seeded");
+
+        // We intentionally do NOT seed other identity files here.
+        assert!(
+            !ws.files_dir().join(paths::USER).exists(),
+            "USER.md should not be auto-seeded"
+        );
+        assert!(
+            !ws.files_dir().join(paths::IDENTITY).exists(),
+            "IDENTITY.md should not be auto-seeded"
+        );
     }
 }

@@ -252,7 +252,12 @@ fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmPr
 fn create_openai_compatible_provider_from(
     compat: &crate::config::OpenAiCompatibleConfig,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    use rig::providers::openai;
+    // Note: OpenRouter is "OpenAI-compatible" at the HTTP level, but its error
+    // responses and some edge cases differ enough that rig-core ships a dedicated
+    // OpenRouter provider. Using it avoids JSON decode failures for OpenRouter
+    // error shapes (e.g. `{ "message": "..." }`).
+    let base_url_lc = compat.base_url.to_lowercase();
+    let is_openrouter = base_url_lc.contains("openrouter.ai");
 
     let mut extra_headers = reqwest::header::HeaderMap::new();
     for (key, value) in &compat.extra_headers {
@@ -273,30 +278,52 @@ fn create_openai_compatible_provider_from(
         extra_headers.insert(name, val);
     }
 
-    let client: openai::CompletionsClient = openai::Client::builder()
-        .base_url(&compat.base_url)
-        .api_key(
-            compat
-                .api_key
-                .as_ref()
-                .map(|k| k.expose_secret().to_string())
-                .unwrap_or_else(|| "no-key".to_string()),
-        )
-        .http_headers(extra_headers)
-        .build()
-        .map_err(|e| LlmError::RequestFailed {
-            provider: "openai_compatible".to_string(),
-            reason: format!("Failed to create OpenAI-compatible client: {}", e),
-        })?
-        .completions_api();
+    let api_key = compat
+        .api_key
+        .as_ref()
+        .map(|k| k.expose_secret().to_string())
+        .unwrap_or_else(|| "no-key".to_string());
 
-    let model = client.completion_model(&compat.model);
-    tracing::info!(
-        "Using OpenAI-compatible endpoint (chat completions, base_url: {}, model: {})",
-        compat.base_url,
-        compat.model
-    );
-    Ok(Arc::new(RigAdapter::new(model, &compat.model)))
+    if is_openrouter {
+        use rig::providers::openrouter;
+        let client: openrouter::Client = openrouter::Client::builder()
+            // Allow overrides (tests/local proxies), but default is OpenRouter's canonical base.
+            .base_url(&compat.base_url)
+            .api_key(&api_key)
+            .http_headers(extra_headers)
+            .build()
+            .map_err(|e| LlmError::RequestFailed {
+                provider: "openrouter".to_string(),
+                reason: format!("Failed to create OpenRouter client: {}", e),
+            })?;
+        let model = client.completion_model(&compat.model);
+        tracing::info!(
+            "Using OpenRouter endpoint (rig openrouter provider, base_url: {}, model: {})",
+            compat.base_url,
+            compat.model
+        );
+        Ok(Arc::new(RigAdapter::new(model, &compat.model)))
+    } else {
+        use rig::providers::openai;
+        let client: openai::CompletionsClient = openai::Client::builder()
+            .base_url(&compat.base_url)
+            .api_key(api_key)
+            .http_headers(extra_headers)
+            .build()
+            .map_err(|e| LlmError::RequestFailed {
+                provider: "openai_compatible".to_string(),
+                reason: format!("Failed to create OpenAI-compatible client: {}", e),
+            })?
+            .completions_api();
+
+        let model = client.completion_model(&compat.model);
+        tracing::info!(
+            "Using OpenAI-compatible endpoint (chat completions, base_url: {}, model: {})",
+            compat.base_url,
+            compat.model
+        );
+        Ok(Arc::new(RigAdapter::new(model, &compat.model)))
+    }
 }
 
 /// Create a cheap/fast LLM provider for lightweight tasks (heartbeat, routing, evaluation).

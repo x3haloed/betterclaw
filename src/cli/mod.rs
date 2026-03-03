@@ -12,6 +12,7 @@
 
 mod completion;
 mod config;
+mod compressor;
 mod doctor;
 mod mcp;
 pub mod oauth_defaults;
@@ -23,6 +24,7 @@ mod tool;
 
 pub use completion::Completion;
 pub use config::{ConfigCommand, run_config_command};
+pub use compressor::{CompressorCommand, run_compressor_command};
 pub use doctor::run_doctor_command;
 pub use mcp::{McpCommand, run_mcp_command};
 pub use pairing::{PairingCommand, run_pairing_command, run_pairing_command_with_store};
@@ -160,6 +162,10 @@ pub enum Command {
         long_about = "Generates shell completion scripts.\nExample: betterclaw completion --shell bash > betterclaw.bash"
     )]
     Completion(Completion),
+
+    /// Compressor utilities (run-once distill, debugging)
+    #[command(subcommand)]
+    Compressor(CompressorCommand),
 
     /// Run as a sandboxed worker inside a Docker container (internal use).
     /// This is invoked automatically by the orchestrator, not by users directly.

@@ -150,6 +150,14 @@ pub trait LedgerStore: Send + Sync {
         user_id: &str,
         limit: i64,
     ) -> Result<Vec<LedgerEvent>, DatabaseError>;
+
+    /// List recent ledger events whose `kind` starts with the provided prefix (e.g. `invariant.`).
+    async fn list_recent_ledger_events_by_kind_prefix(
+        &self,
+        user_id: &str,
+        kind_prefix: &str,
+        limit: i64,
+    ) -> Result<Vec<LedgerEvent>, DatabaseError>;
 }
 
 #[async_trait]

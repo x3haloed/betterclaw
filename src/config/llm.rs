@@ -325,7 +325,7 @@ impl LlmConfig {
 /// Format: `Key1:Value1,Key2:Value2` — colon-separated key:value, comma-separated pairs.
 /// Colon is used as the separator (not `=`) because header values often contain `=`
 /// (e.g., base64 tokens).
-fn parse_extra_headers(val: &str) -> Result<Vec<(String, String)>, ConfigError> {
+pub(crate) fn parse_extra_headers(val: &str) -> Result<Vec<(String, String)>, ConfigError> {
     if val.trim().is_empty() {
         return Ok(Vec::new());
     }

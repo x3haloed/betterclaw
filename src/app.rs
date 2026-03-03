@@ -35,6 +35,8 @@ pub struct AppComponents {
     pub secrets_store: Option<Arc<dyn SecretsStore + Send + Sync>>,
     pub llm: Arc<dyn LlmProvider>,
     pub cheap_llm: Option<Arc<dyn LlmProvider>>,
+    /// Dedicated LLM provider for the compressor role.
+    pub compressor_llm: Arc<dyn LlmProvider>,
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
     pub embeddings: Option<Arc<dyn EmbeddingProvider>>,
@@ -227,9 +229,18 @@ impl AppBuilder {
     #[allow(clippy::type_complexity)]
     pub fn init_llm(
         &self,
-    ) -> Result<(Arc<dyn LlmProvider>, Option<Arc<dyn LlmProvider>>), anyhow::Error> {
+    ) -> Result<
+        (
+            Arc<dyn LlmProvider>,
+            Option<Arc<dyn LlmProvider>>,
+            Arc<dyn LlmProvider>,
+        ),
+        anyhow::Error,
+    > {
         let (llm, cheap_llm) = crate::llm::build_provider_chain(&self.config.llm)?;
-        Ok((llm, cheap_llm))
+        let (compressor_llm, _compressor_cheap) =
+            crate::llm::build_provider_chain(&self.config.compressor_llm)?;
+        Ok((llm, cheap_llm, compressor_llm))
     }
 
     /// Phase 4: Initialize safety, tools, embeddings, and filesystem workspace.
@@ -565,7 +576,7 @@ impl AppBuilder {
         self.init_database().await?;
         self.init_secrets().await?;
 
-        let (llm, cheap_llm) = self.init_llm()?;
+        let (llm, cheap_llm, compressor_llm) = self.init_llm()?;
         let (safety, tools, embeddings, fs_workspace) = self.init_tools(&llm).await?;
 
         // Create hook registry early so runtime extension activation can register hooks.
@@ -614,6 +625,7 @@ impl AppBuilder {
             secrets_store: self.secrets_store,
             llm,
             cheap_llm,
+            compressor_llm,
             safety,
             tools,
             embeddings,

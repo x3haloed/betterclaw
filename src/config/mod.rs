@@ -8,6 +8,7 @@
 mod agent;
 mod builder;
 mod channels;
+mod compressor;
 mod database;
 mod embeddings;
 mod heartbeat;
@@ -62,6 +63,8 @@ static INJECTED_VARS: OnceLock<HashMap<String, String>> = OnceLock::new();
 pub struct Config {
     pub database: DatabaseConfig,
     pub llm: LlmConfig,
+    /// Dedicated LLM config for the compressor role (defaults to `llm` if unset).
+    pub compressor_llm: LlmConfig,
     pub embeddings: EmbeddingsConfig,
     pub tunnel: TunnelConfig,
     pub channels: ChannelsConfig,
@@ -183,9 +186,12 @@ impl Config {
 
     /// Build config from settings (shared by from_env and from_db).
     async fn build(settings: &Settings) -> Result<Self, ConfigError> {
+        let llm = LlmConfig::resolve(settings)?;
+        let compressor_llm = self::compressor::resolve_compressor_llm(settings, &llm)?;
         Ok(Self {
             database: DatabaseConfig::resolve()?,
-            llm: LlmConfig::resolve(settings)?,
+            llm,
+            compressor_llm,
             embeddings: EmbeddingsConfig::resolve(settings)?,
             tunnel: TunnelConfig::resolve(settings)?,
             channels: ChannelsConfig::resolve(settings)?,

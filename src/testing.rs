@@ -284,6 +284,7 @@ impl TestHarnessBuilder {
             store: Some(Arc::clone(&db)),
             llm,
             cheap_llm: None,
+            compressor_llm: Arc::new(StubLlm::default()),
             safety,
             tools,
             fs_workspace: Arc::new(crate::workspace::FsWorkspace::new_in_base(

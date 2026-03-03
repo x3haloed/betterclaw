@@ -63,6 +63,8 @@ pub struct AgentDeps {
     /// Cheap/fast LLM for lightweight tasks (heartbeat, routing, evaluation).
     /// Falls back to the main `llm` if None.
     pub cheap_llm: Option<Arc<dyn LlmProvider>>,
+    /// Dedicated LLM for the compressor role.
+    pub compressor_llm: Arc<dyn LlmProvider>,
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
     /// Filesystem-backed workspace for identity files and heartbeat.
@@ -155,6 +157,10 @@ impl Agent {
     /// Get the cheap/fast LLM provider, falling back to the main one.
     pub(super) fn cheap_llm(&self) -> &Arc<dyn LlmProvider> {
         self.deps.cheap_llm.as_ref().unwrap_or(&self.deps.llm)
+    }
+
+    pub(super) fn compressor_llm(&self) -> &Arc<dyn LlmProvider> {
+        &self.deps.compressor_llm
     }
 
     pub(super) fn safety(&self) -> &Arc<SafetyLayer> {

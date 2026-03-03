@@ -1126,10 +1126,12 @@ mod tests {
             "default",
             std::env::temp_dir().join(format!("betterclaw-test-{}", uuid::Uuid::new_v4())),
         ));
+        let llm: Arc<dyn crate::llm::LlmProvider> = Arc::new(StaticLlmProvider);
         let deps = AgentDeps {
             store: None,
-            llm: Arc::new(StaticLlmProvider),
+            llm: Arc::clone(&llm),
             cheap_llm: None,
+            compressor_llm: llm,
             safety: Arc::new(SafetyLayer::new(&SafetyConfig {
                 max_output_length: 100_000,
                 injection_check_enabled: true,
@@ -1867,10 +1869,12 @@ mod tests {
             "default",
             std::env::temp_dir().join(format!("betterclaw-test-{}", uuid::Uuid::new_v4())),
         ));
+        let compressor_llm = Arc::clone(&llm);
         let deps = AgentDeps {
             store: None,
             llm,
             cheap_llm: None,
+            compressor_llm,
             safety: Arc::new(SafetyLayer::new(&SafetyConfig {
                 max_output_length: 100_000,
                 injection_check_enabled: false,
@@ -1978,10 +1982,12 @@ mod tests {
                 "default",
                 std::env::temp_dir().join(format!("betterclaw-test-{}", uuid::Uuid::new_v4())),
             ));
+            let compressor_llm = Arc::clone(&llm);
             let deps = AgentDeps {
                 store: None,
                 llm,
                 cheap_llm: None,
+                compressor_llm,
                 safety: Arc::new(SafetyLayer::new(&SafetyConfig {
                     max_output_length: 100_000,
                     injection_check_enabled: false,

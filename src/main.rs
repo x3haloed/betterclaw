@@ -95,6 +95,10 @@ async fn async_main() -> anyhow::Result<()> {
             init_cli_tracing();
             return completion.run();
         }
+        Some(Command::Compressor(cmd)) => {
+            init_cli_tracing();
+            return betterclaw::cli::run_compressor_command(&cli, cmd.clone()).await;
+        }
         Some(Command::Worker {
             job_id,
             orchestrator_url,
@@ -642,6 +646,7 @@ async fn async_main() -> anyhow::Result<()> {
         store: components.db,
         llm: components.llm,
         cheap_llm: components.cheap_llm,
+        compressor_llm: components.compressor_llm,
         safety: components.safety,
         tools: components.tools,
         fs_workspace: components.fs_workspace,

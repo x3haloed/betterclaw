@@ -211,6 +211,107 @@ impl LedgerStore for LibSqlBackend {
 
         Ok(out)
     }
+
+    async fn list_recent_ledger_events_for_compression(
+        &self,
+        user_id: &str,
+        limit: i64,
+    ) -> Result<Vec<LedgerEvent>, DatabaseError> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT id, user_id, episode_id, kind, source, content, payload, sha256, created_at
+                FROM ledger_events
+                WHERE user_id = ?1
+                  AND kind NOT LIKE 'wake_pack.%'
+                  AND kind NOT LIKE 'distill.%'
+                ORDER BY created_at DESC
+                LIMIT ?2
+                "#,
+                params![user_id, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
+                DatabaseError::Query(format!("invalid ledger event id: {e}"))
+            })?;
+            let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
+            out.push(LedgerEvent {
+                id,
+                user_id: get_text(&row, 1),
+                episode_id,
+                kind: get_text(&row, 3),
+                source: get_text(&row, 4),
+                content: get_opt_text(&row, 5),
+                payload: get_json(&row, 6),
+                sha256: get_opt_text(&row, 7),
+                created_at: get_ts(&row, 8),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn list_ledger_events_after_for_compression(
+        &self,
+        user_id: &str,
+        after_created_at: Option<&str>,
+        after_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<LedgerEvent>, DatabaseError> {
+        let conn = self.connect().await?;
+        let after_created_at = after_created_at.unwrap_or("");
+        let after_id = after_id.unwrap_or("");
+
+        // Cursor semantics:
+        // - If after_created_at is empty, treat as "from the beginning".
+        // - Otherwise, select rows strictly after (created_at, id) lexicographically.
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT id, user_id, episode_id, kind, source, content, payload, sha256, created_at
+                FROM ledger_events
+                WHERE user_id = ?1
+                  AND kind NOT LIKE 'wake_pack.%'
+                  AND kind NOT LIKE 'distill.%'
+                  AND (
+                        ?2 = ''
+                        OR created_at > ?2
+                        OR (created_at = ?2 AND id > ?3)
+                      )
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?4
+                "#,
+                params![user_id, after_created_at, after_id, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
+                DatabaseError::Query(format!("invalid ledger event id: {e}"))
+            })?;
+            let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
+            out.push(LedgerEvent {
+                id,
+                user_id: get_text(&row, 1),
+                episode_id,
+                kind: get_text(&row, 3),
+                source: get_text(&row, 4),
+                content: get_opt_text(&row, 5),
+                payload: get_json(&row, 6),
+                sha256: get_opt_text(&row, 7),
+                created_at: get_ts(&row, 8),
+            });
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

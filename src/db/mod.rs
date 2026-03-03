@@ -158,6 +158,27 @@ pub trait LedgerStore: Send + Sync {
         kind_prefix: &str,
         limit: i64,
     ) -> Result<Vec<LedgerEvent>, DatabaseError>;
+
+    /// List recent ledger events suitable as compressor evidence.
+    ///
+    /// Excludes derived/compressor-authored kinds like `wake_pack.*` and `distill.*` to prevent
+    /// the compressor from chewing on (or citing) its own outputs.
+    async fn list_recent_ledger_events_for_compression(
+        &self,
+        user_id: &str,
+        limit: i64,
+    ) -> Result<Vec<LedgerEvent>, DatabaseError>;
+
+    /// List ledger events after a cursor (created_at, id), suitable as compressor evidence.
+    ///
+    /// Results are ordered oldest-first (ASC) so callers can advance the cursor to the last item.
+    async fn list_ledger_events_after_for_compression(
+        &self,
+        user_id: &str,
+        after_created_at: Option<&str>,
+        after_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<LedgerEvent>, DatabaseError>;
 }
 
 #[async_trait]

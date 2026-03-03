@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
 use crate::ledger::NewLedgerEvent;
+use crate::ledger::LedgerEvent;
 use crate::llm::{ChatMessage, FinishReason, LlmProvider, ToolCall, ToolCompletionRequest, ToolDefinition};
 
 pub const COMPRESSOR_DELTA_TOOL_NAME: &str = "compressor_delta_v0";
@@ -122,6 +123,12 @@ pub struct MicroDistillResult {
     pub distill_event_id: Option<uuid::Uuid>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerCursorV0 {
+    pub created_at: String,
+    pub id: String,
+}
+
 fn format_events_for_prompt(events: &[crate::ledger::LedgerEvent]) -> String {
     let mut out = String::new();
     for e in events {
@@ -175,13 +182,36 @@ pub async fn run_micro_distill_pass(
 ) -> Result<MicroDistillResult, LlmError> {
     // Local window (newest-first from DB); present oldest-first to the model.
     let mut local = store
-        .list_recent_ledger_events(user_id, params.window_events)
+        .list_recent_ledger_events_for_compression(user_id, params.window_events)
         .await
         .map_err(|e| LlmError::RequestFailed {
             provider: "compressor".to_string(),
             reason: format!("Failed to load ledger window: {e}"),
         })?;
     local.reverse();
+
+    run_micro_distill_pass_with_local_window(
+        store,
+        compressor_llm,
+        user_id,
+        params,
+        commit,
+        &local,
+    )
+    .await
+}
+
+/// Run a micro-distill pass using a pre-selected local window.
+///
+/// The window is assumed to already be ordered oldest-first.
+pub async fn run_micro_distill_pass_with_local_window(
+    store: &dyn crate::db::Database,
+    compressor_llm: &dyn LlmProvider,
+    user_id: &str,
+    params: MicroDistillParams,
+    commit: bool,
+    local: &[LedgerEvent],
+) -> Result<MicroDistillResult, LlmError> {
 
     let mut invariants = store
         .list_recent_ledger_events_by_kind_prefix(user_id, "invariant.", params.anchor_invariants)
@@ -203,7 +233,7 @@ pub async fn run_micro_distill_pass(
 
     let user_msg = format!(
         "# Evidence Window (Local)\n{}\n\n# Anchor Invariants (Recent)\n{}\n\n# Drift/Contradiction Candidates (Recent)\n{}\n",
-        format_events_for_prompt(&local),
+        format_events_for_prompt(local),
         format_events_for_prompt(&invariants),
         format_events_for_prompt(&drift),
     );

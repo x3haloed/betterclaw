@@ -495,6 +495,7 @@ impl Agent {
                     let store = Arc::clone(store);
                     let llm = self.compressor_llm().clone();
                     let cfg = cl_cfg.clone();
+                    let cursor_key = "compressor.loop.micro_cursor.v0".to_string();
                     tracing::info!(
                         "Compressor loop enabled: interval={}s commit={} user_id={}",
                         cfg.interval_secs,
@@ -509,22 +510,117 @@ impl Agent {
                             .await;
                         }
                         loop {
+                            // Load cursor (persisted in settings) for sweep mode.
+                            let cursor_val = match store.get_setting(&cfg.user_id, &cursor_key).await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    tracing::warn!("Failed to load compressor cursor: {}", e);
+                                    None
+                                }
+                            };
+                            let cursor: Option<crate::compressor::LedgerCursorV0> =
+                                cursor_val.and_then(|v| serde_json::from_value(v).ok());
+
                             let params = crate::compressor::MicroDistillParams {
                                 window_events: cfg.window_events,
                                 anchor_invariants: cfg.anchor_invariants,
                                 drift_candidates: cfg.drift_candidates,
                                 max_tokens: cfg.max_tokens,
                             };
-                            match crate::compressor::run_micro_distill_pass(
+
+                            // Sweep forward through evidence windows (excluding derived events).
+                            // If there's no backlog beyond the cursor, fall back to "recent" window.
+                            let (local, sweep_advanced) = match store
+                                .list_ledger_events_after_for_compression(
+                                    &cfg.user_id,
+                                    cursor.as_ref().map(|c| c.created_at.as_str()),
+                                    cursor.as_ref().map(|c| c.id.as_str()),
+                                    cfg.window_events,
+                                )
+                                .await
+                            {
+                                Ok(v) if !v.is_empty() => (v, true), // already oldest-first
+                                Ok(_) => {
+                                    // Recent window returns newest-first.
+                                    let mut recent = store
+                                        .list_recent_ledger_events_for_compression(
+                                            &cfg.user_id,
+                                            cfg.window_events,
+                                        )
+                                        .await
+                                        .unwrap_or_default();
+                                    recent.reverse();
+                                    (recent, false)
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to load compressor sweep window; falling back to recent: {}",
+                                        e
+                                    );
+                                    let mut recent = store
+                                        .list_recent_ledger_events_for_compression(
+                                            &cfg.user_id,
+                                            cfg.window_events,
+                                        )
+                                        .await
+                                        .unwrap_or_default();
+                                    recent.reverse();
+                                    (recent, false)
+                                }
+                            };
+
+                            if local.is_empty() {
+                                tracing::debug!("Compressor loop: no evidence events available");
+                                tokio::time::sleep(std::time::Duration::from_secs(cfg.interval_secs))
+                                    .await;
+                                continue;
+                            }
+
+                            let last = local.last().cloned();
+
+                            let result = crate::compressor::run_micro_distill_pass_with_local_window(
                                 store.as_ref(),
                                 llm.as_ref(),
                                 &cfg.user_id,
                                 params,
                                 cfg.commit,
+                                &local,
                             )
-                            .await
-                            {
+                            .await;
+
+                            match result {
                                 Ok(res) => {
+                                    // Advance cursor only when:
+                                    // - commit is enabled (so the distill output is durable)
+                                    // - we actually processed a sweep window (not just "recent")
+                                    if cfg.commit && sweep_advanced {
+                                        if let Some(last) = last {
+                                            let cursor = crate::compressor::LedgerCursorV0 {
+                                                created_at: last.created_at.to_rfc3339_opts(
+                                                    chrono::SecondsFormat::Millis,
+                                                    true,
+                                                ),
+                                                id: last.id.to_string(),
+                                            };
+                                            if let Err(e) = store
+                                                .set_setting(
+                                                    &cfg.user_id,
+                                                    &cursor_key,
+                                                    &serde_json::to_value(cursor).unwrap_or_else(
+                                                        |_| serde_json::json!({}),
+                                                    ),
+                                                )
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    "Failed to persist compressor cursor: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
+
                                     tracing::info!(
                                         wake_pack_event_id = ?res.wake_pack_event_id,
                                         distill_event_id = ?res.distill_event_id,

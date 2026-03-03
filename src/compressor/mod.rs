@@ -48,6 +48,9 @@ pub enum ActionTypeV0 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeV0 {
+    /// Serialized as "self" (not "self_") to match our tool schema.
+    /// Intentionally no backward-compat alias for "self_".
+    #[serde(rename = "self")]
     Self_,
     User,
     Relationship,
@@ -455,6 +458,13 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use rust_decimal::Decimal;
+
+    #[test]
+    fn scope_v0_deserializes_self() {
+        // Tool schema uses "self" for scope; ensure serde matches.
+        let scope: ScopeV0 = serde_json::from_str("\"self\"").expect("scope should decode");
+        assert!(matches!(scope, ScopeV0::Self_));
+    }
 
     struct FakeToolCallLlm;
 

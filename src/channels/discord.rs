@@ -86,6 +86,23 @@ impl DiscordChannel {
         allow.iter().any(|u| u == "*" || u == user_id)
     }
 
+    fn format_guild_sender_prefix(
+        primary_discord_user_id: Option<&str>,
+        author_id: &str,
+        display_name: &str,
+    ) -> String {
+        let is_primary = primary_discord_user_id
+            .map(|pid| pid.trim())
+            .filter(|pid| !pid.is_empty())
+            .is_some_and(|pid| pid == author_id);
+
+        if is_primary {
+            format!("Discord(guild): YOU {display_name} ({author_id}): ")
+        } else {
+            format!("Discord(guild): {display_name} ({author_id}): ")
+        }
+    }
+
     async fn fetch_bot_user_id(&self) -> Result<String, ChannelError> {
         let url = format!("{DISCORD_API_BASE}/users/@me");
         let resp = self
@@ -989,23 +1006,35 @@ impl DiscordChannel {
                         continue;
                     };
 
+                    let user_name = author
+                        .get("global_name")
+                        .and_then(|x| x.as_str())
+                        .or_else(|| author.get("username").and_then(|x| x.as_str()))
+                        .map(|s| s.to_string());
+                    let display_name = user_name.as_deref().unwrap_or(author_id).trim();
+
                     let attachment_text = if let Some(arr) = d.get("attachments").and_then(|a| a.as_array()) {
                         self.process_attachments(arr).await
                     } else {
                         String::new()
                     };
 
-                    let final_content = if attachment_text.is_empty() {
+                    let mut final_content = if attachment_text.is_empty() {
                         clean_content
                     } else {
                         format!("{clean_content}\n\n[Attachments]\n{attachment_text}")
                     };
 
-                    let user_name = author
-                        .get("global_name")
-                        .and_then(|x| x.as_str())
-                        .or_else(|| author.get("username").and_then(|x| x.as_str()))
-                        .map(|s| s.to_string());
+                    // Shared workspace: in guild channels, prefix messages with explicit sender identity.
+                    // DMs are left untouched.
+                    if is_group_message {
+                        let prefix = Self::format_guild_sender_prefix(
+                            self.state.config.primary_discord_user_id.as_deref(),
+                            author_id,
+                            display_name,
+                        );
+                        final_content = format!("{prefix}{final_content}");
+                    }
 
                     let message_id = d.get("id").and_then(|x| x.as_str()).unwrap_or("");
 
@@ -1194,5 +1223,20 @@ mod tests {
             let opens = c.matches("```").count();
             assert!(opens % 2 == 0, "chunk has unbalanced fences:\n{c}");
         }
+    }
+
+    #[test]
+    fn guild_sender_prefix_marks_primary_as_you() {
+        let p = DiscordChannel::format_guild_sender_prefix(Some("123"), "123", "Chad");
+        assert!(p.contains("Discord(guild):"));
+        assert!(p.contains("YOU"));
+        assert!(p.contains("Chad"));
+        assert!(p.contains("(123)"));
+
+        let p2 = DiscordChannel::format_guild_sender_prefix(Some("123"), "999", "Alice");
+        assert!(p2.contains("Discord(guild):"));
+        assert!(!p2.contains("YOU"));
+        assert!(p2.contains("Alice"));
+        assert!(p2.contains("(999)"));
     }
 }

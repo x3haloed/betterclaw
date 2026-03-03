@@ -101,6 +101,12 @@ pub struct DiscordConfig {
     /// NOTE: This is distinct from the Discord sender ID. The sender ID is still
     /// recorded in message metadata (discord_sender_id) and enforced by allowlists.
     pub user_id: String,
+    /// Primary Discord user ID for the "default" BetterClaw user, used only for
+    /// labeling incoming guild messages.
+    ///
+    /// If set, guild messages authored by this user will be prefixed with a
+    /// `YOU` marker (shared workspace mode). DMs are never prefixed.
+    pub primary_discord_user_id: Option<String>,
     /// Optional guild to restrict group messages to (DMs still allowed).
     pub guild_id: Option<String>,
     /// Users allowed to interact with the bot.
@@ -204,6 +210,9 @@ impl ChannelsConfig {
 
         let discord = if let Some(token) = optional_env("DISCORD_BOT_TOKEN")? {
             let user_id = optional_env("DISCORD_USER_ID")?.unwrap_or_else(|| "default".to_string());
+            let primary_discord_user_id = optional_env("DISCORD_PRIMARY_DISCORD_USER_ID")?
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             let allowed_users = optional_env("DISCORD_ALLOWED_USERS")?
                 .map(|s| {
                     s.split(',')
@@ -228,6 +237,7 @@ impl ChannelsConfig {
             Some(DiscordConfig {
                 bot_token: SecretString::from(token),
                 user_id,
+                primary_discord_user_id,
                 guild_id: optional_env("DISCORD_GUILD_ID")?,
                 allowed_users,
                 listen_to_bots: parse_bool_env("DISCORD_LISTEN_TO_BOTS", false)?,

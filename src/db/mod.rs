@@ -31,6 +31,17 @@ use crate::history::{
 };
 use crate::ledger::{LedgerEvent, NewLedgerEvent};
 
+/// A single ranked hit from ledger chunk search.
+#[derive(Debug, Clone)]
+pub struct LedgerChunkHit {
+    pub chunk_id: String,
+    pub event_id: Uuid,
+    pub chunk_index: i64,
+    pub content: String,
+    /// Smaller is better for vector distance; for FTS this may be bm25.
+    pub score: f64,
+}
+
 /// Create a database backend from configuration, run migrations, and return it.
 ///
 /// This is the shared helper for CLI commands and other call sites that need
@@ -381,6 +392,45 @@ pub trait SettingsStore: Send + Sync {
     async fn has_settings(&self, user_id: &str) -> Result<bool, DatabaseError>;
 }
 
+#[async_trait]
+pub trait LedgerChunkStore: Send + Sync {
+    /// Upsert a chunk row for an event. `embedding_json` should be a JSON array string
+    /// of floats and will be converted to the libSQL vector binary format via `vector32(...)`.
+    async fn upsert_ledger_event_chunk(
+        &self,
+        user_id: &str,
+        event_id: Uuid,
+        chunk_index: i64,
+        content: &str,
+        embedding_json: Option<&str>,
+    ) -> Result<(), DatabaseError>;
+
+    /// Delete all chunks for an event (used when re-indexing).
+    async fn delete_ledger_event_chunks_for_event(
+        &self,
+        user_id: &str,
+        event_id: Uuid,
+    ) -> Result<u64, DatabaseError>;
+
+    /// Vector search over chunks (best-effort candidate generation).
+    async fn vector_search_ledger_event_chunks(
+        &self,
+        user_id: &str,
+        query_embedding_json: &str,
+        limit: i64,
+        // Internal multiplier to over-fetch before applying `user_id` filter (vector index is global).
+        prefilter_multiplier: i64,
+    ) -> Result<Vec<LedgerChunkHit>, DatabaseError>;
+
+    /// Keyword search over chunks via FTS5.
+    async fn fts_search_ledger_event_chunks(
+        &self,
+        user_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<LedgerChunkHit>, DatabaseError>;
+}
+
 /// Backend-agnostic database supertrait.
 ///
 /// Combines all sub-traits into one. Existing `Arc<dyn Database>` consumers
@@ -389,6 +439,7 @@ pub trait SettingsStore: Send + Sync {
 pub trait Database:
     ConversationStore
     + LedgerStore
+    + LedgerChunkStore
     + JobStore
     + SandboxStore
     + RoutineStore

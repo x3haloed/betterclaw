@@ -137,6 +137,26 @@ impl Agent {
         if let Some(wp) = wake_pack {
             reasoning = reasoning.with_wake_pack(wp);
         }
+
+        // Inject hybrid ledger recall (candidate evidence) immediately after wake pack.
+        if let (Some(cfg), Some(store), Some(emb)) =
+            (self.ledger_recall_config(), self.store(), self.embeddings())
+        {
+            if let Some(block) = crate::agent::ledger_recall::build_ledger_recall_block(
+                store,
+                emb,
+                cfg,
+                &message.user_id,
+                is_group_chat,
+                &message.content,
+                &initial_messages,
+            )
+            .await
+            {
+                reasoning = reasoning.with_ledger_recall(block);
+            }
+        }
+
         if let Some(prompt) = system_prompt {
             reasoning = reasoning.with_system_prompt(prompt);
         }
@@ -1157,6 +1177,7 @@ mod tests {
             llm: Arc::clone(&llm),
             cheap_llm: None,
             compressor_llm: llm,
+            embeddings: None,
             safety: Arc::new(SafetyLayer::new(&SafetyConfig {
                 max_output_length: 100_000,
                 injection_check_enabled: true,
@@ -1189,6 +1210,8 @@ mod tests {
             },
             deps,
             Arc::new(ChannelManager::new()),
+            None,
+            None,
             None,
             None,
             None,
@@ -1901,6 +1924,7 @@ mod tests {
             llm,
             cheap_llm: None,
             compressor_llm,
+            embeddings: None,
             safety: Arc::new(SafetyLayer::new(&SafetyConfig {
                 max_output_length: 100_000,
                 injection_check_enabled: false,
@@ -1933,6 +1957,8 @@ mod tests {
             },
             deps,
             Arc::new(ChannelManager::new()),
+            None,
+            None,
             None,
             None,
             None,
@@ -2015,6 +2041,7 @@ mod tests {
                 llm,
                 cheap_llm: None,
                 compressor_llm,
+                embeddings: None,
                 safety: Arc::new(SafetyLayer::new(&SafetyConfig {
                     max_output_length: 100_000,
                     injection_check_enabled: false,
@@ -2051,6 +2078,8 @@ mod tests {
                 },
                 deps,
                 Arc::new(ChannelManager::new()),
+                None,
+                None,
                 None,
                 None,
                 None,

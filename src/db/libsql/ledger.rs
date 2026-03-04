@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::{LibSqlBackend, fmt_ts, get_json, get_opt_text, get_text, get_ts, opt_text};
 use crate::db::LedgerStore;
+use crate::db::{LedgerChunkHit, LedgerChunkStore};
 use crate::error::DatabaseError;
 use crate::ledger::{LedgerEvent, NewLedgerEvent};
 
@@ -447,6 +448,185 @@ impl LedgerStore for LibSqlBackend {
                 payload: get_json(&row, 6),
                 sha256: get_opt_text(&row, 7),
                 created_at: get_ts(&row, 8),
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[async_trait]
+impl LedgerChunkStore for LibSqlBackend {
+    async fn upsert_ledger_event_chunk(
+        &self,
+        user_id: &str,
+        event_id: Uuid,
+        chunk_index: i64,
+        content: &str,
+        embedding_json: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect().await?;
+        let chunk_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            format!("ledger_chunk:{}:{}:{}", user_id, event_id, chunk_index).as_bytes(),
+        )
+        .to_string();
+
+        if let Some(emb) = embedding_json {
+            conn.execute(
+                r#"
+                INSERT INTO ledger_event_chunks
+                    (id, user_id, event_id, chunk_index, content, embedding, created_at)
+                VALUES
+                    (?1, ?2, ?3, ?4, ?5, vector32(?6), datetime('now'))
+                ON CONFLICT(event_id, chunk_index) DO UPDATE SET
+                    content = excluded.content,
+                    embedding = excluded.embedding,
+                    created_at = datetime('now')
+                "#,
+                params![
+                    chunk_id,
+                    user_id,
+                    event_id.to_string(),
+                    chunk_index,
+                    content,
+                    emb
+                ],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        } else {
+            conn.execute(
+                r#"
+                INSERT INTO ledger_event_chunks
+                    (id, user_id, event_id, chunk_index, content, embedding, created_at)
+                VALUES
+                    (?1, ?2, ?3, ?4, ?5, NULL, datetime('now'))
+                ON CONFLICT(event_id, chunk_index) DO UPDATE SET
+                    content = excluded.content,
+                    embedding = NULL,
+                    created_at = datetime('now')
+                "#,
+                params![chunk_id, user_id, event_id.to_string(), chunk_index, content],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn delete_ledger_event_chunks_for_event(
+        &self,
+        user_id: &str,
+        event_id: Uuid,
+    ) -> Result<u64, DatabaseError> {
+        let conn = self.connect().await?;
+        let deleted = conn
+            .execute(
+                r#"
+                DELETE FROM ledger_event_chunks
+                WHERE user_id = ?1 AND event_id = ?2
+                "#,
+                params![user_id, event_id.to_string()],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(deleted)
+    }
+
+    async fn vector_search_ledger_event_chunks(
+        &self,
+        user_id: &str,
+        query_embedding_json: &str,
+        limit: i64,
+        prefilter_multiplier: i64,
+    ) -> Result<Vec<LedgerChunkHit>, DatabaseError> {
+        let conn = self.connect().await?;
+        let fetch = (limit.max(1) * prefilter_multiplier.max(1)).min(5000);
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    c.id,
+                    c.event_id,
+                    c.chunk_index,
+                    c.content,
+                    v.distance
+                FROM vector_top_k('idx_ledger_event_chunks_embedding', vector32(?1), ?2) AS v
+                JOIN ledger_event_chunks c
+                    ON c._rowid = v.id
+                WHERE c.user_id = ?3
+                ORDER BY v.distance ASC
+                LIMIT ?4
+                "#,
+                params![query_embedding_json, fetch, user_id, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let chunk_id = get_text(&row, 0);
+            let event_id = Uuid::parse_str(&get_text(&row, 1))
+                .map_err(|e| DatabaseError::Query(format!("invalid event_id: {e}")))?;
+            let chunk_index = row.get::<i64>(2).unwrap_or(0);
+            let content = get_text(&row, 3);
+            let distance = row.get::<f64>(4).unwrap_or(0.0);
+            out.push(LedgerChunkHit {
+                chunk_id,
+                event_id,
+                chunk_index,
+                content,
+                score: distance,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn fts_search_ledger_event_chunks(
+        &self,
+        user_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<LedgerChunkHit>, DatabaseError> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    c.id,
+                    c.event_id,
+                    c.chunk_index,
+                    c.content,
+                    bm25(ledger_event_chunks_fts) AS rank
+                FROM ledger_event_chunks_fts
+                JOIN ledger_event_chunks c
+                    ON c._rowid = ledger_event_chunks_fts.rowid
+                WHERE c.user_id = ?1
+                  AND ledger_event_chunks_fts MATCH ?2
+                ORDER BY rank ASC
+                LIMIT ?3
+                "#,
+                params![user_id, query, limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            let chunk_id = get_text(&row, 0);
+            let event_id = Uuid::parse_str(&get_text(&row, 1))
+                .map_err(|e| DatabaseError::Query(format!("invalid event_id: {e}")))?;
+            let chunk_index = row.get::<i64>(2).unwrap_or(0);
+            let content = get_text(&row, 3);
+            let rank = row.get::<f64>(4).unwrap_or(0.0);
+            out.push(LedgerChunkHit {
+                chunk_id,
+                event_id,
+                chunk_index,
+                content,
+                score: rank,
             });
         }
         Ok(out)

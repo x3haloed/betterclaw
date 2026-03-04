@@ -277,17 +277,18 @@ impl AppBuilder {
         // Create embeddings provider using the unified method
         let embeddings = self.config.embeddings.create_provider();
 
-        // Warn if libSQL backend is used with non-1536 embedding dimension.
+        // Warn if libSQL backend is used with a mismatched embedding dimension.
+        // The libSQL schema currently uses a fixed-size F32_BLOB column.
         if self.config.database.backend == crate::config::DatabaseBackend::LibSql
             && self.config.embeddings.enabled
-            && self.config.embeddings.dimension != 1536
+            && self.config.embeddings.dimension != 768
         {
             tracing::warn!(
                 configured_dimension = self.config.embeddings.dimension,
-                "Embedding dimension {} is not 1536. The libSQL schema uses \
-                 F32_BLOB(1536) which requires exactly 1536 dimensions. \
+                "Embedding dimension {} is not 768. The libSQL schema uses \
+                 F32_BLOB(768) which requires exactly 768 dimensions. \
                  Embedding storage will fail. Use libSQL or set \
-                 EMBEDDING_DIMENSION=1536.",
+                 EMBEDDING_DIMENSION=768.",
                 self.config.embeddings.dimension
             );
         }

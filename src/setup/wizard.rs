@@ -888,16 +888,24 @@ impl SetupWizard {
         if has_openai_key {
             options.push("OpenAI (requires API key)");
         }
+        options.push("OpenAI-compatible (LM Studio, OpenRouter, etc)");
         options.push("Ollama (local, no API key needed)");
 
         let choice = select_one("Select embeddings provider:", &options).map_err(SetupError::Io)?;
         let picked = options[choice];
 
         self.settings.embeddings.enabled = true;
-        if picked.starts_with("OpenAI") {
+        if picked.starts_with("OpenAI (") {
             self.settings.embeddings.provider = "openai".to_string();
             self.settings.embeddings.model = "text-embedding-3-small".to_string();
             print_success("Embeddings configured for OpenAI");
+        } else if picked.starts_with("OpenAI-compatible") {
+            self.settings.embeddings.provider = "openai_compatible".to_string();
+            self.settings.embeddings.model = "nomic-embed-text-v1.5".to_string();
+            print_success("Embeddings configured for OpenAI-compatible");
+            print_info("Set EMBEDDING_BASE_URL (or LLM_BASE_URL) to your embeddings endpoint (e.g. http://localhost:1234/v1).");
+            print_info("If your provider requires a key, set EMBEDDING_API_KEY (or LLM_API_KEY).");
+            print_info("Note: some embedding models require task prefixes (e.g. 'search_document:' vs 'search_query:').");
         } else {
             self.settings.embeddings.provider = "ollama".to_string();
             self.settings.embeddings.model = "nomic-embed-text".to_string();

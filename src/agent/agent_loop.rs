@@ -19,7 +19,10 @@ use crate::agent::session_manager::SessionManager;
 use crate::agent::submission::{Submission, SubmissionParser, SubmissionResult};
 use crate::agent::{HeartbeatConfig as AgentHeartbeatConfig, Router, Scheduler};
 use crate::channels::{ChannelManager, IncomingMessage, OutgoingResponse, StatusUpdate};
-use crate::config::{AgentConfig, CompressorLoopConfig, HeartbeatConfig, RoutineConfig, SkillsConfig};
+use crate::config::{
+    AgentConfig, CompressorLoopConfig, HeartbeatConfig, LedgerIndexConfig, LedgerRecallConfig,
+    RoutineConfig, SkillsConfig,
+};
 use crate::context::ContextManager;
 use crate::db::Database;
 use crate::error::Error;
@@ -67,6 +70,8 @@ pub struct AgentDeps {
     pub compressor_llm: Arc<dyn LlmProvider>,
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
+    /// Embeddings provider for semantic candidate generation (optional).
+    pub embeddings: Option<Arc<dyn crate::workspace::EmbeddingProvider>>,
     /// Filesystem-backed workspace for identity files and heartbeat.
     pub fs_workspace: Arc<FsWorkspace>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
@@ -92,6 +97,8 @@ pub struct Agent {
     pub(super) hygiene_config: Option<crate::config::HygieneConfig>,
     pub(super) routine_config: Option<RoutineConfig>,
     pub(super) compressor_loop_config: Option<CompressorLoopConfig>,
+    pub(super) ledger_index_config: Option<LedgerIndexConfig>,
+    pub(super) ledger_recall_config: Option<LedgerRecallConfig>,
 }
 
 impl Agent {
@@ -108,6 +115,8 @@ impl Agent {
         hygiene_config: Option<crate::config::HygieneConfig>,
         routine_config: Option<RoutineConfig>,
         compressor_loop_config: Option<CompressorLoopConfig>,
+        ledger_index_config: Option<LedgerIndexConfig>,
+        ledger_recall_config: Option<LedgerRecallConfig>,
         context_manager: Option<Arc<ContextManager>>,
         session_manager: Option<Arc<SessionManager>>,
     ) -> Self {
@@ -139,6 +148,8 @@ impl Agent {
             hygiene_config,
             routine_config,
             compressor_loop_config,
+            ledger_index_config,
+            ledger_recall_config,
         }
     }
 
@@ -172,6 +183,14 @@ impl Agent {
 
     pub(super) fn tools(&self) -> &Arc<ToolRegistry> {
         &self.deps.tools
+    }
+
+    pub(super) fn embeddings(&self) -> Option<&Arc<dyn crate::workspace::EmbeddingProvider>> {
+        self.deps.embeddings.as_ref()
+    }
+
+    pub(super) fn ledger_recall_config(&self) -> Option<&LedgerRecallConfig> {
+        self.ledger_recall_config.as_ref()
     }
 
     pub(super) fn fs_workspace(&self) -> &Arc<FsWorkspace> {
@@ -647,6 +666,38 @@ impl Agent {
             None
         };
 
+        // Spawn ledger embedding indexer loop if enabled.
+        let ledger_indexer_handle = if let Some(ref idx_cfg) = self.ledger_index_config {
+            if idx_cfg.enabled {
+                match (self.store(), self.embeddings()) {
+                    (Some(store), Some(emb)) => {
+                        let store = Arc::clone(store);
+                        let emb = Arc::clone(emb);
+                        let cfg = idx_cfg.clone();
+                        tracing::info!(
+                            "Ledger indexer enabled: interval={}s batch_events={} user_id={}",
+                            cfg.interval_secs,
+                            cfg.batch_events,
+                            cfg.user_id
+                        );
+                        Some(crate::agent::ledger_indexer::spawn_ledger_indexer(
+                            store, emb, cfg,
+                        ))
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "Ledger indexer enabled but store/embeddings not available (is embeddings enabled?)"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Main message loop
         tracing::info!("Agent {} ready and listening", self.config.name);
 
@@ -761,6 +812,9 @@ impl Agent {
             cron_handle.abort();
         }
         if let Some(handle) = compressor_loop_handle {
+            handle.abort();
+        }
+        if let Some(handle) = ledger_indexer_handle {
             handle.abort();
         }
         self.scheduler.stop_all().await;

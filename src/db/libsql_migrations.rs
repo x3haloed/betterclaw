@@ -12,7 +12,7 @@
 /// - `BYTEA` -> `BLOB`
 /// - `NUMERIC` -> `TEXT` (preserve precision for rust_decimal)
 /// - `TEXT[]` -> `TEXT` (JSON array)
-/// - `VECTOR(1536)` -> `F32_BLOB(1536)` (libsql native)
+/// - `VECTOR(768)` -> `F32_BLOB(768)` (libsql native)
 /// - `TSVECTOR` -> FTS5 virtual table
 /// - `BIGSERIAL` -> `INTEGER PRIMARY KEY AUTOINCREMENT`
 /// - PL/pgSQL functions -> SQLite triggers
@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS ledger_event_chunks (
     event_id TEXT NOT NULL REFERENCES ledger_events(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
     content TEXT NOT NULL,
-    embedding F32_BLOB(1536),
+    embedding F32_BLOB(768),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (event_id, chunk_index)
 );

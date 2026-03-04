@@ -116,6 +116,130 @@ impl OpenAiEmbeddings {
     }
 }
 
+/// OpenAI-compatible embedding provider (LM Studio, OpenRouter, etc).
+///
+/// Uses the OpenAI `/v1/embeddings` request/response shape.
+pub struct OpenAiCompatibleEmbeddings {
+    client: reqwest::Client,
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+    dimension: usize,
+    max_input_chars: usize,
+    max_batch_chars: usize,
+}
+
+impl OpenAiCompatibleEmbeddings {
+    /// Create a new OpenAI-compatible embedding provider.
+    ///
+    /// `base_url` should include `/v1`, e.g. `http://localhost:1234/v1`.
+    /// `api_key` is optional (LM Studio accepts any string; some providers require it).
+    pub fn with_model(
+        base_url: impl Into<String>,
+        api_key: Option<String>,
+        model: impl Into<String>,
+        dimension: usize,
+    ) -> Self {
+        let model_s = model.into();
+        let default_max_input_chars = if model_s.contains("nomic-embed-text") { 8_000 } else { 16_000 };
+        let default_max_batch_chars = 32_000;
+        Self::with_model_and_limits(
+            base_url,
+            api_key,
+            model_s,
+            dimension,
+            default_max_input_chars,
+            default_max_batch_chars,
+        )
+    }
+
+    /// Create a new OpenAI-compatible embedding provider with explicit limits.
+    pub fn with_model_and_limits(
+        base_url: impl Into<String>,
+        api_key: Option<String>,
+        model: impl Into<String>,
+        dimension: usize,
+        max_input_chars: usize,
+        max_batch_chars: usize,
+    ) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url: base_url.into(),
+            api_key,
+            model: model.into(),
+            dimension,
+            max_input_chars: max_input_chars.max(256),
+            max_batch_chars: max_batch_chars.max(256),
+        }
+    }
+
+    fn embeddings_url(&self) -> Result<url::Url, EmbeddingError> {
+        let base = self.base_url.trim_end_matches('/');
+        let u = format!("{base}/embeddings");
+        url::Url::parse(&u).map_err(|e| EmbeddingError::InvalidResponse(format!("Invalid embeddings base_url: {e}")))
+    }
+
+    async fn send_batch(
+        &self,
+        url: &url::Url,
+        batch: &[String],
+    ) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let request = OpenAiEmbeddingRequest {
+            model: &self.model,
+            input: batch,
+        };
+        let mut req = self.client.post(url.clone()).json(&request);
+        if let Some(key) = self.api_key.as_ref()
+            && !key.trim().is_empty()
+        {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+
+        let response = req.send().await?;
+        let status = response.status();
+
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(EmbeddingError::AuthFailed);
+        }
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(std::time::Duration::from_secs);
+            return Err(EmbeddingError::RateLimited { retry_after });
+        }
+
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(EmbeddingError::HttpError(format!(
+                "Status {}: {}",
+                status, error_text
+            )));
+        }
+
+        let result: OpenAiEmbeddingResponse = response.json().await.map_err(|e| {
+            EmbeddingError::InvalidResponse(format!("Failed to parse response: {}", e))
+        })?;
+
+        Ok(result.data.into_iter().map(|d| d.embedding).collect())
+    }
+}
+
+fn clamp_chars(s: &str, max_chars: usize) -> (String, bool) {
+    if s.chars().count() <= max_chars {
+        return (s.to_string(), false);
+    }
+    let byte_offset = s
+        .char_indices()
+        .nth(max_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    (s[..byte_offset].to_string(), true)
+}
+
 #[derive(Debug, Serialize)]
 struct OpenAiEmbeddingRequest<'a> {
     model: &'a str,
@@ -210,6 +334,93 @@ impl EmbeddingProvider for OpenAiEmbeddings {
         })?;
 
         Ok(result.data.into_iter().map(|d| d.embedding).collect())
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAiCompatibleEmbeddings {
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    fn max_input_length(&self) -> usize {
+        self.max_input_chars
+    }
+
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        // Clamp instead of erroring so we don't rely on server-side truncation.
+        let (clamped, truncated) = clamp_chars(text, self.max_input_length());
+        if truncated {
+            tracing::debug!(
+                model = %self.model,
+                orig_chars = text.chars().count(),
+                clamped_chars = clamped.chars().count(),
+                "Clamped embedding input to max chars"
+            );
+        }
+        let embeddings = self.embed_batch(&[clamped]).await?;
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| EmbeddingError::InvalidResponse("No embedding returned".to_string()))
+    }
+
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Clamp per-input and split into smaller requests by total size.
+        let mut clamped: Vec<String> = Vec::with_capacity(texts.len());
+        for t in texts {
+            let (c, truncated) = clamp_chars(t, self.max_input_length());
+            if truncated {
+                tracing::debug!(
+                    model = %self.model,
+                    orig_chars = t.chars().count(),
+                    clamped_chars = c.chars().count(),
+                    "Clamped embedding batch input to max chars"
+                );
+            }
+            clamped.push(c);
+        }
+
+        let url = self.embeddings_url()?;
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(clamped.len());
+
+        let mut batch: Vec<String> = Vec::new();
+        let mut batch_chars: usize = 0;
+
+        for t in clamped {
+            let t_chars = t.chars().count();
+            if !batch.is_empty() && batch_chars + t_chars > self.max_batch_chars {
+                // Flush existing batch.
+                let got = self.send_batch(&url, &batch).await?;
+                out.extend(got);
+                batch.clear();
+                batch_chars = 0;
+            }
+            batch_chars += t_chars;
+            batch.push(t);
+        }
+
+        if !batch.is_empty() {
+            let got = self.send_batch(&url, &batch).await?;
+            out.extend(got);
+        }
+
+        if out.len() != texts.len() {
+            return Err(EmbeddingError::InvalidResponse(format!(
+                "Expected {} embeddings, got {}",
+                texts.len(),
+                out.len()
+            )));
+        }
+        Ok(out)
     }
 }
 

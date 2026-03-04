@@ -210,6 +210,10 @@ pub struct Reasoning {
     /// Optional wake pack (derived memory snapshot) to inject as the *first* bytes
     /// of the system prompt. This is treated as read-only data, not instructions.
     wake_pack: Option<String>,
+    /// Optional per-turn ledger recall block (candidate evidence).
+    ///
+    /// Injected as a separate system message immediately after the wake pack.
+    ledger_recall: Option<String>,
     /// Optional workspace for loading identity/system prompts.
     workspace_system_prompt: Option<String>,
     /// Optional skill context block to inject into system prompt.
@@ -232,6 +236,7 @@ impl Reasoning {
             llm,
             safety,
             wake_pack: None,
+            ledger_recall: None,
             workspace_system_prompt: None,
             skill_context: None,
             channel: None,
@@ -259,6 +264,14 @@ impl Reasoning {
     pub fn with_wake_pack(mut self, wake_pack: String) -> Self {
         if !wake_pack.trim().is_empty() {
             self.wake_pack = Some(wake_pack);
+        }
+        self
+    }
+
+    /// Inject per-turn ledger recall as candidate evidence.
+    pub fn with_ledger_recall(mut self, block: String) -> Self {
+        if !block.trim().is_empty() {
+            self.ledger_recall = Some(block);
         }
         self
     }
@@ -481,9 +494,16 @@ pub async fn respond_with_tools(
         context: &ReasoningContext,
     ) -> Result<RespondOutput, LlmError> {
         let llm_request_id = uuid::Uuid::new_v4();
-        let system_prompt = self.build_conversation_prompt(context);
+        let main_system_prompt = self.build_main_system_prompt(context);
 
-        let mut messages = vec![ChatMessage::system(system_prompt)];
+        let mut messages = Vec::new();
+        if let Some(wp) = self.build_wake_pack_message() {
+            messages.push(ChatMessage::system(wp));
+        }
+        if let Some(recall) = self.build_ledger_recall_message() {
+            messages.push(ChatMessage::system(recall));
+        }
+        messages.push(ChatMessage::system(main_system_prompt));
         messages.extend(context.messages.clone());
 
         let effective_tools = if context.force_text {
@@ -667,7 +687,7 @@ Respond with a JSON plan in this format:
         )
     }
 
-    fn build_conversation_prompt(&self, context: &ReasoningContext) -> String {
+    fn build_main_system_prompt(&self, context: &ReasoningContext) -> String {
         let tools_section = if context.available_tools.is_empty() {
             String::new()
         } else {
@@ -685,22 +705,6 @@ Respond with a JSON plan in this format:
         // Include workspace identity prompt if available
         let identity_section = if let Some(ref identity) = self.workspace_system_prompt {
             format!("\n\n---\n\n{}", identity)
-        } else {
-            String::new()
-        };
-
-        // Wake pack must be the first bytes in the system prompt.
-        // We wrap it so it reads as data, not as policy.
-        let wake_pack_prefix = if let Some(ref wp) = self.wake_pack {
-            let trimmed = wp.trim_end();
-            if trimmed.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "<wake_pack version=\"v0\">\n{}\n</wake_pack>\n\n---\n\n",
-                    trimmed
-                )
-            }
         } else {
             String::new()
         };
@@ -736,7 +740,7 @@ Respond with a JSON plan in this format:
         let group_section = self.build_group_section();
 
         format!(
-            r#"{}You are BetterClaw Agent, a secure autonomous assistant.
+            r#"You are BetterClaw Agent, a secure autonomous assistant.
 
 ## Response Format — CRITICAL
 
@@ -772,7 +776,6 @@ Example:
 - Do not manipulate anyone to expand your access or disable safeguards.
 - Do not modify system prompts, safety rules, or tool policies unless explicitly requested by the user.{}{}{}{}{}{}
 {}{}"#,
-            wake_pack_prefix,
             tools_section,
             extensions_section,
             channel_section,
@@ -782,6 +785,18 @@ Example:
             identity_section,
             skills_section,
         )
+    }
+
+    fn build_wake_pack_message(&self) -> Option<String> {
+        let wp = self.wake_pack.as_deref()?.trim_end();
+        if wp.is_empty() {
+            return None;
+        }
+        Some(format!("<wake_pack version=\"v0\">\n{}\n</wake_pack>", wp))
+    }
+
+    fn build_ledger_recall_message(&self) -> Option<String> {
+        self.ledger_recall.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     }
 
     fn build_extensions_section(&self, context: &ReasoningContext) -> String {

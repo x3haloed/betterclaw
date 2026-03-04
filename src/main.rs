@@ -655,6 +655,7 @@ async fn async_main() -> anyhow::Result<()> {
         compressor_llm: components.compressor_llm,
         safety: components.safety,
         tools: components.tools,
+        embeddings: components.embeddings,
         fs_workspace: components.fs_workspace,
         extension_manager: components.extension_manager,
         skill_registry: components.skill_registry,
@@ -672,6 +673,8 @@ async fn async_main() -> anyhow::Result<()> {
         Some(config.hygiene.clone()),
         Some(config.routines.clone()),
         Some(config.compressor_loop.clone()),
+        Some(config.ledger_index.clone()),
+        Some(config.ledger_recall.clone()),
         Some(components.context_manager),
         Some(session_manager),
     );

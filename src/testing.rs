@@ -285,6 +285,7 @@ impl TestHarnessBuilder {
             llm,
             cheap_llm: None,
             compressor_llm: Arc::new(StubLlm::default()),
+            embeddings: None,
             safety,
             tools,
             fs_workspace: Arc::new(crate::workspace::FsWorkspace::new_in_base(

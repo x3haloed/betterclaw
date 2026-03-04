@@ -15,6 +15,8 @@ mod embeddings;
 mod heartbeat;
 pub(crate) mod helpers;
 mod hygiene;
+mod ledger_index;
+mod ledger_recall;
 mod llm;
 mod routines;
 mod safety;
@@ -41,6 +43,8 @@ pub use self::database::{DatabaseBackend, DatabaseConfig, default_libsql_path};
 pub use self::embeddings::EmbeddingsConfig;
 pub use self::heartbeat::HeartbeatConfig;
 pub use self::hygiene::HygieneConfig;
+pub use self::ledger_index::LedgerIndexConfig;
+pub use self::ledger_recall::LedgerRecallConfig;
 pub use self::llm::{
     AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
     OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
@@ -68,6 +72,8 @@ pub struct Config {
     /// Dedicated LLM config for the compressor role (defaults to `llm` if unset).
     pub compressor_llm: LlmConfig,
     pub compressor_loop: CompressorLoopConfig,
+    pub ledger_index: LedgerIndexConfig,
+    pub ledger_recall: LedgerRecallConfig,
     pub embeddings: EmbeddingsConfig,
     pub tunnel: TunnelConfig,
     pub channels: ChannelsConfig,
@@ -196,6 +202,8 @@ impl Config {
             llm,
             compressor_llm,
             compressor_loop: CompressorLoopConfig::resolve()?,
+            ledger_index: LedgerIndexConfig::resolve()?,
+            ledger_recall: LedgerRecallConfig::resolve()?,
             embeddings: EmbeddingsConfig::resolve(settings)?,
             tunnel: TunnelConfig::resolve(settings)?,
             channels: ChannelsConfig::resolve(settings)?,

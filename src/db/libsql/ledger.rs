@@ -542,7 +542,12 @@ impl LedgerChunkStore for LibSqlBackend {
     ) -> Result<Vec<LedgerChunkHit>, DatabaseError> {
         let conn = self.connect().await?;
         let fetch = (limit.max(1) * prefilter_multiplier.max(1)).min(5000);
-        let mut rows = conn
+        // libSQL vector can differ across builds:
+        // - Some return (id, distance)
+        // - Some return only (id) already ordered by distance
+        //
+        // Try the richer shape first; fall back to id-only.
+        let mut rows = match conn
             .query(
                 r#"
                 SELECT
@@ -561,7 +566,27 @@ impl LedgerChunkStore for LibSqlBackend {
                 params![query_embedding_json, fetch, user_id, limit],
             )
             .await
-            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        {
+            Ok(r) => r,
+            Err(_) => conn
+                .query(
+                    r#"
+                    SELECT
+                        c.id,
+                        c.event_id,
+                        c.chunk_index,
+                        c.content
+                    FROM vector_top_k('idx_ledger_event_chunks_embedding', vector32(?1), ?2) AS v
+                    JOIN ledger_event_chunks c
+                        ON c._rowid = v.id
+                    WHERE c.user_id = ?3
+                    LIMIT ?4
+                    "#,
+                    params![query_embedding_json, fetch, user_id, limit],
+                )
+                .await
+                .map_err(|e| DatabaseError::Query(e.to_string()))?,
+        };
 
         let mut out = Vec::new();
         while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
@@ -571,6 +596,7 @@ impl LedgerChunkStore for LibSqlBackend {
                 .map_err(|e| DatabaseError::Query(format!("invalid event_id: {e}")))?;
             let chunk_index = row.get::<i64>(2).unwrap_or(0);
             let content = get_text(&row, 3);
+            // Some builds return an explicit distance column, others do not.
             let distance = row.get::<f64>(4).unwrap_or(0.0);
             out.push(LedgerChunkHit {
                 chunk_id,

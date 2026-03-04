@@ -56,7 +56,7 @@ fn vec_f32_to_json_array(v: &[f32]) -> Option<String> {
 }
 
 /// Run a single indexing sweep (bounded by cfg.batch_events).
-async fn index_sweep(
+pub(crate) async fn index_sweep(
     store: &Arc<dyn Database>,
     embeddings: &Arc<dyn EmbeddingProvider>,
     cfg: &LedgerIndexConfig,
@@ -135,9 +135,9 @@ async fn index_sweep(
         }
 
         // Re-index: delete existing chunks for this event_id (idempotence).
-        let _ = store
+        store
             .delete_ledger_event_chunks_for_event(&cfg.user_id, ev.id)
-            .await;
+            .await?;
 
         let max_in = embeddings.max_input_length().min(cfg.max_chunk_chars);
         for c in &mut chunks {
@@ -164,9 +164,10 @@ async fn index_sweep(
             }
         };
 
+        let mut all_ok = true;
         for (i, (chunk, emb)) in chunks.into_iter().zip(embs.into_iter()).enumerate() {
             let embedding_json = vec_f32_to_json_array(&emb);
-            let _ = store
+            if let Err(e) = store
                 .upsert_ledger_event_chunk(
                     &cfg.user_id,
                     ev.id,
@@ -174,19 +175,35 @@ async fn index_sweep(
                     &chunk,
                     embedding_json.as_deref(),
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    event_id = %ev.id,
+                    chunk_index = i,
+                    error = %e,
+                    "Ledger indexer: failed to upsert chunk"
+                );
+                all_ok = false;
+                break;
+            }
         }
 
-        indexed += 1;
+        if all_ok {
+            indexed += 1;
 
-        // Advance cursor only after successfully indexing this event.
-        let _ = store
-            .set_setting(
-                &cfg.user_id,
-                CURSOR_KEY,
-                &serde_json::to_value(&cursor_next).unwrap_or_else(|_| serde_json::json!({})),
-            )
-            .await;
+            // Advance cursor only after successfully indexing this event.
+            store
+                .set_setting(
+                    &cfg.user_id,
+                    CURSOR_KEY,
+                    &serde_json::to_value(&cursor_next)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                )
+                .await?;
+        } else {
+            // Do not advance cursor: retry this event next sweep.
+            break;
+        }
     }
 
     Ok(indexed)

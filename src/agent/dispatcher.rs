@@ -139,12 +139,10 @@ impl Agent {
         }
 
         // Inject hybrid ledger recall (candidate evidence) immediately after wake pack.
-        if let (Some(cfg), Some(store), Some(emb)) =
-            (self.ledger_recall_config(), self.store(), self.embeddings())
-        {
+        if let (Some(cfg), Some(store)) = (self.ledger_recall_config(), self.store()) {
             if let Some(block) = crate::agent::ledger_recall::build_ledger_recall_block(
                 store,
-                emb,
+                self.embeddings(),
                 cfg,
                 &message.user_id,
                 is_group_chat,
@@ -153,6 +151,12 @@ impl Agent {
             )
             .await
             {
+                tracing::debug!(
+                    user_id = %message.user_id,
+                    group = is_group_chat,
+                    bytes = block.len(),
+                    "Injecting ledger_recall system message"
+                );
                 reasoning = reasoning.with_ledger_recall(block);
             }
         }

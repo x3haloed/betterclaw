@@ -57,16 +57,24 @@ impl Default for EmbeddingsConfig {
 ///
 /// Falls back to 1536 (OpenAI text-embedding-3-small default) for unknown models.
 fn default_dimension_for_model(model: &str) -> usize {
-    match model {
-        "text-embedding-3-small" => 1536,
-        "text-embedding-3-large" => 3072,
-        "text-embedding-ada-002" => 1536,
-        "nomic-embed-text" => 768,
-        "nomic-embed-text-v1.5" => 768,
-        "mxbai-embed-large" => 1024,
-        "all-minilm" => 384,
-        _ => 1536,
+    // Many local servers (LM Studio/Ollama/etc.) include extra suffixes in model IDs.
+    // Prefer substring matching for common models so we don't silently pick the wrong dims.
+    if model.contains("text-embedding-3-large") {
+        return 3072;
     }
+    if model.contains("text-embedding-3-small") || model.contains("text-embedding-ada-002") {
+        return 1536;
+    }
+    if model.contains("nomic-embed-text") {
+        return 768;
+    }
+    if model.contains("mxbai-embed-large") {
+        return 1024;
+    }
+    if model.contains("all-minilm") {
+        return 384;
+    }
+    1536
 }
 
 fn default_max_input_chars_for_model(model: &str) -> usize {

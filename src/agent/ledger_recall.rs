@@ -82,7 +82,7 @@ fn rrf_add(map: &mut HashMap<String, f64>, hits: &[LedgerChunkHit], k: f64) {
 /// Build a recall block to inject as a system message for this turn.
 pub async fn build_ledger_recall_block(
     store: &Arc<dyn Database>,
-    embeddings: &Arc<dyn EmbeddingProvider>,
+    embeddings: Option<&Arc<dyn EmbeddingProvider>>,
     cfg: &LedgerRecallConfig,
     user_id: &str,
     is_group_chat: bool,
@@ -127,29 +127,12 @@ pub async fn build_ledger_recall_block(
         return Some(out);
     }
 
-    // Embed queries (batched).
-    let q_prefix = nomic_prefix_for_query(embeddings.model_name()).unwrap_or("");
-    let max_in = embeddings.max_input_length().min(8_000);
-    let to_embed: Vec<String> = queries
-        .iter()
-        .map(|q| format!("{q_prefix}{}", clamp_chars(q, max_in)))
-        .collect();
-
-    let q_embs = match embeddings.embed_batch(&to_embed).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("Ledger recall: failed to embed query: {}", e);
-            out.push_str("Recall unavailable: failed to embed query.\n");
-            out.push_str("</ledger_recall>\n");
-            return Some(out);
-        }
-    };
-
     // Collect candidates
     let mut all_hits: HashMap<String, LedgerChunkHit> = HashMap::new();
     let mut rrf_scores: HashMap<String, f64> = HashMap::new();
     let rrf_k = 60.0;
 
+    // Keyword candidates (always available once chunks exist).
     for (qi, q) in queries.iter().enumerate() {
         // FTS candidates
         if cfg.fts_k > 0 {
@@ -163,25 +146,51 @@ pub async fn build_ledger_recall_block(
                 }
             }
         }
+    }
 
-        // Vector candidates
-        if cfg.vector_k > 0 {
-            if let Some(emb_json) = vec_f32_to_json_array(&q_embs[qi]) {
-                if let Ok(vhits) = store
-                    .vector_search_ledger_event_chunks(
-                        user_id,
-                        &emb_json,
-                        cfg.vector_k,
-                        cfg.vector_prefilter_multiplier.max(1),
-                    )
-                    .await
-                {
-                    rrf_add(&mut rrf_scores, &vhits, rrf_k);
-                    for h in vhits {
-                        all_hits.entry(h.chunk_id.clone()).or_insert(h);
+    // Vector candidates (optional; requires embeddings provider).
+    if cfg.vector_k > 0 {
+        if let Some(emb) = embeddings {
+            // Embed queries (batched).
+            let q_prefix = nomic_prefix_for_query(emb.model_name()).unwrap_or("");
+            let max_in = emb.max_input_length().min(8_000);
+            let to_embed: Vec<String> = queries
+                .iter()
+                .map(|q| format!("{q_prefix}{}", clamp_chars(q, max_in)))
+                .collect();
+
+            let q_embs = match emb.embed_batch(&to_embed).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("Ledger recall: failed to embed query: {}", e);
+                    out.push_str("Vector recall unavailable: failed to embed query.\n\n");
+                    Vec::new()
+                }
+            };
+
+            for (qi, _q) in queries.iter().enumerate() {
+                if qi >= q_embs.len() {
+                    break;
+                }
+                if let Some(emb_json) = vec_f32_to_json_array(&q_embs[qi]) {
+                    if let Ok(vhits) = store
+                        .vector_search_ledger_event_chunks(
+                            user_id,
+                            &emb_json,
+                            cfg.vector_k,
+                            cfg.vector_prefilter_multiplier.max(1),
+                        )
+                        .await
+                    {
+                        rrf_add(&mut rrf_scores, &vhits, rrf_k);
+                        for h in vhits {
+                            all_hits.entry(h.chunk_id.clone()).or_insert(h);
+                        }
                     }
                 }
             }
+        } else {
+            out.push_str("Vector recall unavailable: embeddings provider not configured.\n\n");
         }
     }
 

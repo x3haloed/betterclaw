@@ -11,14 +11,13 @@ exclude = [
     "tools-src/google-drive",
     "tools-src/google-sheets",
     "tools-src/google-slides",
-    "tools-src/okta",
     "tools-src/slack",
     "tools-src/telegram",
 ]
 
 [package]
 name = "betterclaw"
-version = "0.13.1"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Personal AI assistant that learns over time."
@@ -166,6 +165,7 @@ default = ["libsql", "html-to-markdown"]
 libsql = ["dep:libsql"]
 integration = []
 html-to-markdown = ["dep:html-to-markdown-rs", "dep:readabilityrs"]
+postgres = []
 
 [[test]]
 name = "html_to_markdown"

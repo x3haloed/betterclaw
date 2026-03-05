@@ -62,7 +62,11 @@ pub(crate) async fn index_sweep(
     cfg: &LedgerIndexConfig,
 ) -> Result<i64, crate::error::DatabaseError> {
     // Load cursor from settings.
-    let cursor_val = store.get_setting(&cfg.user_id, CURSOR_KEY).await.ok().flatten();
+    let cursor_val = store
+        .get_setting(&cfg.user_id, CURSOR_KEY)
+        .await
+        .ok()
+        .flatten();
     let cursor: Option<LedgerIndexCursorV0> =
         cursor_val.and_then(|v| serde_json::from_value(v).ok());
 
@@ -94,9 +98,7 @@ pub(crate) async fn index_sweep(
 
     for ev in &events {
         let cursor_next = LedgerIndexCursorV0 {
-            created_at: ev
-                .created_at
-                .to_rfc3339_opts(SecondsFormat::Millis, true),
+            created_at: ev.created_at.to_rfc3339_opts(SecondsFormat::Millis, true),
             id: ev.id.to_string(),
         };
 
@@ -106,8 +108,7 @@ pub(crate) async fn index_sweep(
                 .set_setting(
                     &cfg.user_id,
                     CURSOR_KEY,
-                    &serde_json::to_value(&cursor_next)
-                        .unwrap_or_else(|_| serde_json::json!({})),
+                    &serde_json::to_value(&cursor_next).unwrap_or_else(|_| serde_json::json!({})),
                 )
                 .await;
             continue;
@@ -119,8 +120,7 @@ pub(crate) async fn index_sweep(
                 .set_setting(
                     &cfg.user_id,
                     CURSOR_KEY,
-                    &serde_json::to_value(&cursor_next)
-                        .unwrap_or_else(|_| serde_json::json!({})),
+                    &serde_json::to_value(&cursor_next).unwrap_or_else(|_| serde_json::json!({})),
                 )
                 .await;
             continue;
@@ -145,10 +145,7 @@ pub(crate) async fn index_sweep(
         }
 
         // Embed in one batch per event (keeps ordering stable).
-        let to_embed: Vec<String> = chunks
-            .iter()
-            .map(|c| format!("{doc_prefix}{c}"))
-            .collect();
+        let to_embed: Vec<String> = chunks.iter().map(|c| format!("{doc_prefix}{c}")).collect();
 
         let embs = match embeddings.embed_batch(&to_embed).await {
             Ok(v) => v,
@@ -196,8 +193,7 @@ pub(crate) async fn index_sweep(
                 .set_setting(
                     &cfg.user_id,
                     CURSOR_KEY,
-                    &serde_json::to_value(&cursor_next)
-                        .unwrap_or_else(|_| serde_json::json!({})),
+                    &serde_json::to_value(&cursor_next).unwrap_or_else(|_| serde_json::json!({})),
                 )
                 .await?;
         } else {

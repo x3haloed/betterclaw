@@ -48,7 +48,10 @@ impl LedgerIndexConfig {
         let defaults = Self::default();
         Ok(Self {
             enabled: parse_bool_env("LEDGER_INDEX_ENABLED", defaults.enabled)?,
-            interval_secs: parse_optional_env("LEDGER_INDEX_INTERVAL_SECS", defaults.interval_secs)?,
+            interval_secs: parse_optional_env(
+                "LEDGER_INDEX_INTERVAL_SECS",
+                defaults.interval_secs,
+            )?,
             startup_delay_secs: parse_optional_env(
                 "LEDGER_INDEX_STARTUP_DELAY_SECS",
                 defaults.startup_delay_secs,
@@ -74,4 +77,3 @@ impl LedgerIndexConfig {
         })
     }
 }
-

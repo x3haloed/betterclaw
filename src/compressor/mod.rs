@@ -9,9 +9,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::LlmError;
-use crate::ledger::NewLedgerEvent;
 use crate::ledger::LedgerEvent;
-use crate::llm::{ChatMessage, FinishReason, LlmProvider, ToolCall, ToolCompletionRequest, ToolDefinition};
+use crate::ledger::NewLedgerEvent;
+use crate::llm::{
+    ChatMessage, FinishReason, LlmProvider, ToolCall, ToolCompletionRequest, ToolDefinition,
+};
 
 pub const COMPRESSOR_DELTA_TOOL_NAME: &str = "compressor_delta_v0";
 
@@ -219,15 +221,8 @@ pub async fn run_micro_distill_pass(
         })?;
     local.reverse();
 
-    run_micro_distill_pass_with_local_window(
-        store,
-        compressor_llm,
-        user_id,
-        params,
-        commit,
-        &local,
-    )
-    .await
+    run_micro_distill_pass_with_local_window(store, compressor_llm, user_id, params, commit, &local)
+        .await
 }
 
 /// Run a micro-distill pass using a pre-selected local window.
@@ -241,7 +236,6 @@ pub async fn run_micro_distill_pass_with_local_window(
     commit: bool,
     local: &[LedgerEvent],
 ) -> Result<MicroDistillResult, LlmError> {
-
     let mut invariants = store
         .list_recent_ledger_events_by_kind_prefix(user_id, "invariant.", params.anchor_invariants)
         .await
@@ -269,7 +263,10 @@ pub async fn run_micro_distill_pass_with_local_window(
         .await
         .ok()
         .and_then(|mut v| v.pop())
-        .and_then(|e| e.content.map(|c| (e.id.to_string(), e.created_at.to_rfc3339(), c)));
+        .and_then(|e| {
+            e.content
+                .map(|c| (e.id.to_string(), e.created_at.to_rfc3339(), c))
+        });
 
     let user_msg = format!(
         "# Evidence Window (Local)\n{}\n\n# Anchor Invariants (Recent)\n{}\n\n# Drift/Contradiction Candidates (Recent)\n{}\n\n# Previous Wake Pack (Most Recent)\n{}\n",
@@ -292,13 +289,7 @@ pub async fn run_micro_distill_pass_with_local_window(
         ChatMessage::user(user_msg),
     ];
 
-    let delta = complete_delta_v0(
-        compressor_llm,
-        messages,
-        None,
-        params.max_tokens,
-    )
-    .await?;
+    let delta = complete_delta_v0(compressor_llm, messages, None, params.max_tokens).await?;
 
     if !commit {
         return Ok(MicroDistillResult {
@@ -314,7 +305,9 @@ pub async fn run_micro_distill_pass_with_local_window(
     for a in &delta.actions {
         match a.action_type {
             ActionTypeV0::CreateInvariant | ActionTypeV0::UpdateInvariant => {
-                let Some(scope) = a.scope.as_ref() else { continue };
+                let Some(scope) = a.scope.as_ref() else {
+                    continue;
+                };
                 let kind_scope = match scope {
                     ScopeV0::Self_ => "self",
                     ScopeV0::User => "user",
@@ -353,7 +346,9 @@ pub async fn run_micro_distill_pass_with_local_window(
                     }
                 }
             }
-            ActionTypeV0::FlagDrift | ActionTypeV0::MarkContradicted | ActionTypeV0::MergeInvariants => {
+            ActionTypeV0::FlagDrift
+            | ActionTypeV0::MarkContradicted
+            | ActionTypeV0::MergeInvariants => {
                 let kind = match a.action_type {
                     ActionTypeV0::FlagDrift => "drift.flag.v0",
                     ActionTypeV0::MarkContradicted => "drift.contradiction.v0",
@@ -402,13 +397,14 @@ pub async fn run_micro_distill_pass_with_local_window(
         payload: &wake_payload,
     };
 
-    let wake_pack_event_id = store
-        .append_ledger_event(&wake_event)
-        .await
-        .map_err(|e| LlmError::RequestFailed {
-            provider: "compressor".to_string(),
-            reason: format!("Failed to commit wake_pack.v0: {e}"),
-        })?;
+    let wake_pack_event_id =
+        store
+            .append_ledger_event(&wake_event)
+            .await
+            .map_err(|e| LlmError::RequestFailed {
+                provider: "compressor".to_string(),
+                reason: format!("Failed to commit wake_pack.v0: {e}"),
+            })?;
 
     let payload = serde_json::json!({
         "actions": delta.actions,
@@ -433,13 +429,14 @@ pub async fn run_micro_distill_pass_with_local_window(
         payload: &payload,
     };
 
-    let distill_event_id = store
-        .append_ledger_event(&ev)
-        .await
-        .map_err(|e| LlmError::RequestFailed {
-            provider: "compressor".to_string(),
-            reason: format!("Failed to commit distill.micro: {e}"),
-        })?;
+    let distill_event_id =
+        store
+            .append_ledger_event(&ev)
+            .await
+            .map_err(|e| LlmError::RequestFailed {
+                provider: "compressor".to_string(),
+                reason: format!("Failed to commit distill.micro: {e}"),
+            })?;
 
     Ok(MicroDistillResult {
         delta,
@@ -453,7 +450,9 @@ pub fn compressor_delta_tool_schema_v0() -> ToolDefinition {
     // (required fields, additionalProperties=false, nullable optionals).
     ToolDefinition {
         name: COMPRESSOR_DELTA_TOOL_NAME.to_string(),
-        description: "Emit a bounded, cited delta for invariants/isnads. Conservative; no uncited claims.".to_string(),
+        description:
+            "Emit a bounded, cited delta for invariants/isnads. Conservative; no uncited claims."
+                .to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -601,14 +600,24 @@ mod tests {
 
     #[async_trait]
     impl LlmProvider for FakeToolCallLlm {
-        fn model_name(&self) -> &str { "fake" }
-        fn cost_per_token(&self) -> (Decimal, Decimal) { (Decimal::ZERO, Decimal::ZERO) }
-
-        async fn complete(&self, _request: crate::llm::CompletionRequest) -> Result<crate::llm::CompletionResponse, LlmError> {
-            Err(LlmError::RequestFailed{ provider: "fake".to_string(), reason: "not implemented".to_string()})
+        fn model_name(&self) -> &str {
+            "fake"
+        }
+        fn cost_per_token(&self) -> (Decimal, Decimal) {
+            (Decimal::ZERO, Decimal::ZERO)
         }
 
-    async fn complete_with_tools(
+        async fn complete(
+            &self,
+            _request: crate::llm::CompletionRequest,
+        ) -> Result<crate::llm::CompletionResponse, LlmError> {
+            Err(LlmError::RequestFailed {
+                provider: "fake".to_string(),
+                reason: "not implemented".to_string(),
+            })
+        }
+
+        async fn complete_with_tools(
             &self,
             _request: ToolCompletionRequest,
         ) -> Result<crate::llm::ToolCompletionResponse, LlmError> {
@@ -636,23 +645,23 @@ mod tests {
         }
 
         async fn model_metadata(&self) -> Result<crate::llm::ModelMetadata, LlmError> {
-            Ok(crate::llm::ModelMetadata { id: "fake".to_string(), context_length: None })
+            Ok(crate::llm::ModelMetadata {
+                id: "fake".to_string(),
+                context_length: None,
+            })
         }
 
-        fn active_model_name(&self) -> String { "fake".to_string() }
+        fn active_model_name(&self) -> String {
+            "fake".to_string()
+        }
     }
 
     #[tokio::test]
     async fn parses_tool_arguments_into_delta() {
         let llm = FakeToolCallLlm;
-        let delta = complete_delta_v0(
-            &llm,
-            vec![ChatMessage::user("hi")],
-            None,
-            512,
-        )
-        .await
-        .expect("delta");
+        let delta = complete_delta_v0(&llm, vec![ChatMessage::user("hi")], None, 512)
+            .await
+            .expect("delta");
         assert_eq!(delta.actions.len(), 1);
     }
 }

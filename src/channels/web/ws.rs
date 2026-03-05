@@ -242,7 +242,7 @@ async fn handle_client_message(
         } => {
             if let Some(ref ext_mgr) = state.extension_manager {
                 match ext_mgr.auth(&extension_name, Some(&token)).await {
-                    Ok(result) if result.status == "authenticated" => {
+                    Ok(result) if result.is_authenticated() => {
                         let msg = match ext_mgr.activate(&extension_name).await {
                             Ok(r) => format!(
                                 "{} authenticated ({} tools loaded)",
@@ -268,9 +268,9 @@ async fn handle_client_message(
                             .sse
                             .broadcast(crate::channels::web::types::SseEvent::AuthRequired {
                                 extension_name,
-                                instructions: result.instructions,
-                                auth_url: result.auth_url,
-                                setup_url: result.setup_url,
+                                instructions: result.instructions().map(String::from),
+                                auth_url: result.auth_url().map(String::from),
+                                setup_url: result.setup_url().map(String::from),
                             });
                     }
                     Err(e) => {
@@ -474,6 +474,7 @@ mod tests {
         GatewayState {
             msg_tx: tokio::sync::RwLock::new(msg_tx),
             sse: SseManager::new(),
+            workspace: None,
             session_manager: None,
             log_broadcaster: None,
             log_level_handle: None,
@@ -482,6 +483,7 @@ mod tests {
             store: None,
             job_manager: None,
             prompt_queue: None,
+            scheduler: None,
             user_id: "test".to_string(),
             shutdown_tx: tokio::sync::RwLock::new(None),
             ws_tracker: Some(Arc::new(WsConnectionTracker::new())),
@@ -492,7 +494,6 @@ mod tests {
             registry_entries: Vec::new(),
             cost_guard: None,
             startup_time: std::time::Instant::now(),
-            restart_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }

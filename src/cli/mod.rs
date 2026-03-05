@@ -11,8 +11,8 @@
 //! - Checking system health (`status`)
 
 mod completion;
-mod config;
 mod compressor;
+mod config;
 mod doctor;
 mod mcp;
 pub mod oauth_defaults;
@@ -23,8 +23,8 @@ pub mod status;
 mod tool;
 
 pub use completion::Completion;
-pub use config::{ConfigCommand, run_config_command};
 pub use compressor::{CompressorCommand, run_compressor_command};
+pub use config::{ConfigCommand, run_config_command};
 pub use doctor::run_doctor_command;
 pub use mcp::{McpCommand, run_mcp_command};
 pub use pairing::{PairingCommand, run_pairing_command, run_pairing_command_with_store};

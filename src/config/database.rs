@@ -90,4 +90,3 @@ impl DatabaseConfig {
 pub fn default_libsql_path() -> PathBuf {
     betterclaw_base_dir().join("betterclaw.db")
 }
-

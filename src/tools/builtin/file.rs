@@ -666,7 +666,13 @@ mod tests {
         let ctx = JobContext::default();
 
         // Identity/workspace-ish files should be writable like any other file now.
-        for filename in &["HEARTBEAT.md", "SOUL.md", "AGENTS.md", "IDENTITY.md", "USER.md"] {
+        for filename in &[
+            "HEARTBEAT.md",
+            "SOUL.md",
+            "AGENTS.md",
+            "IDENTITY.md",
+            "USER.md",
+        ] {
             let path = dir.path().join(filename);
             let result = tool
                 .execute(

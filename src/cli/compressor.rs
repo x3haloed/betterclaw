@@ -106,7 +106,10 @@ async fn run_once(
 
     // Always print the delta to stdout for inspection.
     println!("{}", serde_json::to_string_pretty(&delta)?);
-    eprintln!("\n--- wake_pack.v0 (content) ---\n{}\n", delta.wake_pack.content);
+    eprintln!(
+        "\n--- wake_pack.v0 (content) ---\n{}\n",
+        delta.wake_pack.content
+    );
     if args.commit {
         if let Some(id) = res.wake_pack_event_id {
             eprintln!("Committed wake_pack.v0 event: {}", id);
@@ -124,7 +127,10 @@ async fn reset_compressions(store: Arc<dyn Database>, args: ResetArgs) -> anyhow
     let prefixes = ["wake_pack.", "distill.", "invariant.", "drift."];
 
     let mut total: i64 = 0;
-    eprintln!("Resetting compressor artifacts for user_id='{}'", args.user_id);
+    eprintln!(
+        "Resetting compressor artifacts for user_id='{}'",
+        args.user_id
+    );
     for p in prefixes {
         let c = store
             .count_ledger_events_by_kind_prefix(&args.user_id, p)

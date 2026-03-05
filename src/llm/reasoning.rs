@@ -489,7 +489,7 @@ Respond in JSON format:
     ///
     /// Returns `RespondOutput` containing the result and token usage from the LLM call.
     /// The caller should use `usage` to track cost/budget against the job.
-pub async fn respond_with_tools(
+    pub async fn respond_with_tools(
         &self,
         context: &ReasoningContext,
     ) -> Result<RespondOutput, LlmError> {
@@ -796,7 +796,10 @@ Example:
     }
 
     fn build_ledger_recall_message(&self) -> Option<String> {
-        self.ledger_recall.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        self.ledger_recall
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     fn build_extensions_section(&self, context: &ReasoningContext) -> String {

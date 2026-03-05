@@ -141,7 +141,11 @@ impl OpenAiCompatibleEmbeddings {
         dimension: usize,
     ) -> Self {
         let model_s = model.into();
-        let default_max_input_chars = if model_s.contains("nomic-embed-text") { 8_000 } else { 16_000 };
+        let default_max_input_chars = if model_s.contains("nomic-embed-text") {
+            8_000
+        } else {
+            16_000
+        };
         let default_max_batch_chars = 32_000;
         Self::with_model_and_limits(
             base_url,
@@ -176,7 +180,9 @@ impl OpenAiCompatibleEmbeddings {
     fn embeddings_url(&self) -> Result<url::Url, EmbeddingError> {
         let base = self.base_url.trim_end_matches('/');
         let u = format!("{base}/embeddings");
-        url::Url::parse(&u).map_err(|e| EmbeddingError::InvalidResponse(format!("Invalid embeddings base_url: {e}")))
+        url::Url::parse(&u).map_err(|e| {
+            EmbeddingError::InvalidResponse(format!("Invalid embeddings base_url: {e}"))
+        })
     }
 
     async fn send_batch(

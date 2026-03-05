@@ -98,9 +98,7 @@ impl EmbeddingsConfig {
 
         let embedding_api_key = optional_env("EMBEDDING_API_KEY")?;
         let llm_api_key = optional_env("LLM_API_KEY")?;
-        let openai_compatible_api_key = embedding_api_key
-            .or(llm_api_key)
-            .map(SecretString::from);
+        let openai_compatible_api_key = embedding_api_key.or(llm_api_key).map(SecretString::from);
 
         let provider = optional_env("EMBEDDING_PROVIDER")?
             .unwrap_or_else(|| settings.embeddings.provider.clone());
@@ -184,13 +182,14 @@ impl EmbeddingsConfig {
                 );
                 Some(Arc::new(
                     crate::workspace::OpenAiCompatibleEmbeddings::with_model_and_limits(
-                    base_url.clone(),
-                    api_key,
-                    &self.model,
-                    self.dimension,
-                    self.max_input_chars,
-                    self.max_batch_chars,
-                )))
+                        base_url.clone(),
+                        api_key,
+                        &self.model,
+                        self.dimension,
+                        self.max_input_chars,
+                        self.max_batch_chars,
+                    ),
+                ))
             }
             _ => {
                 if let Some(api_key) = self.openai_api_key() {

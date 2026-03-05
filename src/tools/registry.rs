@@ -18,9 +18,9 @@ use crate::tools::builder::{BuildSoftwareTool, BuilderConfig, LlmSoftwareBuilder
 use crate::tools::builtin::{
     ApplyPatchTool, CancelJobTool, CreateJobTool, EchoTool, HttpTool, JobEventsTool, JobPromptTool,
     JobStatusTool, JsonTool, ListDirTool, ListJobsTool, PromptQueue, ReadFileTool, ShellTool,
-    SkillInstallTool,
-    SkillListTool, SkillRemoveTool, SkillSearchTool, TimeTool, ToolActivateTool, ToolAuthTool,
-    ToolInstallTool, ToolListTool, ToolRemoveTool, ToolSearchTool, WebFetchTool, WriteFileTool,
+    SkillInstallTool, SkillListTool, SkillRemoveTool, SkillSearchTool, TimeTool, ToolActivateTool,
+    ToolAuthTool, ToolInstallTool, ToolListTool, ToolRemoveTool, ToolSearchTool, WebFetchTool,
+    WriteFileTool,
 };
 use crate::tools::rate_limiter::RateLimiter;
 use crate::tools::tool::{Tool, ToolDomain};
@@ -327,6 +327,20 @@ impl ToolRegistry {
         tracing::info!("Registered {} job management tools", job_tool_count);
     }
 
+    /// Register secret management tools (list, delete).
+    ///
+    /// These allow the LLM to persist API keys and tokens encrypted in the database.
+    /// Values are never returned to the LLM; only names and metadata are exposed.
+    pub fn register_secrets_tools(
+        &self,
+        store: Arc<dyn crate::secrets::SecretsStore + Send + Sync>,
+    ) {
+        use crate::tools::builtin::{SecretDeleteTool, SecretListTool};
+        self.register_sync(Arc::new(SecretListTool::new(Arc::clone(&store))));
+        self.register_sync(Arc::new(SecretDeleteTool::new(store)));
+        tracing::info!("Registered 2 secret management tools (list, delete)");
+    }
+
     /// Register extension management tools (search, install, auth, activate, list, remove).
     ///
     /// These allow the LLM to manage MCP servers and WASM tools through conversation.
@@ -577,7 +591,7 @@ impl ToolRegistry {
             limits: None,
             description: Some(&tool_with_binary.tool.description),
             schema: Some(tool_with_binary.tool.parameters_schema.clone()),
-            secrets_store: None,
+            secrets_store: self.secrets_store.clone(),
             oauth_refresh: None,
         })
         .await

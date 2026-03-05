@@ -51,13 +51,19 @@ impl CompressorLoopConfig {
         let defaults = Self::default();
         Ok(Self {
             enabled: parse_bool_env("COMPRESSOR_LOOP_ENABLED", defaults.enabled)?,
-            interval_secs: parse_optional_env("COMPRESSOR_LOOP_INTERVAL_SECS", defaults.interval_secs)?,
+            interval_secs: parse_optional_env(
+                "COMPRESSOR_LOOP_INTERVAL_SECS",
+                defaults.interval_secs,
+            )?,
             startup_delay_secs: parse_optional_env(
                 "COMPRESSOR_LOOP_STARTUP_DELAY_SECS",
                 defaults.startup_delay_secs,
             )?,
             user_id: optional_env("COMPRESSOR_LOOP_USER_ID")?.unwrap_or(defaults.user_id),
-            window_events: parse_optional_env("COMPRESSOR_LOOP_WINDOW_EVENTS", defaults.window_events)?,
+            window_events: parse_optional_env(
+                "COMPRESSOR_LOOP_WINDOW_EVENTS",
+                defaults.window_events,
+            )?,
             anchor_invariants: parse_optional_env(
                 "COMPRESSOR_LOOP_ANCHOR_INVARIANTS",
                 defaults.anchor_invariants,

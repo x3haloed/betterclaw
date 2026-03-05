@@ -125,7 +125,9 @@ impl Tool for LedgerListTool {
             .store
             .list_ledger_events_by_kind_prefix_page(&ctx.user_id, &kind_prefix, limit, skip)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("failed to list ledger events: {e}")))?;
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("failed to list ledger events: {e}"))
+            })?;
         tracing::debug!(
             user_id = %ctx.user_id,
             kind_prefix = %kind_prefix,
@@ -139,9 +141,7 @@ impl Tool for LedgerListTool {
             .iter()
             .map(|e| {
                 let content_preview = if include_content_preview {
-                    e.content
-                        .as_deref()
-                        .map(|c| truncate_chars(c, 800))
+                    e.content.as_deref().map(|c| truncate_chars(c, 800))
                 } else {
                     None
                 };
@@ -219,7 +219,9 @@ impl Tool for LedgerGetTool {
         let event_id = params
             .get("event_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidParameters("missing 'event_id' parameter".to_string()))?;
+            .ok_or_else(|| {
+                ToolError::InvalidParameters("missing 'event_id' parameter".to_string())
+            })?;
 
         let id = Uuid::parse_str(event_id)
             .map_err(|_| ToolError::InvalidParameters("event_id must be a UUID".to_string()))?;

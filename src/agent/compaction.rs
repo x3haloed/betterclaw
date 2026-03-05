@@ -283,10 +283,7 @@ mod tests {
         assert_eq!(thread.turns.len(), 10);
 
         let result = compactor
-            .compact(
-                &mut thread,
-                CompactionStrategy::Truncate { keep_recent: 3 },
-            )
+            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
             .await
             .expect("compact should succeed");
 
@@ -328,10 +325,7 @@ mod tests {
             thread.turns.iter().map(|t| t.user_input.clone()).collect();
 
         let result = compactor
-            .compact(
-                &mut thread,
-                CompactionStrategy::Truncate { keep_recent: 5 },
-            )
+            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 5 })
             .await
             .expect("compact should succeed");
 
@@ -358,10 +352,7 @@ mod tests {
         assert!(thread.turns.is_empty());
 
         let result = compactor
-            .compact(
-                &mut thread,
-                CompactionStrategy::Truncate { keep_recent: 3 },
-            )
+            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
             .await
             .expect("compact should succeed on empty turns");
 
@@ -567,10 +558,7 @@ mod tests {
         let mut thread = make_thread(20);
 
         let result = compactor
-            .compact(
-                &mut thread,
-                CompactionStrategy::Truncate { keep_recent: 5 },
-            )
+            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 5 })
             .await
             .expect("compact should succeed");
 
@@ -593,10 +581,7 @@ mod tests {
         let mut thread = make_thread(5);
 
         let result = compactor
-            .compact(
-                &mut thread,
-                CompactionStrategy::Truncate { keep_recent: 0 },
-            )
+            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 0 })
             .await
             .expect("compact should succeed");
 
@@ -642,10 +627,7 @@ mod tests {
         let mut thread = make_thread(10);
 
         compactor
-            .compact(
-                &mut thread,
-                CompactionStrategy::Truncate { keep_recent: 3 },
-            )
+            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
             .await
             .expect("compact should succeed");
 
@@ -692,10 +674,7 @@ mod tests {
 
         // Second compaction: 10 -> 3
         let r2 = compactor
-            .compact(
-                &mut thread,
-                CompactionStrategy::Truncate { keep_recent: 3 },
-            )
+            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
             .await
             .expect("second compact");
         assert_eq!(thread.turns.len(), 3);

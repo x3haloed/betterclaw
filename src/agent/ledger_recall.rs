@@ -218,7 +218,10 @@ pub async fn build_ledger_recall_block(
     // Make expanding context thoughtless: show an explicit tool-call example.
     if let Some((first, _)) = fused.first() {
         out.push_str("Example (fetch full content for the top hit):\n");
-        out.push_str(&format!("ledger_get {{\"event_id\":\"{}\"}}\n\n", first.event_id));
+        out.push_str(&format!(
+            "ledger_get {{\"event_id\":\"{}\"}}\n\n",
+            first.event_id
+        ));
     }
 
     out.push_str("Top hits:\n");
@@ -227,7 +230,10 @@ pub async fn build_ledger_recall_block(
         let preview = clamp_chars(&hit.content, 500);
         let line = format!(
             "- event_id={} chunk_index={} rrf={:.4}\n  \"{}\"\n",
-            hit.event_id, hit.chunk_index, s, preview.replace('\n', " ")
+            hit.event_id,
+            hit.chunk_index,
+            s,
+            preview.replace('\n', " ")
         );
         if out.chars().count() + line.chars().count() > cfg.max_injected_chars {
             out.push_str("...\n");

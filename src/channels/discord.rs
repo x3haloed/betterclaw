@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use rand::seq::SliceRandom;
 use secrecy::ExposeSecret;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
@@ -209,7 +209,8 @@ impl DiscordChannel {
             };
 
             let sep = if current.is_empty() { "" } else { "\n" };
-            let candidate_len = current.chars().count() + sep.chars().count() + line.chars().count();
+            let candidate_len =
+                current.chars().count() + sep.chars().count() + line.chars().count();
             if candidate_len <= max_len {
                 if !current.is_empty() {
                     current.push('\n');
@@ -325,11 +326,7 @@ impl DiscordChannel {
             return None;
         }
 
-        let cleaned = trimmed
-            .replace(&m1, "")
-            .replace(&m2, "")
-            .trim()
-            .to_string();
+        let cleaned = trimmed.replace(&m1, "").replace(&m2, "").trim().to_string();
         if cleaned.is_empty() {
             None
         } else {
@@ -360,9 +357,11 @@ impl DiscordChannel {
 
     fn has_image_extension(value: &str) -> bool {
         let value = value.to_ascii_lowercase();
-        [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg"]
-            .iter()
-            .any(|ext| value.ends_with(ext))
+        [
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",
+        ]
+        .iter()
+        .any(|ext| value.ends_with(ext))
     }
 
     async fn fetch_text_attachment_limited(&self, url: &str) -> Option<String> {
@@ -526,19 +525,13 @@ impl DiscordChannel {
     }
 
     async fn stop_typing_from_metadata(&self, metadata: &serde_json::Value) {
-        if let Some(ch) = metadata
-            .get("discord_channel_id")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(ch) = metadata.get("discord_channel_id").and_then(|v| v.as_str()) {
             self.stop_typing(ch).await;
         }
     }
 
     async fn start_typing_from_metadata(&self, metadata: &serde_json::Value) {
-        if let Some(ch) = metadata
-            .get("discord_channel_id")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(ch) = metadata.get("discord_channel_id").and_then(|v| v.as_str()) {
             self.start_typing(ch).await;
         }
     }
@@ -584,10 +577,12 @@ impl DiscordChannel {
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
         for path_str in attachments.iter().take(DISCORD_MAX_FILES) {
             let path = std::path::Path::new(path_str);
-            let meta = tokio::fs::metadata(path).await.map_err(|e| ChannelError::SendFailed {
-                name: "discord".to_string(),
-                reason: format!("Attachment not found: {path_str}: {e}"),
-            })?;
+            let meta = tokio::fs::metadata(path)
+                .await
+                .map_err(|e| ChannelError::SendFailed {
+                    name: "discord".to_string(),
+                    reason: format!("Attachment not found: {path_str}: {e}"),
+                })?;
 
             if !meta.is_file() {
                 return Err(ChannelError::SendFailed {
@@ -612,10 +607,12 @@ impl DiscordChannel {
                 .and_then(|s| s.to_str())
                 .unwrap_or("file")
                 .to_string();
-            let data = tokio::fs::read(path).await.map_err(|e| ChannelError::SendFailed {
-                name: "discord".to_string(),
-                reason: format!("Failed to read attachment: {path_str}: {e}"),
-            })?;
+            let data = tokio::fs::read(path)
+                .await
+                .map_err(|e| ChannelError::SendFailed {
+                    name: "discord".to_string(),
+                    reason: format!("Failed to read attachment: {path_str}: {e}"),
+                })?;
             files.push((name, data));
         }
 
@@ -1105,7 +1102,11 @@ impl Channel for DiscordChannel {
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
-    async fn respond(&self, msg: &IncomingMessage, response: OutgoingResponse) -> Result<(), ChannelError> {
+    async fn respond(
+        &self,
+        msg: &IncomingMessage,
+        response: OutgoingResponse,
+    ) -> Result<(), ChannelError> {
         let channel_id = msg
             .metadata
             .get("discord_channel_id")
@@ -1146,9 +1147,15 @@ impl Channel for DiscordChannel {
         Ok(())
     }
 
-    async fn send_status(&self, status: StatusUpdate, metadata: &serde_json::Value) -> Result<(), ChannelError> {
+    async fn send_status(
+        &self,
+        status: StatusUpdate,
+        metadata: &serde_json::Value,
+    ) -> Result<(), ChannelError> {
         match status {
-            StatusUpdate::Thinking(_) | StatusUpdate::ToolStarted { .. } | StatusUpdate::StreamChunk(_) => {
+            StatusUpdate::Thinking(_)
+            | StatusUpdate::ToolStarted { .. }
+            | StatusUpdate::StreamChunk(_) => {
                 self.start_typing_from_metadata(metadata).await;
             }
             StatusUpdate::Status(msg) => {
@@ -1162,15 +1169,25 @@ impl Channel for DiscordChannel {
                     self.stop_typing_from_metadata(metadata).await;
                 }
             }
-            StatusUpdate::ApprovalNeeded { request_id, tool_name, description, parameters } => {
-                let Some(channel_id) = metadata
-                    .get("discord_channel_id")
-                    .and_then(|v| v.as_str())
+            StatusUpdate::ApprovalNeeded {
+                request_id,
+                tool_name,
+                description,
+                parameters,
+            } => {
+                let Some(channel_id) = metadata.get("discord_channel_id").and_then(|v| v.as_str())
                 else {
                     return Ok(());
                 };
                 self.stop_typing(channel_id).await;
-                self.send_approval_prompt(channel_id, &request_id, &tool_name, &description, &parameters).await?;
+                self.send_approval_prompt(
+                    channel_id,
+                    &request_id,
+                    &tool_name,
+                    &description,
+                    &parameters,
+                )
+                .await?;
             }
             _ => {}
         }

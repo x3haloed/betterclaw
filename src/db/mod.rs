@@ -24,12 +24,13 @@ use uuid::Uuid;
 use crate::agent::BrokenTool;
 use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::error::DatabaseError;
+use crate::error::{DatabaseError, WorkspaceError};
 use crate::history::{
     AgentJobRecord, AgentJobSummary, ConversationMessage, ConversationSummary, JobEventRecord,
     LlmCallRecord, SandboxJobRecord, SandboxJobSummary, SettingRow,
 };
 use crate::ledger::{LedgerEvent, NewLedgerEvent};
+use crate::workspace::{MemoryChunk, MemoryDocument, SearchConfig, SearchResult, WorkspaceEntry};
 
 /// A single ranked hit from ledger chunk search.
 #[derive(Debug, Clone)]
@@ -238,6 +239,9 @@ pub trait JobStore: Send + Sync {
     async fn get_stuck_jobs(&self) -> Result<Vec<Uuid>, DatabaseError>;
     async fn list_agent_jobs(&self) -> Result<Vec<AgentJobRecord>, DatabaseError>;
     async fn agent_job_summary(&self) -> Result<AgentJobSummary, DatabaseError>;
+    /// Get the failure reason for a single agent job (O(1) lookup).
+    async fn get_agent_job_failure_reason(&self, id: Uuid)
+    -> Result<Option<String>, DatabaseError>;
     async fn save_action(&self, job_id: Uuid, action: &ActionRecord) -> Result<(), DatabaseError>;
     async fn get_job_actions(&self, job_id: Uuid) -> Result<Vec<ActionRecord>, DatabaseError>;
     async fn record_llm_call(&self, record: &LlmCallRecord<'_>) -> Result<Uuid, DatabaseError>;
@@ -431,6 +435,87 @@ pub trait LedgerChunkStore: Send + Sync {
     ) -> Result<Vec<LedgerChunkHit>, DatabaseError>;
 }
 
+// ==================== Workspace ====================
+
+#[async_trait]
+pub trait WorkspaceStore: Send + Sync {
+    async fn get_document_by_path(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+        path: &str,
+    ) -> Result<MemoryDocument, WorkspaceError>;
+
+    async fn get_document_by_id(&self, id: Uuid) -> Result<MemoryDocument, WorkspaceError>;
+
+    async fn get_or_create_document_by_path(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+        path: &str,
+    ) -> Result<MemoryDocument, WorkspaceError>;
+
+    async fn update_document(&self, id: Uuid, content: &str) -> Result<(), WorkspaceError>;
+
+    async fn delete_document_by_path(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+        path: &str,
+    ) -> Result<(), WorkspaceError>;
+
+    async fn list_directory(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+        directory: &str,
+    ) -> Result<Vec<WorkspaceEntry>, WorkspaceError>;
+
+    async fn list_all_paths(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+    ) -> Result<Vec<String>, WorkspaceError>;
+
+    async fn list_documents(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+    ) -> Result<Vec<MemoryDocument>, WorkspaceError>;
+
+    async fn delete_chunks(&self, document_id: Uuid) -> Result<(), WorkspaceError>;
+
+    async fn insert_chunk(
+        &self,
+        document_id: Uuid,
+        chunk_index: i32,
+        content: &str,
+        embedding: Option<&[f32]>,
+    ) -> Result<Uuid, WorkspaceError>;
+
+    async fn update_chunk_embedding(
+        &self,
+        chunk_id: Uuid,
+        embedding: &[f32],
+    ) -> Result<(), WorkspaceError>;
+
+    async fn get_chunks_without_embeddings(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+        limit: usize,
+    ) -> Result<Vec<MemoryChunk>, WorkspaceError>;
+
+    async fn hybrid_search(
+        &self,
+        user_id: &str,
+        agent_id: Option<Uuid>,
+        query: &str,
+        embedding: Option<&[f32]>,
+        config: &SearchConfig,
+    ) -> Result<Vec<SearchResult>, WorkspaceError>;
+}
+
 /// Backend-agnostic database supertrait.
 ///
 /// Combines all sub-traits into one. Existing `Arc<dyn Database>` consumers
@@ -445,6 +530,7 @@ pub trait Database:
     + RoutineStore
     + ToolFailureStore
     + SettingsStore
+    + WorkspaceStore
     + Send
     + Sync
 {

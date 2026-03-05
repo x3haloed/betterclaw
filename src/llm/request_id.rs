@@ -49,11 +49,12 @@ impl LlmProvider for RequestIdProvider {
         self.inner.cost_per_token()
     }
 
-    async fn complete(&self, mut request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+    async fn complete(
+        &self,
+        mut request: CompletionRequest,
+    ) -> Result<CompletionResponse, LlmError> {
         let llm_request_id = ensure_request_id(&mut request.metadata);
-        let model = self
-            .inner
-            .effective_model_name(request.model.as_deref());
+        let model = self.inner.effective_model_name(request.model.as_deref());
         tracing::info!(
             llm_request_id = %llm_request_id,
             model = %model,
@@ -75,9 +76,7 @@ impl LlmProvider for RequestIdProvider {
         mut request: ToolCompletionRequest,
     ) -> Result<ToolCompletionResponse, LlmError> {
         let llm_request_id = ensure_request_id(&mut request.metadata);
-        let model = self
-            .inner
-            .effective_model_name(request.model.as_deref());
+        let model = self.inner.effective_model_name(request.model.as_deref());
         tracing::info!(
             llm_request_id = %llm_request_id,
             model = %model,
@@ -122,4 +121,3 @@ impl LlmProvider for RequestIdProvider {
         self.inner.calculate_cost(input_tokens, output_tokens)
     }
 }
-

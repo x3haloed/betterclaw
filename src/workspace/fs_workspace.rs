@@ -7,8 +7,8 @@
 //! This module is intentionally small: it supports only what the runtime needs to
 //! build system prompts and run heartbeat from a real workspace directory.
 
-use std::path::{Path, PathBuf};
 use std::path::Component;
+use std::path::{Path, PathBuf};
 
 use tokio::fs;
 
@@ -69,6 +69,21 @@ Examples:
 - Be honest about uncertainty
 - Prefer small, reversible changes
 - Keep provenance/citations for memory
+-->";
+
+/// Default template seeded into README.md on first access.
+///
+/// Comment-only so it won't change behavior until the user edits it.
+const README_SEED: &str = "\
+# Workspace
+
+<!--
+Use this README as a runbook/index for your assistant.
+
+Suggested sections:
+- Current goals
+- Projects and links
+- How you want the agent to work
 -->";
 
 /// Filesystem workspace.
@@ -167,12 +182,12 @@ impl FsWorkspace {
 
     /// Read a workspace file (relative to `files/`), erroring if missing.
     pub async fn read_text_rel(&self, rel: &str) -> Result<String, WorkspaceError> {
-        self.read_optional_rel(rel).await?.ok_or_else(|| {
-            WorkspaceError::DocumentNotFound {
+        self.read_optional_rel(rel)
+            .await?
+            .ok_or_else(|| WorkspaceError::DocumentNotFound {
                 doc_type: rel.to_string(),
                 user_id: self.user_id.clone(),
-            }
-        })
+            })
     }
 
     /// Write a workspace file (relative to `files/`), creating parent directories if needed.
@@ -183,11 +198,7 @@ impl FsWorkspace {
             fs::create_dir_all(parent)
                 .await
                 .map_err(|e| WorkspaceError::Io {
-                    reason: format!(
-                        "Failed to create parent dirs for {}: {}",
-                        path.display(),
-                        e
-                    ),
+                    reason: format!("Failed to create parent dirs for {}: {}", path.display(), e),
                 })?;
         }
         fs::write(&path, content)
@@ -220,6 +231,126 @@ impl FsWorkspace {
             .map_err(|e| WorkspaceError::Io {
                 reason: format!("Failed to seed {}: {}", path.display(), e),
             })
+    }
+
+    async fn write_seed_if_missing(
+        &self,
+        file: &str,
+        content: &str,
+    ) -> Result<bool, WorkspaceError> {
+        self.ensure_dirs().await?;
+        let path = self.resolve_file(file);
+        if fs::metadata(&path).await.is_ok() {
+            return Ok(false);
+        }
+        fs::write(&path, content)
+            .await
+            .map_err(|e| WorkspaceError::Io {
+                reason: format!("Failed to seed {}: {}", path.display(), e),
+            })?;
+        Ok(true)
+    }
+
+    /// Seed core workspace files if they're missing.
+    ///
+    /// Returns the number of files created.
+    pub async fn seed_if_empty(&self) -> Result<usize, WorkspaceError> {
+        let mut created = 0usize;
+        created += usize::from(
+            self.write_seed_if_missing(paths::README, README_SEED)
+                .await?,
+        );
+        created += usize::from(
+            self.write_seed_if_missing(paths::AGENTS, AGENTS_SEED)
+                .await?,
+        );
+        created += usize::from(self.write_seed_if_missing(paths::SOUL, SOUL_SEED).await?);
+        created += usize::from(
+            self.write_seed_if_missing(paths::HEARTBEAT, HEARTBEAT_SEED)
+                .await?,
+        );
+        Ok(created)
+    }
+
+    /// Import workspace template files from a directory.
+    ///
+    /// Copies files into the workspace `files/` directory without overwriting
+    /// any existing files. Returns the number of files created.
+    pub async fn import_from_directory(&self, dir: &Path) -> Result<usize, WorkspaceError> {
+        let mut imported = 0usize;
+
+        let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
+        while let Some(next_dir) = stack.pop() {
+            let mut rd = match fs::read_dir(&next_dir).await {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(WorkspaceError::Io {
+                        reason: format!("Failed to read dir {}: {}", next_dir.display(), e),
+                    });
+                }
+            };
+
+            while let Some(entry) = rd.next_entry().await.map_err(|e| WorkspaceError::Io {
+                reason: format!("Failed to read dir entry in {}: {}", next_dir.display(), e),
+            })? {
+                let entry_path = entry.path();
+                let file_type = entry.file_type().await.map_err(|e| WorkspaceError::Io {
+                    reason: format!("Failed to stat {}: {}", entry_path.display(), e),
+                })?;
+
+                if file_type.is_dir() {
+                    stack.push(entry_path);
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue;
+                }
+
+                let rel = match entry_path.strip_prefix(dir) {
+                    Ok(rel) => rel,
+                    Err(_) => continue,
+                };
+                let rel_str = rel.to_string_lossy().replace('\\', "/");
+                let dst = self.resolve_rel_path(&rel_str)?;
+
+                if fs::metadata(&dst).await.is_ok() {
+                    continue;
+                }
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)
+                        .await
+                        .map_err(|e| WorkspaceError::Io {
+                            reason: format!(
+                                "Failed to create parent dirs for {}: {}",
+                                dst.display(),
+                                e
+                            ),
+                        })?;
+                }
+
+                let bytes = fs::read(&entry_path)
+                    .await
+                    .map_err(|e| WorkspaceError::Io {
+                        reason: format!("Failed to read {}: {}", entry_path.display(), e),
+                    })?;
+                fs::write(&dst, bytes)
+                    .await
+                    .map_err(|e| WorkspaceError::Io {
+                        reason: format!("Failed to write {}: {}", dst.display(), e),
+                    })?;
+                imported += 1;
+            }
+        }
+
+        Ok(imported)
+    }
+
+    /// Placeholder for embedding backfill.
+    ///
+    /// The filesystem-backed workspace currently does not persist embeddings.
+    pub async fn backfill_embeddings(&self) -> Result<usize, WorkspaceError> {
+        Ok(0)
     }
 
     /// Build the system prompt from identity files.
@@ -262,7 +393,8 @@ impl FsWorkspace {
 
     /// Load (and seed if missing) HEARTBEAT.md checklist.
     pub async fn heartbeat_checklist(&self) -> Result<Option<String>, WorkspaceError> {
-        self.write_if_missing(paths::HEARTBEAT, HEARTBEAT_SEED).await?;
+        self.write_if_missing(paths::HEARTBEAT, HEARTBEAT_SEED)
+            .await?;
         self.read_optional(paths::HEARTBEAT).await
     }
 }

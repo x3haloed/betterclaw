@@ -11,11 +11,11 @@ pub mod costs;
 pub mod failover;
 mod provider;
 mod reasoning;
+mod request_id;
 pub mod response_cache;
 pub mod retry;
 mod rig_adapter;
 pub mod smart_routing;
-mod request_id;
 
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerProvider};
 pub use failover::{CooldownConfig, FailoverProvider};
@@ -27,11 +27,11 @@ pub use reasoning::{
     ActionPlan, Reasoning, ReasoningContext, RespondOutput, RespondResult, SILENT_REPLY_TOKEN,
     TokenUsage, ToolSelection, is_silent_reply,
 };
+pub use request_id::RequestIdProvider;
 pub use response_cache::{CachedProvider, ResponseCacheConfig};
 pub use retry::{RetryConfig, RetryProvider};
 pub use rig_adapter::RigAdapter;
 pub use smart_routing::{SmartRoutingConfig, SmartRoutingProvider, TaskComplexity};
-pub use request_id::RequestIdProvider;
 
 use std::sync::Arc;
 
@@ -44,9 +44,7 @@ use crate::error::LlmError;
 /// Create an LLM provider based on configuration.
 ///
 /// - Other backends: Use rig-core adapter with provider-specific clients
-pub fn create_llm_provider(
-    config: &LlmConfig,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
+pub fn create_llm_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
     let provider = match config.backend {
         LlmBackend::OpenAi => create_openai_provider(config),
         LlmBackend::Anthropic => create_anthropic_provider(config),
@@ -63,37 +61,57 @@ fn create_llm_provider_with_model(
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
     let provider = match config.backend {
         LlmBackend::OpenAi => {
-            let mut c = config.openai.as_ref().ok_or_else(|| LlmError::AuthFailed {
-                provider: "openai".to_string(),
-            })?.clone();
+            let mut c = config
+                .openai
+                .as_ref()
+                .ok_or_else(|| LlmError::AuthFailed {
+                    provider: "openai".to_string(),
+                })?
+                .clone();
             c.model = model_override.to_string();
             create_openai_provider_from(&c)
         }
         LlmBackend::Anthropic => {
-            let mut c = config.anthropic.as_ref().ok_or_else(|| LlmError::AuthFailed {
-                provider: "anthropic".to_string(),
-            })?.clone();
+            let mut c = config
+                .anthropic
+                .as_ref()
+                .ok_or_else(|| LlmError::AuthFailed {
+                    provider: "anthropic".to_string(),
+                })?
+                .clone();
             c.model = model_override.to_string();
             create_anthropic_provider_from(&c)
         }
         LlmBackend::Ollama => {
-            let mut c = config.ollama.as_ref().ok_or_else(|| LlmError::AuthFailed {
-                provider: "ollama".to_string(),
-            })?.clone();
+            let mut c = config
+                .ollama
+                .as_ref()
+                .ok_or_else(|| LlmError::AuthFailed {
+                    provider: "ollama".to_string(),
+                })?
+                .clone();
             c.model = model_override.to_string();
             create_ollama_provider_from(&c)
         }
         LlmBackend::OpenAiCompatible => {
-            let mut c = config.openai_compatible.as_ref().ok_or_else(|| LlmError::AuthFailed {
-                provider: "openai_compatible".to_string(),
-            })?.clone();
+            let mut c = config
+                .openai_compatible
+                .as_ref()
+                .ok_or_else(|| LlmError::AuthFailed {
+                    provider: "openai_compatible".to_string(),
+                })?
+                .clone();
             c.model = model_override.to_string();
             create_openai_compatible_provider_from(&c)
         }
         LlmBackend::Tinfoil => {
-            let mut c = config.tinfoil.as_ref().ok_or_else(|| LlmError::AuthFailed {
-                provider: "tinfoil".to_string(),
-            })?.clone();
+            let mut c = config
+                .tinfoil
+                .as_ref()
+                .ok_or_else(|| LlmError::AuthFailed {
+                    provider: "tinfoil".to_string(),
+                })?
+                .clone();
             c.model = model_override.to_string();
             create_tinfoil_provider_from(&c)
         }
@@ -108,8 +126,9 @@ fn create_openai_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, Ll
     create_openai_provider_from(oai)
 }
 
-fn create_openai_provider_from(oai: &crate::config::OpenAiDirectConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-
+fn create_openai_provider_from(
+    oai: &crate::config::OpenAiDirectConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::providers::openai;
 
     // Use CompletionsClient (Chat Completions API) instead of the default Client
@@ -154,7 +173,9 @@ fn create_anthropic_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>,
     create_anthropic_provider_from(anth)
 }
 
-fn create_anthropic_provider_from(anth: &crate::config::AnthropicDirectConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
+fn create_anthropic_provider_from(
+    anth: &crate::config::AnthropicDirectConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::providers::anthropic;
 
     let client: anthropic::Client = if let Some(ref base_url) = anth.base_url {
@@ -186,8 +207,9 @@ fn create_ollama_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, Ll
     create_ollama_provider_from(oll)
 }
 
-fn create_ollama_provider_from(oll: &crate::config::OllamaConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-
+fn create_ollama_provider_from(
+    oll: &crate::config::OllamaConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::client::Nothing;
     use rig::providers::ollama;
 
@@ -222,7 +244,9 @@ fn create_tinfoil_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, L
     create_tinfoil_provider_from(tf)
 }
 
-fn create_tinfoil_provider_from(tf: &crate::config::TinfoilConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
+fn create_tinfoil_provider_from(
+    tf: &crate::config::TinfoilConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::providers::openai;
 
     let client: openai::Client = openai::Client::builder()

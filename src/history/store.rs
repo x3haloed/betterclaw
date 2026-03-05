@@ -135,4 +135,3 @@ pub struct SettingRow {
     pub value: serde_json::Value,
     pub updated_at: DateTime<Utc>,
 }
-

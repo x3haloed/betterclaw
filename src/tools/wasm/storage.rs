@@ -217,7 +217,9 @@ impl LibSqlWasmToolStore {
             .map_err(|e| WasmStorageError::Database(format!("Connection failed: {}", e)))?;
         conn.query("PRAGMA busy_timeout = 5000", ())
             .await
-            .map_err(|e| WasmStorageError::Database(format!("Failed to set busy_timeout: {}", e)))?;
+            .map_err(|e| {
+                WasmStorageError::Database(format!("Failed to set busy_timeout: {}", e))
+            })?;
         Ok(conn)
     }
 }
@@ -278,7 +280,11 @@ impl WasmToolStore for LibSqlWasmToolStore {
                 FROM wasm_tools
                 WHERE user_id = ?1 AND name = ?2 AND version = ?3
                 "#,
-                libsql::params![params.user_id.as_str(), params.name.as_str(), params.version.as_str()],
+                libsql::params![
+                    params.user_id.as_str(),
+                    params.name.as_str(),
+                    params.version.as_str()
+                ],
             )
             .await
             .map_err(|e| WasmStorageError::Database(e.to_string()))?;
@@ -460,8 +466,8 @@ impl WasmToolStore for LibSqlWasmToolStore {
         let s: String = row
             .get(0)
             .map_err(|e| WasmStorageError::Database(e.to_string()))?;
-        let file =
-            CapabilitiesFile::from_json(&s).map_err(|e| WasmStorageError::InvalidData(e.to_string()))?;
+        let file = CapabilitiesFile::from_json(&s)
+            .map_err(|e| WasmStorageError::InvalidData(e.to_string()))?;
         Ok(Some(StoredCapabilities {
             tool_id,
             capabilities_file: file,

@@ -36,4 +36,3 @@ pub struct NewLedgerEvent<'a> {
     pub content: Option<&'a str>,
     pub payload: &'a serde_json::Value,
 }
-

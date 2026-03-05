@@ -83,8 +83,13 @@ pub(crate) fn resolve_compressor_llm(
             .or(optional_env("OPENAI_MODEL")?)
             .or(settings.selected_model.clone())
             .unwrap_or_else(|| "gpt-4o".to_string());
-        let base_url = optional_env("COMPRESSOR_OPENAI_BASE_URL")?.or(optional_env("OPENAI_BASE_URL")?);
-        Some(OpenAiDirectConfig { api_key, model, base_url })
+        let base_url =
+            optional_env("COMPRESSOR_OPENAI_BASE_URL")?.or(optional_env("OPENAI_BASE_URL")?);
+        Some(OpenAiDirectConfig {
+            api_key,
+            model,
+            base_url,
+        })
     } else {
         None
     };
@@ -103,7 +108,11 @@ pub(crate) fn resolve_compressor_llm(
             .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
         let base_url =
             optional_env("COMPRESSOR_ANTHROPIC_BASE_URL")?.or(optional_env("ANTHROPIC_BASE_URL")?);
-        Some(AnthropicDirectConfig { api_key, model, base_url })
+        Some(AnthropicDirectConfig {
+            api_key,
+            model,
+            base_url,
+        })
     } else {
         None
     };

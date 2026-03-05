@@ -101,7 +101,10 @@ impl LedgerStore for LibSqlBackend {
             .await
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
-        let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         else {
             return Ok(None);
         };
@@ -143,7 +146,10 @@ impl LedgerStore for LibSqlBackend {
             .await
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
-        let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         else {
             return Ok(None);
         };
@@ -186,7 +192,10 @@ impl LedgerStore for LibSqlBackend {
             .await
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
-        let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         else {
             return Ok(0);
         };
@@ -234,11 +243,13 @@ impl LedgerStore for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
-            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
-                DatabaseError::Query(format!("invalid ledger event id: {e}"))
-            })?;
+            let id = Uuid::parse_str(&get_text(&row, 0))
+                .map_err(|e| DatabaseError::Query(format!("invalid ledger event id: {e}")))?;
             let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
             out.push(LedgerEvent {
                 id,
@@ -279,11 +290,13 @@ impl LedgerStore for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
-            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
-                DatabaseError::Query(format!("invalid ledger event id: {e}"))
-            })?;
+            let id = Uuid::parse_str(&get_text(&row, 0))
+                .map_err(|e| DatabaseError::Query(format!("invalid ledger event id: {e}")))?;
             let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
             out.push(LedgerEvent {
                 id,
@@ -326,11 +339,13 @@ impl LedgerStore for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
-            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
-                DatabaseError::Query(format!("invalid ledger event id: {e}"))
-            })?;
+            let id = Uuid::parse_str(&get_text(&row, 0))
+                .map_err(|e| DatabaseError::Query(format!("invalid ledger event id: {e}")))?;
             let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
             out.push(LedgerEvent {
                 id,
@@ -373,11 +388,13 @@ impl LedgerStore for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
-            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
-                DatabaseError::Query(format!("invalid ledger event id: {e}"))
-            })?;
+            let id = Uuid::parse_str(&get_text(&row, 0))
+                .map_err(|e| DatabaseError::Query(format!("invalid ledger event id: {e}")))?;
             let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
             out.push(LedgerEvent {
                 id,
@@ -432,11 +449,13 @@ impl LedgerStore for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
-            let id = Uuid::parse_str(&get_text(&row, 0)).map_err(|e| {
-                DatabaseError::Query(format!("invalid ledger event id: {e}"))
-            })?;
+            let id = Uuid::parse_str(&get_text(&row, 0))
+                .map_err(|e| DatabaseError::Query(format!("invalid ledger event id: {e}")))?;
             let episode_id = get_opt_text(&row, 2).and_then(|s| Uuid::parse_str(&s).ok());
             out.push(LedgerEvent {
                 id,
@@ -506,7 +525,13 @@ impl LedgerChunkStore for LibSqlBackend {
                     embedding = NULL,
                     created_at = datetime('now')
                 "#,
-                params![chunk_id, user_id, event_id.to_string(), chunk_index, content],
+                params![
+                    chunk_id,
+                    user_id,
+                    event_id.to_string(),
+                    chunk_index,
+                    content
+                ],
             )
             .await
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
@@ -589,7 +614,10 @@ impl LedgerChunkStore for LibSqlBackend {
         };
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
             let chunk_id = get_text(&row, 0);
             let event_id = Uuid::parse_str(&get_text(&row, 1))
@@ -639,7 +667,10 @@ impl LedgerChunkStore for LibSqlBackend {
             .map_err(|e| DatabaseError::Query(e.to_string()))?;
 
         let mut out = Vec::new();
-        while let Some(row) = rows.next().await.map_err(|e| DatabaseError::Query(e.to_string()))?
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
         {
             let chunk_id = get_text(&row, 0);
             let event_id = Uuid::parse_str(&get_text(&row, 1))

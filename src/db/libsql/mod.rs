@@ -13,6 +13,7 @@ mod routines;
 mod sandbox;
 mod settings;
 mod tool_failures;
+mod workspace;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -28,8 +29,8 @@ use crate::agent::routine::{
 };
 use crate::context::JobState;
 use crate::db::Database;
-use crate::error::DatabaseError;
 use crate::db::libsql_migrations;
+use crate::error::DatabaseError;
 
 /// Explicit column list for routines table (matches positional access in `row_to_routine_libsql`).
 pub(crate) const ROUTINE_COLUMNS: &str = "\
@@ -363,6 +364,19 @@ pub(crate) fn row_to_routine_run_libsql(row: &libsql::Row) -> Result<RoutineRun,
         job_id: get_opt_text(row, 9).and_then(|s| s.parse().ok()),
         created_at: get_ts(row, 10),
     })
+}
+
+pub(crate) fn row_to_memory_document(row: &libsql::Row) -> crate::workspace::MemoryDocument {
+    crate::workspace::MemoryDocument {
+        id: get_text(row, 0).parse().unwrap_or_default(),
+        user_id: get_text(row, 1),
+        agent_id: get_opt_text(row, 2).and_then(|s| s.parse().ok()),
+        path: get_text(row, 3),
+        content: get_text(row, 4),
+        created_at: get_ts(row, 5),
+        updated_at: get_ts(row, 6),
+        metadata: get_json(row, 7),
+    }
 }
 
 #[cfg(test)]

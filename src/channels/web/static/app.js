@@ -180,7 +180,7 @@ function connectSSE() {
   eventSource.addEventListener('tool_completed', (e) => {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
-    completeToolCard(data.name, data.success);
+    completeToolCard(data.name, data.success, data.error, data.parameters);
   });
 
   eventSource.addEventListener('tool_result', (e) => {
@@ -222,13 +222,24 @@ function connectSSE() {
 
   eventSource.addEventListener('auth_required', (e) => {
     const data = JSON.parse(e.data);
-    showAuthCard(data);
+    if (data.auth_url) {
+      // OAuth flow: show the auth card with an OAuth button + optional token paste field.
+      showAuthCard(data);
+    } else {
+      // Setup flow: fetch the extension's credential schema and show the multi-field
+      // configure modal (the same UI used by the Extensions tab "Setup" button).
+      showConfigureModal(data.extension_name);
+    }
   });
 
   eventSource.addEventListener('auth_completed', (e) => {
     const data = JSON.parse(e.data);
+    // Dismiss whichever UI path was active: auth card (OAuth) or configure modal (setup).
     removeAuthCard(data.extension_name);
-    showToast(data.message, 'success');
+    closeConfigureModal();
+    showToast(data.message, data.success ? 'success' : 'error');
+    // Refresh extensions list so status indicators update
+    if (currentTab === 'extensions') loadExtensions();
     enableChatInput();
   });
 
@@ -584,7 +595,7 @@ function addToolCard(name) {
   container.scrollTop = container.scrollHeight;
 }
 
-function completeToolCard(name, success) {
+function completeToolCard(name, success, error, parameters) {
   const entries = _activeToolCards[name];
   if (!entries || entries.length === 0) return;
   // Find first running card
@@ -605,6 +616,27 @@ function completeToolCard(name, success) {
     ? '<span class="activity-icon-success">&#10003;</span>'
     : '<span class="activity-icon-fail">&#10007;</span>';
   entry.card.setAttribute('data-status', success ? 'success' : 'fail');
+
+  // For failed tools, populate the body with error details and auto-expand
+  if (!success && (error || parameters)) {
+    const output = entry.card.querySelector('.activity-tool-output');
+    if (output) {
+      let detail = '';
+      if (parameters) {
+        detail += 'Input:\n' + parameters + '\n\n';
+      }
+      if (error) {
+        detail += 'Error:\n' + error;
+      }
+      output.textContent = detail;
+
+      // Auto-expand so the error is immediately visible
+      const body = entry.card.querySelector('.activity-tool-body');
+      const chevron = entry.card.querySelector('.activity-tool-chevron');
+      if (body) body.style.display = 'block';
+      if (chevron) chevron.classList.add('expanded');
+    }
+  }
 }
 
 function setToolCardOutput(name, preview) {
@@ -868,7 +900,7 @@ function showAuthCard(data) {
 
   const tokenInput = document.createElement('input');
   tokenInput.type = 'password';
-  tokenInput.placeholder = 'Paste your API key or token';
+  tokenInput.placeholder = data.instructions || 'Paste your API key or token';
   tokenInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitAuthToken(data.extension_name, tokenInput.value);
   });
@@ -1760,6 +1792,11 @@ function renderAvailableExtensionCard(entry) {
     }).then(function(res) {
       if (res.success) {
         showToast('Installed ' + entry.display_name, 'success');
+        // OAuth popup if auth started during install (builtin creds)
+        if (res.auth_url) {
+          showToast('Opening authentication for ' + entry.display_name, 'info');
+          window.open(res.auth_url, '_blank', 'width=600,height=700');
+        }
         loadExtensions();
         // Auto-open configure for WASM channels
         if (entry.kind === 'wasm_channel') {
@@ -1931,14 +1968,6 @@ function renderExtensionCard(ext) {
     card.appendChild(errorDiv);
   }
 
-  // Show "coming soon" note for non-Telegram channels that are configured but not fully supported yet
-  if (ext.kind === 'wasm_channel' && ext.name !== 'telegram'
-      && (ext.activation_status === 'configured' || ext.active)) {
-    const noteDiv = document.createElement('div');
-    noteDiv.className = 'ext-note';
-    noteDiv.textContent = 'Full integration coming soon. Use the CLI to complete setup.';
-    card.appendChild(noteDiv);
-  }
 
   const actions = document.createElement('div');
   actions.className = 'ext-actions';
@@ -1969,24 +1998,29 @@ function renderExtensionCard(ext) {
       actions.appendChild(setupBtn);
     }
   } else {
-    // Non-WASM-channel extensions: original behavior
-    if (!ext.active) {
+    // WASM tools / MCP servers
+    const activeLabel = document.createElement('span');
+    activeLabel.className = 'ext-active-label';
+    activeLabel.textContent = ext.active ? 'Active' : 'Installed';
+    actions.appendChild(activeLabel);
+
+    // MCP servers may be installed but inactive — show Activate button
+    if (ext.kind === 'mcp_server' && !ext.active) {
       const activateBtn = document.createElement('button');
       activateBtn.className = 'btn-ext activate';
       activateBtn.textContent = 'Activate';
       activateBtn.addEventListener('click', () => activateExtension(ext.name));
       actions.appendChild(activateBtn);
-    } else {
-      const activeLabel = document.createElement('span');
-      activeLabel.className = 'ext-active-label';
-      activeLabel.textContent = 'Active';
-      actions.appendChild(activeLabel);
     }
 
-    if (ext.needs_setup) {
+    // Show Configure/Reconfigure button when there are secrets to enter.
+    // Skip when has_auth is true but needs_setup is false and not yet authenticated —
+    // this means OAuth credentials resolve automatically (builtin/env) and the user
+    // just needs to complete the OAuth flow, not fill in a config form.
+    if (ext.needs_setup || (ext.has_auth && ext.authenticated)) {
       const configBtn = document.createElement('button');
       configBtn.className = 'btn-ext configure';
-      configBtn.textContent = ext.authenticated ? 'Reconfigure' : 'Setup';
+      configBtn.textContent = ext.authenticated ? 'Reconfigure' : 'Configure';
       configBtn.addEventListener('click', () => showConfigureModal(ext.name));
       actions.appendChild(configBtn);
     }
@@ -2016,6 +2050,11 @@ function activateExtension(name) {
   apiFetch('/api/extensions/' + encodeURIComponent(name) + '/activate', { method: 'POST' })
     .then((res) => {
       if (res.success) {
+        // Even on success, the tool may need OAuth (e.g., WASM loaded but no token yet)
+        if (res.auth_url) {
+          showToast('Opening authentication for ' + name, 'info');
+          window.open(res.auth_url, '_blank', 'width=600,height=700');
+        }
         loadExtensions();
         return;
       }
@@ -2166,17 +2205,19 @@ function submitConfigureModal(name, fields) {
     .then((res) => {
       closeConfigureModal();
       if (res.success) {
-        if (res.activated) {
-          showToast('Configured and activated ' + name, 'success');
-        } else if (res.needs_restart) {
-          showToast('Configured ' + name + '. Use Reconfigure to re-enter credentials and activate.', 'info');
-        } else {
-          showToast(res.message, 'success');
+        if (res.auth_url) {
+          // OAuth flow started — open consent popup. The auth_completed SSE will
+          // not arrive immediately (it fires after OAuth callback), so show a toast now.
+          showToast('Opening OAuth authorization for ' + name, 'info');
+          window.open(res.auth_url, '_blank', 'width=600,height=700');
+          loadExtensions();
         }
+        // For non-OAuth success: the server always broadcasts auth_completed SSE,
+        // which will show the toast and refresh extensions — no need to do it here too.
       } else {
         showToast(res.message || 'Configuration failed', 'error');
+        loadExtensions();
       }
-      loadExtensions();
     })
     .catch((err) => {
       btns.forEach(function(b) { b.disabled = false; });
@@ -2235,7 +2276,7 @@ function approvePairing(channel, code, container) {
   }).then(res => {
     if (res.success) {
       showToast('Pairing approved', 'success');
-      loadPairingRequests(channel, container);
+      loadExtensions();
     } else {
       showToast(res.message || 'Approve failed', 'error');
     }
@@ -2258,53 +2299,6 @@ function stopPairingPoll() {
   }
 }
 
-// --- Gateway restart ---
-
-function restartGateway() {
-  if (!confirm('Restart BetterClaw gateway? Active connections will be dropped.')) return;
-
-  apiFetch('/api/gateway/restart', { method: 'POST' })
-    .then(function() {
-      showRestartOverlay();
-    })
-    .catch(function() {
-      showRestartOverlay();
-    });
-}
-
-function showRestartOverlay() {
-  var overlay = document.createElement('div');
-  overlay.className = 'restart-overlay';
-  overlay.innerHTML = '<div class="restart-message">'
-    + '<div class="restart-spinner"></div>'
-    + '<h2>Restarting BetterClaw...</h2>'
-    + '<p>Waiting for server to come back online</p>'
-    + '</div>';
-  document.body.appendChild(overlay);
-
-  var pollCount = 0;
-  var pollTimer = setInterval(function() {
-    pollCount++;
-    if (pollCount > 30) { // 60 seconds
-      clearInterval(pollTimer);
-      overlay.querySelector('h2').textContent = 'Restart timed out';
-      overlay.querySelector('p').textContent = 'Server did not come back within 60 seconds. Check logs.';
-      overlay.querySelector('.restart-spinner').style.display = 'none';
-      return;
-    }
-    fetch('/api/gateway/status', {
-      headers: { 'Authorization': 'Bearer ' + token },
-    })
-    .then(function(r) {
-      if (r.ok) {
-        clearInterval(pollTimer);
-        window.location.reload();
-      }
-    })
-    .catch(function() { /* still restarting */ });
-  }, 2000);
-}
-
 // --- WASM channel stepper ---
 
 function renderWasmChannelStepper(ext) {
@@ -2312,23 +2306,17 @@ function renderWasmChannelStepper(ext) {
   stepper.className = 'ext-stepper';
 
   var status = ext.activation_status || 'installed';
-  var isTelegram = ext.name === 'telegram';
 
-  // Telegram gets a 3-step stepper (Installed → Configured → Active/Pairing).
-  // Other channels only get 2 steps (Installed → Configured) since full
-  // integration isn't available in the web UI yet.
   var steps = [
     { label: 'Installed', key: 'installed' },
     { label: 'Configured', key: 'configured' },
+    { label: status === 'pairing' ? 'Awaiting Pairing' : 'Active', key: 'active' },
   ];
-  if (isTelegram) {
-    steps.push({ label: status === 'pairing' ? 'Awaiting Pairing' : 'Active', key: 'active' });
-  }
 
   var reachedIdx;
-  if (status === 'active') reachedIdx = isTelegram ? 2 : 1;
+  if (status === 'active') reachedIdx = 2;
   else if (status === 'pairing') reachedIdx = 2;
-  else if (status === 'failed') reachedIdx = isTelegram ? 2 : 1;
+  else if (status === 'failed') reachedIdx = 2;
   else if (status === 'configured') reachedIdx = 1;
   else reachedIdx = 0;
 
@@ -2439,9 +2427,8 @@ function renderJobsList(jobs) {
     let actionBtns = '';
     if (job.state === 'pending' || job.state === 'in_progress') {
       actionBtns = '<button class="btn-cancel" onclick="event.stopPropagation(); cancelJob(\'' + job.id + '\')">Cancel</button>';
-    } else if (job.state === 'failed' || job.state === 'interrupted') {
-      actionBtns = '<button class="btn-restart" onclick="event.stopPropagation(); restartJob(\'' + job.id + '\')">Restart</button>';
     }
+    // Retry is only shown in the detail view where can_restart is available.
 
     return '<tr class="job-row" onclick="openJobDetail(\'' + job.id + '\')">'
       + '<td title="' + escapeHtml(job.id) + '">' + shortId + '</td>'
@@ -2470,10 +2457,12 @@ function restartJob(jobId) {
   apiFetch('/api/jobs/' + jobId + '/restart', { method: 'POST' })
     .then((res) => {
       showToast('Job restarted as ' + (res.new_job_id || '').substring(0, 8), 'success');
-      loadJobs();
     })
     .catch((err) => {
       showToast('Failed to restart job: ' + err.message, 'error');
+    })
+    .finally(() => {
+      loadJobs();
     });
 }
 
@@ -2508,8 +2497,8 @@ function renderJobDetail(job) {
     + '<h2>' + escapeHtml(job.title) + '</h2>'
     + '<span class="badge ' + stateClass + '">' + escapeHtml(job.state) + '</span>';
 
-  if (job.state === 'failed' || job.state === 'interrupted') {
-    headerHtml += '<button class="btn-restart" onclick="restartJob(\'' + job.id + '\')">Restart</button>';
+  if ((job.state === 'failed' || job.state === 'interrupted') && job.can_restart === true) {
+    headerHtml += '<button class="btn-restart" onclick="restartJob(\'' + job.id + '\')">Retry</button>';
   }
   if (job.browse_url) {
     headerHtml += '<a class="btn-browse" href="' + escapeHtml(job.browse_url) + '" target="_blank">Browse Files</a>';
@@ -2756,7 +2745,7 @@ function renderJobActivity(container, job) {
   activityCurrentJobId = job ? job.id : null;
   activityRenderedLiveIndex = 0;
 
-  container.innerHTML = '<div class="activity-toolbar">'
+  let html = '<div class="activity-toolbar">'
     + '<select id="activity-type-filter">'
     + '<option value="all">All Events</option>'
     + '<option value="message">Messages</option>'
@@ -2765,12 +2754,17 @@ function renderJobActivity(container, job) {
     + '</select>'
     + '<label class="logs-checkbox"><input type="checkbox" id="activity-autoscroll" checked> Auto-scroll</label>'
     + '</div>'
-    + '<div class="activity-terminal" id="activity-terminal"></div>'
-    + '<div class="activity-input-bar" id="activity-input-bar">'
-    + '<input type="text" id="activity-prompt-input" placeholder="Send follow-up prompt..." />'
-    + '<button id="activity-send-btn">Send</button>'
-    + '<button id="activity-done-btn" title="Signal done">Done</button>'
-    + '</div>';
+    + '<div class="activity-terminal" id="activity-terminal"></div>';
+
+  if (job && job.can_prompt === true) {
+    html += '<div class="activity-input-bar" id="activity-input-bar">'
+      + '<input type="text" id="activity-prompt-input" placeholder="Send follow-up prompt..." />'
+      + '<button id="activity-send-btn">Send</button>'
+      + '<button id="activity-done-btn" title="Signal done">Done</button>'
+      + '</div>';
+  }
+
+  container.innerHTML = html;
 
   document.getElementById('activity-type-filter').addEventListener('change', applyActivityFilter);
 
@@ -2779,9 +2773,9 @@ function renderJobActivity(container, job) {
   const sendBtn = document.getElementById('activity-send-btn');
   const doneBtn = document.getElementById('activity-done-btn');
 
-  sendBtn.addEventListener('click', () => sendJobPrompt(job.id, false));
-  doneBtn.addEventListener('click', () => sendJobPrompt(job.id, true));
-  input.addEventListener('keydown', (e) => {
+  if (sendBtn) sendBtn.addEventListener('click', () => sendJobPrompt(job.id, false));
+  if (doneBtn) doneBtn.addEventListener('click', () => sendJobPrompt(job.id, true));
+  if (input) input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') sendJobPrompt(job.id, false);
   });
 
@@ -3068,7 +3062,11 @@ function renderRoutineDetail(routine) {
 
 function triggerRoutine(id) {
   apiFetch('/api/routines/' + id + '/trigger', { method: 'POST' })
-    .then(() => showToast('Routine triggered', 'success'))
+    .then(() => {
+      showToast('Routine triggered', 'success');
+      if (currentRoutineId === id) openRoutineDetail(id);
+      else loadRoutines();
+    })
     .catch((err) => showToast('Trigger failed: ' + err.message, 'error'));
 }
 
@@ -3618,7 +3616,7 @@ function formatTimeAgo(epochMs) {
 }
 
 function installSkill(nameOrSlug, url, btn) {
-  var body = { name: nameOrSlug };
+  var body = { name: nameOrSlug, slug: nameOrSlug };
   if (url) body.url = url;
 
   apiFetch('/api/skills/install', {

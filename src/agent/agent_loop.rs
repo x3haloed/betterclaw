@@ -81,6 +81,8 @@ pub struct AgentDeps {
     pub hooks: Arc<HookRegistry>,
     /// Cost enforcement guardrails (daily budget, hourly rate limits).
     pub cost_guard: Arc<crate::agent::cost_guard::CostGuard>,
+    /// SSE broadcast sender for live job event streaming to the web gateway.
+    pub sse_tx: Option<tokio::sync::broadcast::Sender<crate::channels::web::types::SseEvent>>,
 }
 
 /// The main agent that coordinates all components.
@@ -125,7 +127,7 @@ impl Agent {
 
         let session_manager = session_manager.unwrap_or_else(|| Arc::new(SessionManager::new()));
 
-        let scheduler = Arc::new(Scheduler::new(
+        let mut scheduler = Scheduler::new(
             config.clone(),
             context_manager.clone(),
             deps.llm.clone(),
@@ -133,7 +135,11 @@ impl Agent {
             deps.tools.clone(),
             deps.store.clone(),
             deps.hooks.clone(),
-        ));
+        );
+        if let Some(ref tx) = deps.sse_tx {
+            scheduler.set_sse_sender(tx.clone());
+        }
+        let scheduler = Arc::new(scheduler);
 
         Self {
             config,
@@ -530,14 +536,14 @@ impl Agent {
                         }
                         loop {
                             // Load cursor (persisted in settings) for sweep mode.
-                            let cursor_val = match store.get_setting(&cfg.user_id, &cursor_key).await
-                            {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    tracing::warn!("Failed to load compressor cursor: {}", e);
-                                    None
-                                }
-                            };
+                            let cursor_val =
+                                match store.get_setting(&cfg.user_id, &cursor_key).await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        tracing::warn!("Failed to load compressor cursor: {}", e);
+                                        None
+                                    }
+                                };
                             let cursor: Option<crate::compressor::LedgerCursorV0> =
                                 cursor_val.and_then(|v| serde_json::from_value(v).ok());
 
@@ -565,8 +571,10 @@ impl Agent {
                                         user_id = %cfg.user_id,
                                         "Compressor loop: caught up (no evidence beyond cursor); skipping pass"
                                     );
-                                    tokio::time::sleep(std::time::Duration::from_secs(cfg.interval_secs))
-                                        .await;
+                                    tokio::time::sleep(std::time::Duration::from_secs(
+                                        cfg.interval_secs,
+                                    ))
+                                    .await;
                                     continue;
                                 }
                                 Err(e) => {
@@ -590,22 +598,25 @@ impl Agent {
 
                             if local.is_empty() {
                                 tracing::debug!("Compressor loop: no evidence events available");
-                                tokio::time::sleep(std::time::Duration::from_secs(cfg.interval_secs))
-                                    .await;
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    cfg.interval_secs,
+                                ))
+                                .await;
                                 continue;
                             }
 
                             let last = local.last().cloned();
 
-                            let result = crate::compressor::run_micro_distill_pass_with_local_window(
-                                store.as_ref(),
-                                llm.as_ref(),
-                                &cfg.user_id,
-                                params,
-                                cfg.commit,
-                                &local,
-                            )
-                            .await;
+                            let result =
+                                crate::compressor::run_micro_distill_pass_with_local_window(
+                                    store.as_ref(),
+                                    llm.as_ref(),
+                                    &cfg.user_id,
+                                    params,
+                                    cfg.commit,
+                                    &local,
+                                )
+                                .await;
 
                             match result {
                                 Ok(res) => {
@@ -625,9 +636,8 @@ impl Agent {
                                                 .set_setting(
                                                     &cfg.user_id,
                                                     &cursor_key,
-                                                    &serde_json::to_value(cursor).unwrap_or_else(
-                                                        |_| serde_json::json!({}),
-                                                    ),
+                                                    &serde_json::to_value(cursor)
+                                                        .unwrap_or_else(|_| serde_json::json!({})),
                                                 )
                                                 .await
                                             {

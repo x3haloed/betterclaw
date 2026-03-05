@@ -23,7 +23,7 @@ use crate::channels::wasm::{
 use crate::secrets::{SecretsCrypto, SecretsStore};
 use crate::settings::{KeySource, Settings};
 use crate::setup::channels::{
-    SecretsContext, setup_http, setup_signal, setup_telegram, setup_tunnel, setup_wasm_channel,
+    SecretsContext, setup_http, setup_signal, setup_tunnel, setup_wasm_channel,
 };
 use crate::setup::prompts::{
     confirm, input, optional_input, print_error, print_header, print_info, print_step,
@@ -903,9 +903,13 @@ impl SetupWizard {
             self.settings.embeddings.provider = "openai_compatible".to_string();
             self.settings.embeddings.model = "nomic-embed-text-v1.5".to_string();
             print_success("Embeddings configured for OpenAI-compatible");
-            print_info("Set EMBEDDING_BASE_URL (or LLM_BASE_URL) to your embeddings endpoint (e.g. http://localhost:1234/v1).");
+            print_info(
+                "Set EMBEDDING_BASE_URL (or LLM_BASE_URL) to your embeddings endpoint (e.g. http://localhost:1234/v1).",
+            );
             print_info("If your provider requires a key, set EMBEDDING_API_KEY (or LLM_API_KEY).");
-            print_info("Note: some embedding models require task prefixes (e.g. 'search_document:' vs 'search_query:').");
+            print_info(
+                "Note: some embedding models require task prefixes (e.g. 'search_document:' vs 'search_query:').",
+            );
         } else {
             self.settings.embeddings.provider = "ollama".to_string();
             self.settings.embeddings.model = "nomic-embed-text".to_string();
@@ -1137,15 +1141,6 @@ impl SetupWizard {
                 let result = if let Some(cap_file) = discovered_by_name.get(&channel_name) {
                     if !cap_file.setup.required_secrets.is_empty() {
                         setup_wasm_channel(ctx, &channel_name, &cap_file.setup).await?
-                    } else if channel_name == "telegram" {
-                        let telegram_result = setup_telegram(ctx, &self.settings).await?;
-                        if let Some(owner_id) = telegram_result.owner_id {
-                            self.settings.channels.telegram_owner_id = Some(owner_id);
-                        }
-                        crate::setup::channels::WasmChannelSetupResult {
-                            enabled: telegram_result.enabled,
-                            channel_name: "telegram".to_string(),
-                        }
                     } else {
                         print_info(&format!(
                             "No setup configuration found for {}",
@@ -1436,7 +1431,9 @@ impl SetupWizard {
             backend
                 .set_all_settings("default", &db_map)
                 .await
-                .map_err(|e| SetupError::Database(format!("Failed to save settings to database: {}", e)))?;
+                .map_err(|e| {
+                    SetupError::Database(format!("Failed to save settings to database: {}", e))
+                })?;
             Ok(true)
         } else {
             Ok(false)

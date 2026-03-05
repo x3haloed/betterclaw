@@ -127,7 +127,9 @@ impl AppBuilder {
                 .database
                 .libsql_auth_token
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("LIBSQL_AUTH_TOKEN is required when LIBSQL_URL is set"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("LIBSQL_AUTH_TOKEN is required when LIBSQL_URL is set")
+                })?;
             LibSqlBackend::new_remote_replica(db_path, url, token.expose_secret()).await?
         } else {
             LibSqlBackend::new_local(db_path).await?
@@ -195,8 +197,10 @@ impl AppBuilder {
         };
 
         let store = self.libsql_db.take().map(|db| {
-            Arc::new(crate::secrets::LibSqlSecretsStore::new(db, Arc::clone(&crypto)))
-                as Arc<dyn SecretsStore + Send + Sync>
+            Arc::new(crate::secrets::LibSqlSecretsStore::new(
+                db,
+                Arc::clone(&crypto),
+            )) as Arc<dyn SecretsStore + Send + Sync>
         });
 
         if let Some(ref secrets) = store {
@@ -272,6 +276,10 @@ impl AppBuilder {
         tools.register_builtin_tools();
         if let Some(ref db) = self.db {
             tools.register_ledger_tools(Arc::clone(db));
+        }
+
+        if let Some(ref ss) = self.secrets_store {
+            tools.register_secrets_tools(Arc::clone(ss));
         }
 
         // Create embeddings provider using the unified method
@@ -593,6 +601,51 @@ impl AppBuilder {
             catalog_entries,
             dev_loaded_tool_names,
         ) = self.init_extensions(&tools, &hooks).await?;
+
+        // Seed workspace and backfill embeddings.
+        //
+        // Import workspace files from disk FIRST if WORKSPACE_IMPORT_DIR is set.
+        // This lets Docker images / deployment scripts ship customized
+        // workspace templates (e.g., AGENTS.md, TOOLS.md) that override
+        // the generic seeds.
+        if let Ok(import_dir) = std::env::var("WORKSPACE_IMPORT_DIR") {
+            let import_path = std::path::Path::new(&import_dir);
+            match fs_workspace.import_from_directory(import_path).await {
+                Ok(count) if count > 0 => {
+                    tracing::info!("Imported {} workspace file(s) from {}", count, import_dir);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to import workspace files from {}: {}",
+                        import_dir,
+                        e
+                    );
+                }
+            }
+        }
+
+        match fs_workspace.seed_if_empty().await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("Failed to seed workspace: {}", e);
+            }
+        }
+
+        if embeddings.is_some() {
+            let ws_bg = Arc::clone(&fs_workspace);
+            tokio::spawn(async move {
+                match ws_bg.backfill_embeddings().await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!("Backfilled embeddings for {} chunks", count);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to backfill embeddings: {}", e);
+                    }
+                }
+            });
+        }
 
         // Skills system
         let (skill_registry, skill_catalog) = if self.config.skills.enabled {

@@ -203,8 +203,7 @@ impl HeartbeatRunner {
         );
 
         // Get the system prompt for context
-        let system_prompt =
-            match self.fs_workspace.system_prompt_for_context(false).await {
+        let system_prompt = match self.fs_workspace.system_prompt_for_context(false).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("Failed to get system prompt for heartbeat: {}", e);

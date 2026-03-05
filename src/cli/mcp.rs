@@ -509,14 +509,16 @@ async fn get_secrets_store() -> anyhow::Result<Arc<dyn SecretsStore + Send + Syn
     use secrecy::ExposeSecret as _;
 
     let default_path = crate::config::default_libsql_path();
-    let db_path = config.database.libsql_path.as_deref().unwrap_or(&default_path);
+    let db_path = config
+        .database
+        .libsql_path
+        .as_deref()
+        .unwrap_or(&default_path);
 
     let backend = if let Some(ref url) = config.database.libsql_url {
-        let token = config
-            .database
-            .libsql_auth_token
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("LIBSQL_AUTH_TOKEN is required when LIBSQL_URL is set"))?;
+        let token = config.database.libsql_auth_token.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("LIBSQL_AUTH_TOKEN is required when LIBSQL_URL is set")
+        })?;
         LibSqlBackend::new_remote_replica(db_path, url, token.expose_secret()).await?
     } else {
         LibSqlBackend::new_local(db_path).await?

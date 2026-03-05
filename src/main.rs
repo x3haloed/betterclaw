@@ -232,52 +232,53 @@ async fn async_main() -> anyhow::Result<()> {
         std::collections::VecDeque<betterclaw::orchestrator::api::PendingPrompt>,
     >::new()));
 
-    let container_job_manager: Option<Arc<ContainerJobManager>> =
-        if config.sandbox.enabled && docker_status.is_ok() {
-            let token_store = TokenStore::new();
-            let job_config = ContainerJobConfig {
-                image: config.sandbox.image.clone(),
-                memory_limit_mb: config.sandbox.memory_limit_mb,
-                cpu_shares: config.sandbox.cpu_shares,
-                orchestrator_port: 50051,
-                claude_code_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
-                claude_code_oauth_token: betterclaw::config::ClaudeCodeConfig::extract_oauth_token(),
-                claude_code_model: config.claude_code.model.clone(),
-                claude_code_max_turns: config.claude_code.max_turns,
-                claude_code_memory_limit_mb: config.claude_code.memory_limit_mb,
-                claude_code_allowed_tools: config.claude_code.allowed_tools.clone(),
-            };
-            let jm = Arc::new(ContainerJobManager::new(job_config, token_store.clone()));
-
-            // Start the orchestrator internal API in the background
-            let orchestrator_state = OrchestratorState {
-                llm: components.llm.clone(),
-                job_manager: Arc::clone(&jm),
-                token_store,
-                job_event_tx: job_event_tx.clone(),
-                prompt_queue: Arc::clone(&prompt_queue),
-                store: components.db.clone(),
-                secrets_store: components.secrets_store.clone(),
-                user_id: "default".to_string(),
-            };
-
-            tokio::spawn(async move {
-                if let Err(e) = OrchestratorApi::start(orchestrator_state, 50051).await {
-                    tracing::error!("Orchestrator API failed: {}", e);
-                }
-            });
-
-            if config.claude_code.enabled {
-                tracing::info!(
-                    "Claude Code sandbox mode available (model: {}, max_turns: {})",
-                    config.claude_code.model,
-                    config.claude_code.max_turns
-                );
-            }
-            Some(jm)
-        } else {
-            None
+    let container_job_manager: Option<Arc<ContainerJobManager>> = if config.sandbox.enabled
+        && docker_status.is_ok()
+    {
+        let token_store = TokenStore::new();
+        let job_config = ContainerJobConfig {
+            image: config.sandbox.image.clone(),
+            memory_limit_mb: config.sandbox.memory_limit_mb,
+            cpu_shares: config.sandbox.cpu_shares,
+            orchestrator_port: 50051,
+            claude_code_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
+            claude_code_oauth_token: betterclaw::config::ClaudeCodeConfig::extract_oauth_token(),
+            claude_code_model: config.claude_code.model.clone(),
+            claude_code_max_turns: config.claude_code.max_turns,
+            claude_code_memory_limit_mb: config.claude_code.memory_limit_mb,
+            claude_code_allowed_tools: config.claude_code.allowed_tools.clone(),
         };
+        let jm = Arc::new(ContainerJobManager::new(job_config, token_store.clone()));
+
+        // Start the orchestrator internal API in the background
+        let orchestrator_state = OrchestratorState {
+            llm: components.llm.clone(),
+            job_manager: Arc::clone(&jm),
+            token_store,
+            job_event_tx: job_event_tx.clone(),
+            prompt_queue: Arc::clone(&prompt_queue),
+            store: components.db.clone(),
+            secrets_store: components.secrets_store.clone(),
+            user_id: "default".to_string(),
+        };
+
+        tokio::spawn(async move {
+            if let Err(e) = OrchestratorApi::start(orchestrator_state, 50051).await {
+                tracing::error!("Orchestrator API failed: {}", e);
+            }
+        });
+
+        if config.claude_code.enabled {
+            tracing::info!(
+                "Claude Code sandbox mode available (model: {}, max_turns: {})",
+                config.claude_code.model,
+                config.claude_code.max_turns
+            );
+        }
+        Some(jm)
+    } else {
+        None
+    };
 
     // ── Channel setup ──────────────────────────────────────────────────
 
@@ -375,14 +376,10 @@ async fn async_main() -> anyhow::Result<()> {
             "Discord channel enabled"
         );
         if discord_config.dm_allowed_users.is_empty() {
-            tracing::warn!(
-                "Discord DM allowlist is empty - ALL DMs will be DENIED."
-            );
+            tracing::warn!("Discord DM allowlist is empty - ALL DMs will be DENIED.");
         }
         if discord_config.guild_allowed_users.is_empty() {
-            tracing::warn!(
-                "Discord guild allowlist is empty - ALL guild messages will be DENIED."
-            );
+            tracing::warn!("Discord guild allowlist is empty - ALL guild messages will be DENIED.");
         }
     }
 
@@ -481,8 +478,6 @@ async fn async_main() -> anyhow::Result<()> {
     let mut sse_sender: Option<
         tokio::sync::broadcast::Sender<betterclaw::channels::web::types::SseEvent>,
     > = None;
-    let mut gateway_state: Option<std::sync::Arc<betterclaw::channels::web::server::GatewayState>> =
-        None;
     if let Some(ref gw_config) = config.channels.gateway {
         let mut gw =
             GatewayChannel::new(gw_config.clone()).with_llm_provider(Arc::clone(&components.llm));
@@ -498,10 +493,20 @@ async fn async_main() -> anyhow::Result<()> {
         }
         if let Some(ref d) = components.db {
             gw = gw.with_store(Arc::clone(d));
+
+            let mut workspace = betterclaw::workspace::Workspace::new_with_db(
+                gw_config.user_id.clone(),
+                Arc::clone(d),
+            );
+            if let Some(ref embeddings) = components.embeddings {
+                workspace = workspace.with_embeddings(Arc::clone(embeddings));
+            }
+            gw = gw.with_workspace(Arc::new(workspace));
         }
         if let Some(ref jm) = container_job_manager {
             gw = gw.with_job_manager(Arc::clone(jm));
         }
+        gw = gw.with_scheduler(scheduler_slot.clone());
         if let Some(ref sr) = components.skill_registry {
             gw = gw.with_skill_registry(Arc::clone(sr));
         }
@@ -536,7 +541,6 @@ async fn async_main() -> anyhow::Result<()> {
         // IMPORTANT: This must come after all `with_*` calls since `rebuild_state`
         // creates a new SseManager, which would orphan this sender.
         sse_sender = Some(gw.state().sse.sender());
-        gateway_state = Some(Arc::clone(gw.state()));
 
         channel_names.push("gateway".to_string());
         channels.add(Box::new(gw)).await;
@@ -612,7 +616,7 @@ async fn async_main() -> anyhow::Result<()> {
                 rt,
                 ps,
                 router,
-                config.channels.telegram_owner_id,
+                config.channels.wasm_channel_owner_ids.clone(),
             )
             .await;
         tracing::info!("Channel runtime wired into extension manager for hot-activation");
@@ -643,9 +647,9 @@ async fn async_main() -> anyhow::Result<()> {
 
     // Wire SSE sender into extension manager for broadcasting status events.
     if let Some(ref ext_mgr) = components.extension_manager
-        && let Some(sender) = sse_sender
+        && let Some(ref sender) = sse_sender
     {
-        ext_mgr.set_sse_sender(sender).await;
+        ext_mgr.set_sse_sender(sender.clone()).await;
     }
 
     let deps = AgentDeps {
@@ -663,6 +667,7 @@ async fn async_main() -> anyhow::Result<()> {
         skills_config: config.skills.clone(),
         hooks: components.hooks,
         cost_guard: components.cost_guard,
+        sse_tx: sse_sender,
     };
 
     let agent = Agent::new(
@@ -698,16 +703,6 @@ async fn async_main() -> anyhow::Result<()> {
     }
 
     tracing::info!("Agent shutdown complete");
-
-    // Check if a restart was requested via the gateway API.
-    if let Some(ref gw_state) = gateway_state
-        && gw_state
-            .restart_requested
-            .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        eprintln!("Restarting BetterClaw (exit code 75)...");
-        std::process::exit(75);
-    }
 
     Ok(())
 }
@@ -872,11 +867,14 @@ async fn setup_wasm_channels(
     let pairing_store = Arc::new(PairingStore::new());
     let settings_store: Option<Arc<dyn betterclaw::db::SettingsStore>> =
         database.map(|db| Arc::clone(db) as Arc<dyn betterclaw::db::SettingsStore>);
-    let loader = WasmChannelLoader::new(
+    let mut loader = WasmChannelLoader::new(
         Arc::clone(&runtime),
         Arc::clone(&pairing_store),
         settings_store,
     );
+    if let Some(secrets) = secrets_store {
+        loader = loader.with_secrets_store(Arc::clone(secrets));
+    }
 
     let results = match loader
         .load_from_dir(&config.channels.wasm_channels_dir)
@@ -940,9 +938,11 @@ async fn setup_wasm_channels(
                 );
             }
 
-            // Inject owner_id for Telegram so the bot only responds to the bound user.
-            if channel_name == "telegram"
-                && let Some(owner_id) = config.channels.telegram_owner_id
+            // Inject owner_id if configured for this channel.
+            if let Some(&owner_id) = config
+                .channels
+                .wasm_channel_owner_ids
+                .get(channel_name.as_str())
             {
                 config_updates.insert("owner_id".to_string(), serde_json::json!(owner_id));
             }
@@ -1041,8 +1041,8 @@ async fn setup_wasm_channels(
 
 /// Check if onboarding is needed and return the reason.
 fn check_onboard_needed() -> Option<&'static str> {
-    let has_db = std::env::var("LIBSQL_PATH").is_ok()
-        || betterclaw::config::default_libsql_path().exists();
+    let has_db =
+        std::env::var("LIBSQL_PATH").is_ok() || betterclaw::config::default_libsql_path().exists();
 
     if !has_db {
         return Some("Database not configured");

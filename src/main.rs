@@ -675,7 +675,6 @@ async fn async_main() -> anyhow::Result<()> {
         deps,
         channels,
         Some(config.heartbeat.clone()),
-        Some(config.hygiene.clone()),
         Some(config.routines.clone()),
         Some(config.compressor_loop.clone()),
         Some(config.ledger_index.clone()),

@@ -196,6 +196,7 @@ impl CompactionPartial {
 }
 
 /// Format turns for storage in workspace.
+#[cfg(test)]
 fn format_turns_for_storage(turns: &[crate::agent::session::Turn]) -> String {
     turns
         .iter()

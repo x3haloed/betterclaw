@@ -133,6 +133,7 @@ pub struct LedgerCursorV0 {
 }
 
 const EVIDENCE_EVENT_CONTENT_MAX_CHARS: usize = 80_000;
+const PREV_WAKE_PACK_MAX_CHARS: usize = 12_000;
 
 fn format_events_for_prompt(events: &[crate::ledger::LedgerEvent]) -> String {
     let mut out = String::new();
@@ -259,11 +260,31 @@ pub async fn run_micro_distill_pass_with_local_window(
         })?;
     drift.reverse();
 
+    // Stabilizer: include the previous wake pack snapshot as an anchor so the
+    // compressor can edit conservatively instead of re-synthesizing from recent-only anchors.
+    //
+    // This is not "evidence" and should not be cited for actions.
+    let prev_wake_pack = store
+        .list_recent_ledger_events_by_kind_prefix(user_id, "wake_pack.", 1)
+        .await
+        .ok()
+        .and_then(|mut v| v.pop())
+        .and_then(|e| e.content.map(|c| (e.id.to_string(), e.created_at.to_rfc3339(), c)));
+
     let user_msg = format!(
-        "# Evidence Window (Local)\n{}\n\n# Anchor Invariants (Recent)\n{}\n\n# Drift/Contradiction Candidates (Recent)\n{}\n",
+        "# Evidence Window (Local)\n{}\n\n# Anchor Invariants (Recent)\n{}\n\n# Drift/Contradiction Candidates (Recent)\n{}\n\n# Previous Wake Pack (Most Recent)\n{}\n",
         format_events_for_prompt(local),
         format_events_for_prompt(&invariants),
         format_events_for_prompt(&drift),
+        match prev_wake_pack {
+            Some((id, created_at, content)) => format!(
+                "- {} {} wake_pack.v0 compressor\n  content: {}\n",
+                id,
+                created_at,
+                truncate_chars(&content, PREV_WAKE_PACK_MAX_CHARS)
+            ),
+            None => "(none)\n".to_string(),
+        }
     );
 
     let messages = vec![

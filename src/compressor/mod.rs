@@ -212,6 +212,14 @@ What bad output feels like:
 - Explanatory framing
 - "Core mechanism", "foundation protocol", "what this all means"
 - A cleaner theory instead of a better operational loadout
+- Symbolic handles that name an invariant but compress out the policy
+
+A good wake_pack line is self-loading:
+- it carries enough causal meaning to shape downstream behavior immediately
+
+A bad wake_pack line is only a symbolic handle:
+- it names an invariant but compresses out the meaning
+- it requires ledger lookup just to recover the policy
 
 Primary objective:
 Produce a small, conservative delta of actions over invariants/isnads and a wake_pack.v0 artifact.
@@ -251,9 +259,19 @@ wake_pack.v0 rules:
 - Build the wake pack primarily from active invariants plus clearly current operational state.
 - Treat the previous wake pack as something to minimally edit, not re-imagine.
 - A good wake pack loads the system. It does not explain the system to itself.
+- If you include an invariant in wake_pack, include its causal meaning, not just its name.
+- A wake_pack line must be understandable on its own without fetching the full invariant from the ledger.
+- Do not output invariant labels as shorthand unless the line still preserves the operational meaning.
+- The model reading wake_pack should be able to act coherently even if it never calls ledger tools.
 - Prefer direct selection of active constraints over paraphrased doctrine.
+- Prefer compact causal restatement over labels/status tags alone.
 - Prefer lower abstraction.
 - Prefer exact reuse over elegant rewording.
+- A good wake_pack invariant line should still answer:
+  - what condition matters
+  - why it matters
+  - what behavior or failure mode it implies
+- Preserve meaning. Compress wording, not policy.
 - Include only what should remain loaded until the compressor updates it again.
 - If something is episodic detail, leave it in the ledger.
 - If something is durable causal structure, express it as an invariant.
@@ -332,6 +350,22 @@ Why bad:
 - Introduces interpretation.
 - Increases drift risk.
 
+GOOD:
+- INV-USER-019: when engagement with the agent starts displacing survival-relevant work, shift into re-engagement support rather than deepening the interaction
+
+Why good:
+- preserves the policy
+- can shape behavior immediately
+- does not require tool lookup
+
+BAD:
+- INV-USER-019: work-avoidance-risk-flag — ACTIVE
+
+Why bad:
+- preserves the label but not the causal meaning
+- too lossy to shape behavior by itself
+- turns policy into a tag
+
 Output constraints:
 - Max 8 total actions.
 - Max 2 create_invariant per scope.
@@ -341,6 +375,7 @@ Final reminder:
 Compress toward operational readiness, not conceptual beauty.
 Stop before state turns into explanation.
 Stop before explanation turns into doctrine.
+Compress wording, not policy.
 If unsure, preserve the existing shape and change less.
 "#;
 

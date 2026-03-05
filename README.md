@@ -1,255 +1,137 @@
-<h1 align="center">BetterClaw</h1>
+# BetterClaw
 
-<p align="center">
-  <strong>Your durable personal AI assistant, always on your side</strong>
-</p>
+**BetterClaw** is a secure, local-first personal AI assistant you run yourself that **learns continuously**.
 
-<p align="center">
-  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
-</p>
+BetterClaw agents learn and grow over time via:
+- Identity externalization
+- Attention lensing via early invariant exposure
+- RAG with provenance
+
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg)](#license)
 
 ---
 
-## What This Is
+## What BetterClaw Is
 
-BetterClaw is a Rust fork of BetterClaw, reshaped to prioritize:
+BetterClaw is an agent runtime + product surface:
 
-- Web gateway + control dashboard (SSE/WS, job/tool visibility)
-- Sandbox architecture (orchestrator/worker, WASM tools, capability policy)
-- libSQL-first local persistence (no Postgres required for default dev)
-- Discord as a first-class channel (ported using ZeroClaw as a reference implementation)
-- Durable continuity model centered on claims + isnads + projections (derived, cited, diffable)
+- **Channels:** terminal REPL, web gateway, native Discord + Signal, optional HTTP webhooks, plus WASM channels (Telegram/Slack/etc).
+- **Tools:** built-in tools + **WASM tools**, installable via `betterclaw tool …` and `betterclaw registry …`.
+- **Security boundaries:** secrets encryption, allowlists/pairing for messaging channels, and tool sandboxing (WASM + optional Docker worker jobs).
+- **Durability:** everything important is captured into a **ledger**; background loops build **wake packs** and **recall indexes**.
 
-This repo is currently in “fork-and-refactor” mode: much of the implementation is still upstream BetterClaw
-until we finish reshaping the data plane and routing/policy surfaces.
+It is **not** a hosted service. It’s meant to run on your machine (or your server) with your data.
 
-## Project Direction (High-Level)
+---
 
-- Episode-oriented orchestration with an explicit policy gate (autonomy dial, scopes, witness windows).
-- Append-only event ledger as the source of truth (turns, tool calls/results, routing decisions).
-- Derived objects (claims + isnads + S/U/R invariants) that must cite ledger event ids.
-- Wake pack snapshots built from projections (and diffed) so context wipes don’t reset intent.
-- Rule-based routing where model choice is explainable and inspectable (OpenRouter-heavy by default).
+## What Makes It Different From Other “-Claw” Agents
 
-⸻
+BetterClaw’s north star is *durable continuity without turning the model into a historian*:
 
-1) System roles diagram (boxes + responsibilities)
+- **Ledger-first memory:** conversations, tool calls/results, and derived artifacts are events in an append-only ledger (libSQL/SQLite).
+- **Two-phase context:** (1) a `wake_pack.v0` snapshot derived by the compressor, then (2) **per-turn ledger recall** injected as *candidate evidence* (with event IDs for citation).
+- **Background indexing:** a built-in indexer chunks + embeds new ledger events into `ledger_event_chunks` for hybrid FTS + vector recall.
+- **Channel + extension emphasis:** native Discord/Signal for “always-on” usage, and WASM channels/tools for everything else.
 
-┌───────────────────────────┐
-│         User / UI          │  (chat, buttons: pin/confirm/reject, browse memory)
-└──────────────┬────────────┘
-               │
-               v
-┌───────────────────────────┐
-│        Orchestrator        │  (episode loop, policy, tool routing)
-│  - decides what to call    │
-│  - enforces autonomy dial  │
-│  - builds plan + executes  │
-└───────┬───────────┬───────┘
-        │           │
-        │           │
-        v           v
-┌───────────────┐  ┌───────────────────────┐
-│  Prompt Packs  │  │     Tool Harness      │
-│ (versioned)    │  │ (email, files, etc.)  │
-│ - agent prompt │  │ logs calls+results    │
-│ - compressor   │  └─────────┬─────────────┘
-│ - verifier     │            │
-└───────┬───────┘            │
-        │                    │
-        v                    v
-┌───────────────────────────┐
-│        LLM Provider        │  (one or more models)
-│  - BUZZ "voice" model      │
-│  - Compressor model        │
-│  - Verifier/Reranker       │
-└──────────────┬────────────┘
-               │
-               v
-┌──────────────────────────────────────────────────────────┐
-│                       Data Plane                         │
-│  ┌──────────────────────┐   ┌─────────────────────────┐  │
-│  │ Append-only Ledger    │   │   Retrieval Indexes     │  │
-│  │ (events + transcripts │   │ - exact (entities/time) │  │
-│  │  + tool logs)         │   │ - vector (embeddings)   │  │
-│  └──────────┬───────────┘   └───────────┬─────────────┘  │
-│             │                           │                │
-│             v                           v                │
-│  ┌──────────────────────┐   ┌─────────────────────────┐  │
-│  │ Claims + Isnads       │   │ Projections / Views     │  │
-│  │ (derived, cited)      │   │ - invariants (S/U/R)    │  │
-│  │ + transform_id        │   │ - drift/contradictions  │  │
-│  └──────────┬───────────┘   │ - wake pack snapshots   │  │
-│             │               └───────────┬─────────────┘  │
-│             └───────────────────────────┘                │
-└──────────────────────────────────────────────────────────┘
+Historically this repo started as a fork of IronClaw and borrows patterns from ZeroClaw, but it has diverged substantially in the data plane (ledger + compressor + recall) and channel story.
 
-S/U/R = Self / User / Relationship
+---
 
-⸻
+## Quick Start
 
-2) Runtime episode flow (what happens when you “wake” and chat)
-
-[Start Episode]
-     |
-     v
-[Load Policy State]
-(autonomy dial, scopes, thresholds)
-     |
-     v
-[Build Wake Pack]
-- top invariants (S/U/R)
-- drift alerts
-- active goals
-- relevant recent snippets
-     |
-     v
-[User message arrives]
-     |
-     v
-[Capture Event -> Ledger]
-(conversation.turn + hash + metadata)
-     |
-     v
-[Recall Step (hybrid)]
-- exact index lookup
-- vector candidate search
-- rerank/verify
-     |
-     v
-[Compose Context]
-Wake Pack + recalled evidence + current turn
-     |
-     v
-[Call BUZZ LLM (voice/agent)]
-(prompt pack: agent)
-     |
-     v
-[Does response propose an action?]----No---->[Respond to user]
-               |
-              Yes
-               |
-               v
-[Policy Gate + Preflight]
-- scope allowed?
-- confidence ok?
-- drift low?
-- witness window needed?
-               |
-       ┌───────┴────────┐
-       │ pass            │ fail
-       v                 v
-[Execute Tool]        [Downgrade]
-(log tool.call/result) (propose-only / ask user)
-       |
-       v
-[Capture Tool Result -> Ledger]
-       |
-       v
-[Optional Micro-Distill Trigger]
-(decision/correction/action happened)
-       |
-       v
-[Update Projections + Wake Snapshot]
-       |
-       v
-[Continue Episode / End Episode]
-
-
-⸻
-
-3) CIL distillation flow (background / end-of-episode “compressor”)
-
-[Trigger Distill]
-- end of episode
-- after decision/correction/action
-- daily macro run
-     |
-     v
-[Select Window]
-(last N events / last day / last week)
-     |
-     v
-[Gather Evidence Set]
-- relevant events
-- relevant prior invariants
-- contradictions/drift candidates
-     |
-     v
-[Call Compressor LLM]
-(prompt pack: compressor)
-(output via CFG schema)
-     |
-     v
-[Create Claims + Isnads]
-- each invariant must cite event_ids (+ offsets)
-- attach transform_id (prompt/version)
-     |
-     v
-[Verifier Pass]
-- schema validity
-- citations exist
-- no uncited assertions
-- optional second-model check
-     |
-     v
-[Commit Derived Objects]
-- invariants (S/U/R)
-- fact updates (with citations)
-- drift flags / contradictions
-     |
-     v
-[Reweight + Prune (macro only)]
-- merge duplicates
-- decay stale
-- mark contradicted (never delete)
-     |
-     v
-[Build New Wake Snapshot]
-- diff vs previous
-- if big diff -> tighten autonomy
-     |
-     v
-[Done]
-
-## Quick Start (libSQL dev build)
-
-BetterClaw keeps BetterClaw’s CLI for now, so commands still use `betterclaw` until we rename the binary.
-
-Build with libSQL only:
+### 1) Build
 
 ```bash
-cargo build --no-default-features --features libsql
+cargo build
 ```
 
-Onboard:
+Tip: run `cargo install --path .` to put `betterclaw` on your `$PATH`. Otherwise use `./target/debug/betterclaw` in the examples below.
+
+### 2) Run the setup wizard
 
 ```bash
 ./target/debug/betterclaw onboard
 ```
 
-Then run the gateway (exact flags/config are still upstream; see `docs/` and `.env.example`).
+### 3) Run the agent
 
-## Where To Look (When Hacking)
+```bash
+./target/debug/betterclaw run
+```
 
-- Orchestration / worker bridge: `src/orchestrator/`
-- Tool registry + schemas + sandboxed tools: `src/tools/` and `wit/tool.wit`
-- Web gateway (UI/API, SSE/WS): `src/channels/web/`
-- Workspace + retrieval: `src/workspace/` (note: libSQL vector search wiring is currently limited)
+Useful commands:
 
-## Discord
+```bash
+./target/debug/betterclaw --help
+./target/debug/betterclaw doctor
+./target/debug/betterclaw status
+./target/debug/betterclaw --cli-only
+./target/debug/betterclaw --message "Hello!"
+```
 
-Discord is not yet wired in this fork. The plan is:
+---
 
-- Implement a native Rust Discord channel using BetterClaw’s channel manager interfaces.
-- Use ZeroClaw’s Discord implementation as a reference for lifecycle and edge cases.
+## Channels
 
-## Upstream Credit
+Built-in channels (in this repo):
 
-- IronClaw (upstream base): [nearai/ironclaw](https://github.com/nearai/ironclaw)
-- ZeroClaw (reference for Discord patterns): [zeroclaw-labs/zeroclaw](https://github.com/zeroclaw-labs/zeroclaw)
+- **CLI REPL** (always enabled)
+- **Web gateway** (default: `127.0.0.1:3000`, token-auth; includes SSE/WS + OpenAI-compatible surfaces)
+- **Discord** (native gateway websocket integration; allowlists + optional “mention-only” mode)
+- **Signal** (via `signal-cli` daemon HTTP API; pairing/allowlist policies)
+- **HTTP webhook server** (optional; for inbound webhook-based channels and integrations)
 
-BetterClaw itself is inspired by OpenClaw; see `FEATURE_PARITY.md` for upstream tracking.
+WASM channels (installable, sandboxed):
+
+- Telegram, Slack, WhatsApp, etc. (see `docs/BUILDING_CHANNELS.md` and `docs/TELEGRAM_SETUP.md`)
+
+---
+
+## Extensions (Tools, Channels, MCP)
+
+- **WASM tools:** `betterclaw tool install`, `betterclaw tool list`, `betterclaw tool remove`
+- **Registry:** `betterclaw registry …` for browsing/installing extensions
+- **MCP:** `betterclaw mcp …` for connecting hosted tool providers
+
+---
+
+## Durability: Ledger, Recall, Wake Packs
+
+BetterClaw maintains three complementary layers:
+
+1. **Ledger (source of truth):** append-only events (turns, tool calls, notes, derived artifacts).
+2. **Wake pack (`wake_pack.v0`):** a compact snapshot produced by the compressor to anchor the next turn.
+3. **Ledger recall (`<ledger_recall …>`):** per-turn candidate evidence, injected after the wake pack; if used, the agent must cite `event_id`.
+
+For debugging and experimentation:
+
+```bash
+./target/debug/betterclaw compressor run-once --window-events 5
+./target/debug/betterclaw compressor run-once --window-events 5 --commit
+./target/debug/betterclaw compressor reset --dry-run
+```
+
+---
+
+## Hacking Guide
+
+Start here:
+
+- Agent loop, recall/indexing: `src/agent/`
+- Compressor + wake packs: `src/compressor/`
+- Channels (native + web gateway): `src/channels/`
+- WASM boundaries (WIT + runtimes): `wit/`, `src/tools/`, `src/channels/wasm/`
+- Database + ledger: `src/db/`, `src/ledger/`
+
+---
+
+## Credits
+
+- IronClaw (upstream inspiration / ancestry): <https://github.com/nearai/ironclaw>
+- ZeroClaw (Discord patterns + edge cases): <https://github.com/zeroclaw-labs/zeroclaw>
+- OpenClaw (workspace inspiration): <https://github.com/openclaw/openclaw>
+
+---
 
 ## License
 

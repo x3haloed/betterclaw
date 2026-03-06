@@ -1,4 +1,5 @@
 use secrecy::SecretString;
+use serde::Deserialize;
 
 use crate::config::helpers::{optional_env, parse_optional_env};
 use crate::error::ConfigError;
@@ -18,6 +19,8 @@ pub enum LlmBackend {
     Ollama,
     /// Any OpenAI-compatible endpoint (e.g. vLLM, LiteLLM, Together)
     OpenAiCompatible,
+    /// OpenAI Codex mode authenticated via ~/.codex/auth.json
+    OpenAiCodex,
     /// Tinfoil private inference
     Tinfoil,
 }
@@ -31,9 +34,10 @@ impl std::str::FromStr for LlmBackend {
             "anthropic" | "claude" => Ok(Self::Anthropic),
             "ollama" => Ok(Self::Ollama),
             "openai_compatible" | "openai-compatible" | "compatible" => Ok(Self::OpenAiCompatible),
+            "openai_codex" | "openai-codex" | "codex" => Ok(Self::OpenAiCodex),
             "tinfoil" => Ok(Self::Tinfoil),
             _ => Err(format!(
-                "invalid LLM backend '{}', expected one of: openai, anthropic, ollama, openai_compatible, tinfoil",
+                "invalid LLM backend '{}', expected one of: openai, anthropic, ollama, openai_compatible, openai_codex, tinfoil",
                 s
             )),
         }
@@ -47,6 +51,7 @@ impl std::fmt::Display for LlmBackend {
             Self::Anthropic => write!(f, "anthropic"),
             Self::Ollama => write!(f, "ollama"),
             Self::OpenAiCompatible => write!(f, "openai_compatible"),
+            Self::OpenAiCodex => write!(f, "openai_codex"),
             Self::Tinfoil => write!(f, "tinfoil"),
         }
     }
@@ -63,6 +68,7 @@ impl LlmBackend {
             Self::Anthropic => "ANTHROPIC_MODEL",
             Self::Ollama => "OLLAMA_MODEL",
             Self::OpenAiCompatible => "LLM_MODEL",
+            Self::OpenAiCodex => "OPENAI_CODEX_MODEL",
             Self::Tinfoil => "TINFOIL_MODEL",
         }
     }
@@ -104,6 +110,16 @@ pub struct OpenAiCompatibleConfig {
     pub extra_headers: Vec<(String, String)>,
 }
 
+/// Configuration for OpenAI Codex mode authenticated via ~/.codex/auth.json.
+#[derive(Debug, Clone)]
+pub struct OpenAiCodexConfig {
+    pub base_url: String,
+    pub auth_file: String,
+    pub access_token: SecretString,
+    pub account_id: Option<String>,
+    pub model: String,
+}
+
 /// Configuration for Tinfoil private inference.
 #[derive(Debug, Clone)]
 pub struct TinfoilConfig {
@@ -126,8 +142,65 @@ pub struct LlmConfig {
     pub ollama: Option<OllamaConfig>,
     /// OpenAI-compatible config (populated when backend=openai_compatible)
     pub openai_compatible: Option<OpenAiCompatibleConfig>,
+    /// OpenAI Codex config (populated when backend=openai_codex)
+    pub openai_codex: Option<OpenAiCodexConfig>,
     /// Tinfoil config (populated when backend=tinfoil)
     pub tinfoil: Option<TinfoilConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexAuthFile {
+    #[serde(default)]
+    tokens: CodexTokens,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CodexTokens {
+    access_token: Option<String>,
+    account_id: Option<String>,
+}
+
+pub(crate) fn default_openai_codex_auth_path() -> String {
+    if let Some(home) = dirs::home_dir() {
+        return home.join(".codex").join("auth.json").display().to_string();
+    }
+    ".codex/auth.json".to_string()
+}
+
+pub(crate) fn load_openai_codex_credentials(
+    auth_file: &str,
+) -> Result<(SecretString, Option<String>), ConfigError> {
+    let content = std::fs::read_to_string(auth_file).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => ConfigError::MissingRequired {
+            key: "OPENAI_CODEX_AUTH_PATH".to_string(),
+            hint: format!(
+                "OpenAI Codex mode expects a Codex auth file at {} (or set OPENAI_CODEX_AUTH_PATH).",
+                auth_file
+            ),
+        },
+        _ => e.into(),
+    })?;
+
+    let auth: CodexAuthFile = serde_json::from_str(&content).map_err(|e| {
+        ConfigError::ParseError(format!(
+            "Failed to parse Codex auth file {}: {}",
+            auth_file, e
+        ))
+    })?;
+
+    let access_token = auth
+        .tokens
+        .access_token
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| ConfigError::MissingRequired {
+            key: "OPENAI_CODEX_AUTH_PATH".to_string(),
+            hint: format!(
+                "Codex auth file {} does not contain tokens.access_token.",
+                auth_file
+            ),
+        })?;
+
+    Ok((SecretString::from(access_token), auth.tokens.account_id))
 }
 
 #[derive(Debug, Clone)]
@@ -295,6 +368,24 @@ impl LlmConfig {
             None
         };
 
+        let openai_codex = if backend == LlmBackend::OpenAiCodex {
+            let auth_file = optional_env("OPENAI_CODEX_AUTH_PATH")?
+                .unwrap_or_else(default_openai_codex_auth_path);
+            let (access_token, account_id) = load_openai_codex_credentials(&auth_file)?;
+            let base_url = optional_env("OPENAI_CODEX_BASE_URL")?
+                .unwrap_or_else(|| "https://chatgpt.com/backend-api/codex".to_string());
+            let model = Self::resolve_model("OPENAI_CODEX_MODEL", settings, "gpt-5.3-codex")?;
+            Some(OpenAiCodexConfig {
+                base_url,
+                auth_file,
+                access_token,
+                account_id,
+                model,
+            })
+        } else {
+            None
+        };
+
         let tinfoil = if backend == LlmBackend::Tinfoil {
             let api_key = optional_env("TINFOIL_API_KEY")?
                 .map(SecretString::from)
@@ -315,6 +406,7 @@ impl LlmConfig {
             anthropic,
             ollama,
             openai_compatible,
+            openai_codex,
             tinfoil,
         })
     }
@@ -370,6 +462,15 @@ mod tests {
         }
     }
 
+    fn clear_openai_codex_env() {
+        unsafe {
+            std::env::remove_var("LLM_BACKEND");
+            std::env::remove_var("OPENAI_CODEX_AUTH_PATH");
+            std::env::remove_var("OPENAI_CODEX_MODEL");
+            std::env::remove_var("OPENAI_CODEX_BASE_URL");
+        }
+    }
+
     #[test]
     fn openai_compatible_uses_selected_model_when_llm_model_unset() {
         let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
@@ -416,6 +517,74 @@ mod tests {
         // SAFETY: Under ENV_MUTEX.
         unsafe {
             std::env::remove_var("LLM_MODEL");
+        }
+    }
+
+    #[test]
+    fn openai_codex_uses_auth_file_and_selected_model() {
+        let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
+        clear_openai_codex_env();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"tokens":{"access_token":"tok-123","account_id":"acct-456"}}"#,
+        )
+        .expect("write auth file");
+
+        unsafe {
+            std::env::set_var("OPENAI_CODEX_AUTH_PATH", auth_path.as_os_str());
+        }
+
+        let settings = Settings {
+            llm_backend: Some("openai_codex".to_string()),
+            selected_model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        };
+
+        let cfg = LlmConfig::resolve(&settings).expect("resolve should succeed");
+        let codex = cfg.openai_codex.expect("codex config should be present");
+        assert_eq!(codex.model, "gpt-5.2-codex");
+        assert_eq!(codex.base_url, "https://chatgpt.com/backend-api/codex");
+        assert_eq!(codex.account_id.as_deref(), Some("acct-456"));
+
+        unsafe {
+            std::env::remove_var("OPENAI_CODEX_AUTH_PATH");
+        }
+    }
+
+    #[test]
+    fn openai_codex_model_env_overrides_selected_model() {
+        let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
+        clear_openai_codex_env();
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"tokens":{"access_token":"tok-123","account_id":"acct-456"}}"#,
+        )
+        .expect("write auth file");
+
+        unsafe {
+            std::env::set_var("OPENAI_CODEX_AUTH_PATH", auth_path.as_os_str());
+            std::env::set_var("OPENAI_CODEX_MODEL", "gpt-5.3-codex");
+        }
+
+        let settings = Settings {
+            llm_backend: Some("openai_codex".to_string()),
+            selected_model: Some("gpt-5.2-codex".to_string()),
+            ..Default::default()
+        };
+
+        let cfg = LlmConfig::resolve(&settings).expect("resolve should succeed");
+        let codex = cfg.openai_codex.expect("codex config should be present");
+        assert_eq!(codex.model, "gpt-5.3-codex");
+
+        unsafe {
+            std::env::remove_var("OPENAI_CODEX_AUTH_PATH");
+            std::env::remove_var("OPENAI_CODEX_MODEL");
         }
     }
 

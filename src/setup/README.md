@@ -171,6 +171,7 @@ env-var mode or skipped secrets.
 | NEAR AI Cloud | API key | `llm_nearai_api_key` | `NEARAI_API_KEY` |
 | Anthropic | API key | `anthropic_api_key` | `ANTHROPIC_API_KEY` |
 | OpenAI | API key | `openai_api_key` | `OPENAI_API_KEY` |
+| OpenAI Codex | `~/.codex/auth.json` | - | `OPENAI_CODEX_AUTH_PATH` (optional override) |
 | Ollama | None | - | - |
 | OpenRouter¹ | API key | `llm_compatible_api_key` | `LLM_API_KEY` |
 | OpenAI-compatible¹ | Optional API key | `llm_compatible_api_key` | `LLM_API_KEY` |
@@ -184,6 +185,12 @@ Switching between them overwrites the same credential slot.
 - Delegates to `setup_api_key_provider()` with a display name override ("OpenRouter")
 - Sets `llm_backend = "openai_compatible"` and `openai_compatible_base_url` automatically
 - Clears `selected_model` so Step 4 prompts for a model name (manual text input, no API-based model fetching)
+
+**OpenAI Codex** (`setup_openai_codex`):
+- Validates the Codex auth file at `~/.codex/auth.json`
+- Optional override path via `OPENAI_CODEX_AUTH_PATH`
+- Sets `llm_backend = "openai_codex"`
+- Clears `selected_model` so Step 4 can choose a Codex-capable model
 
 **API-key providers** (`setup_api_key_provider`):
 1. Check env var → if set, ask to reuse, persist to secrets store
@@ -445,6 +452,7 @@ Bootstrap vars written to `~/.betterclaw/.env`:
 - `LIBSQL_URL` (if turso sync)
 - `LLM_BACKEND` (always, when set)
 - `LLM_BASE_URL` (if openai_compatible)
+- `OPENAI_CODEX_MODEL` (if openai_codex)
 - `OLLAMA_BASE_URL` (if ollama)
 - `NEARAI_API_KEY` (if API key auth path)
 - `ONBOARD_COMPLETED` (always, "true")
@@ -479,7 +487,7 @@ pub struct Settings {
     pub secrets_master_key_source: KeySource, // Keychain | Env | None
 
     // Step 3: Inference
-    pub llm_backend: Option<String>,         // "nearai" | "anthropic" | "openai" | "ollama" | "openai_compatible"
+    pub llm_backend: Option<String>,         // "nearai" | "anthropic" | "openai" | "openai_codex" | "ollama" | "openai_compatible"
     pub ollama_base_url: Option<String>,
     pub openai_compatible_base_url: Option<String>,
 

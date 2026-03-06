@@ -219,6 +219,7 @@ This document tracks feature parity between BetterClaw (Rust implementation) and
 | Google Gemini | ✅ | ❌ | P3 | |
 | NVIDIA API | ✅ | ❌ | P3 | New provider |
 | OpenRouter | ✅ | ✅ | - | Via OpenAI-compatible provider (RigAdapter) |
+| OpenAI Codex | ✅ | ✅ | - | Native BetterClaw mode using `~/.codex/auth.json` |
 | Tinfoil | ❌ | ✅ | - | Private inference provider (BetterClaw-only) |
 | OpenAI-compatible | ❌ | ✅ | - | Generic OpenAI-compatible endpoint (RigAdapter) |
 | Ollama (local) | ✅ | ✅ | - | via `rig::providers::ollama` (full support) |

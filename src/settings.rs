@@ -43,7 +43,7 @@ pub struct Settings {
     pub secrets_master_key_source: KeySource,
 
     // === Step 3: Inference Provider ===
-    /// LLM backend: "anthropic", "openai", "ollama", "openai_compatible", "tinfoil".
+    /// LLM backend: "anthropic", "openai", "openai_codex", "ollama", "openai_compatible", "tinfoil".
     #[serde(default)]
     pub llm_backend: Option<String>,
 

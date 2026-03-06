@@ -17,7 +17,7 @@ pub(crate) mod helpers;
 mod hygiene;
 mod ledger_index;
 mod ledger_recall;
-mod llm;
+pub(crate) mod llm;
 mod routines;
 mod safety;
 mod sandbox;
@@ -46,7 +46,7 @@ pub use self::hygiene::HygieneConfig;
 pub use self::ledger_index::LedgerIndexConfig;
 pub use self::ledger_recall::LedgerRecallConfig;
 pub use self::llm::{
-    AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
+    AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig, OpenAiCodexConfig,
     OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
 };
 pub use self::routines::{ObservationRoutineConfig, RoutineConfig};

@@ -5,10 +5,12 @@
 //! - **Anthropic**: Direct API access with your own key
 //! - **Ollama**: Local model inference
 //! - **OpenAI-compatible**: Any endpoint that speaks the OpenAI API
+//! - **OpenAI Codex**: OpenAI API using Codex auth from ~/.codex/auth.json
 
 pub mod circuit_breaker;
 pub mod costs;
 pub mod failover;
+mod openai_codex;
 mod provider;
 mod reasoning;
 mod request_id;
@@ -50,6 +52,7 @@ pub fn create_llm_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, L
         LlmBackend::Anthropic => create_anthropic_provider(config),
         LlmBackend::Ollama => create_ollama_provider(config),
         LlmBackend::OpenAiCompatible => create_openai_compatible_provider(config),
+        LlmBackend::OpenAiCodex => create_openai_codex_provider(config),
         LlmBackend::Tinfoil => create_tinfoil_provider(config),
     }?;
     Ok(Arc::new(RequestIdProvider::new(provider)))
@@ -104,6 +107,17 @@ fn create_llm_provider_with_model(
             c.model = model_override.to_string();
             create_openai_compatible_provider_from(&c)
         }
+        LlmBackend::OpenAiCodex => {
+            let mut c = config
+                .openai_codex
+                .as_ref()
+                .ok_or_else(|| LlmError::AuthFailed {
+                    provider: "openai_codex".to_string(),
+                })?
+                .clone();
+            c.model = model_override.to_string();
+            create_openai_codex_provider_from(&c)
+        }
         LlmBackend::Tinfoil => {
             let mut c = config
                 .tinfoil
@@ -117,6 +131,28 @@ fn create_llm_provider_with_model(
         }
     }?;
     Ok(Arc::new(RequestIdProvider::new(provider)))
+}
+
+fn create_openai_codex_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    let codex = config
+        .openai_codex
+        .as_ref()
+        .ok_or_else(|| LlmError::AuthFailed {
+            provider: "openai_codex".to_string(),
+        })?;
+    create_openai_codex_provider_from(codex)
+}
+
+fn create_openai_codex_provider_from(
+    codex: &crate::config::OpenAiCodexConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    tracing::info!(
+        "Using OpenAI Codex mode (base_url: {}, model: {}, auth_file: {})",
+        codex.base_url,
+        codex.model,
+        codex.auth_file
+    );
+    Ok(Arc::new(openai_codex::OpenAiCodexProvider::new(codex)?))
 }
 
 fn create_openai_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {

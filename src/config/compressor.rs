@@ -2,8 +2,9 @@ use secrecy::SecretString;
 
 use crate::config::helpers::{optional_env, parse_optional_env};
 use crate::config::llm::{
-    AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
-    OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig, parse_extra_headers,
+    AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig, OpenAiCodexConfig,
+    OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig, default_openai_codex_auth_path,
+    load_openai_codex_credentials, parse_extra_headers,
 };
 use crate::error::ConfigError;
 use crate::settings::Settings;
@@ -25,6 +26,9 @@ fn has_any_compressor_env() -> Result<bool, ConfigError> {
         || optional_env("COMPRESSOR_LLM_MODEL")?.is_some()
         || optional_env("COMPRESSOR_LLM_API_KEY")?.is_some()
         || optional_env("COMPRESSOR_LLM_EXTRA_HEADERS")?.is_some()
+        || optional_env("COMPRESSOR_OPENAI_CODEX_AUTH_PATH")?.is_some()
+        || optional_env("COMPRESSOR_OPENAI_CODEX_MODEL")?.is_some()
+        || optional_env("COMPRESSOR_OPENAI_CODEX_BASE_URL")?.is_some()
         || optional_env("COMPRESSOR_OPENAI_API_KEY")?.is_some()
         || optional_env("COMPRESSOR_OPENAI_MODEL")?.is_some()
         || optional_env("COMPRESSOR_OPENAI_BASE_URL")?.is_some()
@@ -160,6 +164,29 @@ pub(crate) fn resolve_compressor_llm(
         None
     };
 
+    let openai_codex = if backend == LlmBackend::OpenAiCodex {
+        let auth_file = optional_env("COMPRESSOR_OPENAI_CODEX_AUTH_PATH")?
+            .or(optional_env("OPENAI_CODEX_AUTH_PATH")?)
+            .unwrap_or_else(default_openai_codex_auth_path);
+        let (access_token, account_id) = load_openai_codex_credentials(&auth_file)?;
+        let base_url = optional_env("COMPRESSOR_OPENAI_CODEX_BASE_URL")?
+            .or(optional_env("OPENAI_CODEX_BASE_URL")?)
+            .unwrap_or_else(|| "https://chatgpt.com/backend-api/codex".to_string());
+        let model = optional_env("COMPRESSOR_OPENAI_CODEX_MODEL")?
+            .or(optional_env("OPENAI_CODEX_MODEL")?)
+            .or(settings.selected_model.clone())
+            .unwrap_or_else(|| "gpt-5.3-codex".to_string());
+        Some(OpenAiCodexConfig {
+            base_url,
+            auth_file,
+            access_token,
+            account_id,
+            model,
+        })
+    } else {
+        None
+    };
+
     let tinfoil = if backend == LlmBackend::Tinfoil {
         let api_key = optional_env("COMPRESSOR_TINFOIL_API_KEY")?
             .or(optional_env("TINFOIL_API_KEY")?)
@@ -184,6 +211,7 @@ pub(crate) fn resolve_compressor_llm(
         anthropic,
         ollama,
         openai_compatible,
+        openai_codex,
         tinfoil,
     })
 }

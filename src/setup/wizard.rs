@@ -3,7 +3,7 @@
 //! The wizard guides users through:
 //! 1. Database connection
 //! 2. Security (secrets master key)
-//! 3. Inference provider (Anthropic, OpenAI, Ollama, OpenAI-compatible)
+//! 3. Inference provider (Anthropic, OpenAI, OpenAI Codex, Ollama, OpenAI-compatible)
 //! 4. Model selection
 //! 5. Embeddings
 //! 6. Channel configuration
@@ -20,6 +20,7 @@ use crate::bootstrap::betterclaw_base_dir;
 use crate::channels::wasm::{
     ChannelCapabilitiesFile, available_channel_names, install_bundled_channel,
 };
+use crate::config::llm::{default_openai_codex_auth_path, load_openai_codex_credentials};
 use crate::secrets::{SecretsCrypto, SecretsStore};
 use crate::settings::{KeySource, Settings};
 use crate::setup::channels::{
@@ -508,6 +509,7 @@ impl SetupWizard {
                 match current.as_str() {
                     "anthropic" => "Anthropic (Claude)",
                     "openai" => "OpenAI",
+                    "openai_codex" => "OpenAI Codex",
                     "ollama" => "Ollama (local)",
                     "openai_compatible" => "OpenAI-compatible endpoint",
                     other => other,
@@ -518,7 +520,7 @@ impl SetupWizard {
 
             let is_known = matches!(
                 current.as_str(),
-                "anthropic" | "openai" | "ollama" | "openai_compatible"
+                "anthropic" | "openai" | "openai_codex" | "ollama" | "openai_compatible"
             );
 
             if is_known && confirm("Keep current provider?", true).map_err(SetupError::Io)? {
@@ -529,6 +531,7 @@ impl SetupWizard {
                 match current.as_str() {
                     "anthropic" => return self.setup_anthropic().await,
                     "openai" => return self.setup_openai().await,
+                    "openai_codex" => return self.setup_openai_codex(),
                     "ollama" => return self.setup_ollama(),
                     "openai_compatible" => return self.setup_openai_compatible().await,
                     _ => {
@@ -554,6 +557,7 @@ impl SetupWizard {
         let options = &[
             "Anthropic        - Claude models (direct API key)",
             "OpenAI           - GPT models (direct API key)",
+            "OpenAI Codex     - GPT Codex models (uses ~/.codex/auth.json)",
             "Ollama           - local models, no API key needed",
             "OpenRouter       - 200+ models via single API key",
             "OpenAI-compatible - custom endpoint (vLLM, LiteLLM, etc.)",
@@ -564,9 +568,10 @@ impl SetupWizard {
         match choice {
             0 => self.setup_anthropic().await?,
             1 => self.setup_openai().await?,
-            2 => self.setup_ollama()?,
-            3 => self.setup_openrouter().await?,
-            4 => self.setup_openai_compatible().await?,
+            2 => self.setup_openai_codex()?,
+            3 => self.setup_ollama()?,
+            4 => self.setup_openrouter().await?,
+            5 => self.setup_openai_compatible().await?,
             _ => return Err(SetupError::Config("Invalid provider selection".to_string())),
         }
 
@@ -597,6 +602,26 @@ impl SetupWizard {
             None,
         )
         .await
+    }
+
+    /// OpenAI Codex provider setup: validate ~/.codex/auth.json and use it as auth source.
+    fn setup_openai_codex(&mut self) -> Result<(), SetupError> {
+        self.settings.llm_backend = Some("openai_codex".to_string());
+        if self.settings.selected_model.is_some() {
+            self.settings.selected_model = None;
+        }
+
+        let auth_file = std::env::var("OPENAI_CODEX_AUTH_PATH")
+            .unwrap_or_else(|_| default_openai_codex_auth_path());
+        let (_token, account_id) = load_openai_codex_credentials(&auth_file)
+            .map_err(|e| SetupError::Config(e.to_string()))?;
+
+        print_info(&format!("Using Codex auth file: {}", auth_file));
+        if let Some(account_id) = account_id {
+            print_info(&format!("Detected ChatGPT account: {}", account_id));
+        }
+        print_success("OpenAI Codex configured");
+        Ok(())
     }
 
     /// Shared setup flow for API-key-based providers (Anthropic, OpenAI, OpenRouter).
@@ -800,6 +825,10 @@ impl SetupWizard {
                     .as_ref()
                     .map(|k| k.expose_secret().to_string());
                 let models = fetch_openai_models(cached.as_deref()).await;
+                self.select_from_model_list(&models)?;
+            }
+            "openai_codex" => {
+                let models = codex_static_models();
                 self.select_from_model_list(&models)?;
             }
             "ollama" => {
@@ -1627,6 +1656,7 @@ impl SetupWizard {
             let display = match provider.as_str() {
                 "anthropic" => "Anthropic",
                 "openai" => "OpenAI",
+                "openai_codex" => "OpenAI Codex",
                 "ollama" => "Ollama",
                 "openai_compatible" => "OpenAI-compatible",
                 other => other,
@@ -1778,24 +1808,7 @@ async fn fetch_anthropic_models(cached_key: Option<&str>) -> Vec<(String, String
 ///
 /// Returns `(model_id, display_label)` pairs. Falls back to static defaults on error.
 async fn fetch_openai_models(cached_key: Option<&str>) -> Vec<(String, String)> {
-    let static_defaults = vec![
-        (
-            "gpt-5.3-codex".into(),
-            "GPT-5.3 Codex (latest flagship)".into(),
-        ),
-        ("gpt-5.2-codex".into(), "GPT-5.2 Codex".into()),
-        ("gpt-5.2".into(), "GPT-5.2".into()),
-        (
-            "gpt-5.1-codex-mini".into(),
-            "GPT-5.1 Codex Mini (fast)".into(),
-        ),
-        ("gpt-5".into(), "GPT-5".into()),
-        ("gpt-5-mini".into(), "GPT-5 Mini".into()),
-        ("gpt-4.1".into(), "GPT-4.1".into()),
-        ("gpt-4.1-mini".into(), "GPT-4.1 Mini".into()),
-        ("o4-mini".into(), "o4-mini (fast reasoning)".into()),
-        ("o3".into(), "o3 (reasoning)".into()),
-    ];
+    let static_defaults = codex_static_models();
 
     let api_key = cached_key
         .map(String::from)
@@ -1847,6 +1860,27 @@ async fn fetch_openai_models(cached_key: Option<&str>) -> Vec<(String, String)> 
         }
         Err(_) => static_defaults,
     }
+}
+
+fn codex_static_models() -> Vec<(String, String)> {
+    vec![
+        (
+            "gpt-5.3-codex".into(),
+            "GPT-5.3 Codex (latest flagship)".into(),
+        ),
+        ("gpt-5.2-codex".into(), "GPT-5.2 Codex".into()),
+        ("gpt-5.2".into(), "GPT-5.2".into()),
+        (
+            "gpt-5.1-codex-mini".into(),
+            "GPT-5.1 Codex Mini (fast)".into(),
+        ),
+        ("gpt-5".into(), "GPT-5".into()),
+        ("gpt-5-mini".into(), "GPT-5 Mini".into()),
+        ("gpt-4.1".into(), "GPT-4.1".into()),
+        ("gpt-4.1-mini".into(), "GPT-4.1 Mini".into()),
+        ("o4-mini".into(), "o4-mini (fast reasoning)".into()),
+        ("o3".into(), "o3 (reasoning)".into()),
+    ]
 }
 
 fn is_openai_chat_model(model_id: &str) -> bool {

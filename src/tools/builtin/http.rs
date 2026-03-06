@@ -231,7 +231,8 @@ impl Tool for HttpTool {
                     }
                 },
                 "body": {
-                    "description": "Request body (for POST/PUT/PATCH). Can be a JSON object, array, string, or other value."
+                    "type": ["string", "null"],
+                    "description": "Request body (for POST/PUT/PATCH). Use a plain string or a stringified JSON payload."
                 },
                 "timeout_secs": {
                     "type": "integer",
@@ -560,19 +561,17 @@ mod tests {
     }
 
     #[test]
-    fn test_http_tool_schema_body_is_freeform() {
+    fn test_http_tool_schema_body_is_string_or_null() {
         let schema = HttpTool::new().parameters_schema();
         let body = schema
             .get("properties")
             .and_then(|p| p.get("body"))
             .expect("body schema missing");
 
-        // Body is intentionally freeform (no "type" constraint) for OpenAI
-        // compatibility. OpenAI rejects union types containing "array" unless
-        // "items" is also specified, and body accepts any JSON value.
-        assert!(
-            body.get("type").is_none(),
-            "body schema should not have a 'type' to be freeform for OpenAI compatibility"
+        assert_eq!(
+            body.get("type"),
+            Some(&serde_json::json!(["string", "null"])),
+            "body schema should accept plain strings and stringified JSON"
         );
     }
 

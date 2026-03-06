@@ -249,16 +249,21 @@ fn convert_messages_to_codex_items(
         match msg.role {
             Role::System | Role::User | Role::Assistant => {
                 if !msg.content.is_empty() {
+                    let role = match msg.role {
+                        Role::System => "system",
+                        Role::User => "user",
+                        Role::Assistant => "assistant",
+                        Role::Tool => unreachable!(),
+                    };
+                    let content_kind = match msg.role {
+                        Role::User => "input_text",
+                        Role::Assistant => "output_text",
+                        Role::System | Role::Tool => "input_text",
+                    };
                     items.push(CodexInputItem::Message {
-                        role: match msg.role {
-                            Role::System => "system",
-                            Role::User => "user",
-                            Role::Assistant => "assistant",
-                            Role::Tool => unreachable!(),
-                        }
-                        .to_string(),
+                        role: role.to_string(),
                         content: vec![CodexMessageContent {
-                            kind: "input_text",
+                            kind: content_kind,
                             text: msg.content.clone(),
                         }],
                     });
@@ -590,6 +595,7 @@ fn apply_output_item(item: &JsonValue, aggregate: &mut CodexStreamAggregate) {
                         "output_text" | "text"
                     ) && let Some(text) = part.get("text").and_then(|v| v.as_str())
                         && !text.is_empty()
+                        && aggregate.text.is_empty()
                     {
                         aggregate.text.push_str(text);
                     }
@@ -708,6 +714,30 @@ mod tests {
     }
 
     #[test]
+    fn assistant_history_uses_output_text_content_type() {
+        let messages = vec![
+            ChatMessage::user("hello"),
+            ChatMessage::assistant("world"),
+        ];
+
+        let items = convert_messages_to_codex_items(&messages).expect("convert");
+        match &items[0] {
+            CodexInputItem::Message { role, content } => {
+                assert_eq!(role, "user");
+                assert_eq!(content[0].kind, "input_text");
+            }
+            _ => panic!("expected user message"),
+        }
+        match &items[1] {
+            CodexInputItem::Message { role, content } => {
+                assert_eq!(role, "assistant");
+                assert_eq!(content[0].kind, "output_text");
+            }
+            _ => panic!("expected assistant message"),
+        }
+    }
+
+    #[test]
     fn splits_system_messages_into_instructions() {
         let messages = vec![
             ChatMessage::system("sys one"),
@@ -822,5 +852,37 @@ mod tests {
         );
         assert_eq!(parsed.input_tokens, 7);
         assert_eq!(parsed.output_tokens, 3);
+    }
+
+    #[test]
+    fn does_not_duplicate_text_when_message_item_repeats_streamed_text() {
+        let mut aggregate = CodexStreamAggregate::default();
+
+        apply_sse_payload(
+            &serde_json::json!({
+                "type": "response.output_text.delta",
+                "delta": "hello"
+            }),
+            &mut aggregate,
+        );
+        apply_sse_payload(
+            &serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "hello"
+                        }
+                    ]
+                }
+            }),
+            &mut aggregate,
+        );
+
+        let response = aggregate.into_response();
+        let parsed = parse_codex_response(response);
+        assert_eq!(parsed.content.as_deref(), Some("hello"));
     }
 }

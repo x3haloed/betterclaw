@@ -20,6 +20,7 @@ use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
 use crate::agent::Scheduler;
+use crate::agent::ledger_capture::append_event_best_effort;
 use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineRun, RunStatus, Trigger, next_cron_fire,
 };
@@ -92,6 +93,21 @@ impl RoutineEngine {
             }
             Err(e) => {
                 tracing::error!("Failed to refresh event cache: {}", e);
+            }
+        }
+    }
+
+    pub async fn ensure_builtin_observation_routines(&self) {
+        let cfg = &self.config.observation;
+        if !cfg.enabled {
+            tracing::debug!("Built-in observation routines disabled");
+            return;
+        }
+
+        let specs = builtin_observation_specs(cfg);
+        for spec in specs {
+            if let Err(e) = self.upsert_builtin_observation_routine(&spec).await {
+                tracing::error!(routine = %spec.name, "Failed to sync builtin observation routine: {}", e);
             }
         }
     }
@@ -300,6 +316,100 @@ impl RoutineEngine {
             }
         }
     }
+
+    async fn upsert_builtin_observation_routine(
+        &self,
+        spec: &BuiltinObservationSpec<'_>,
+    ) -> Result<(), RoutineError> {
+        next_cron_fire(&spec.schedule)?;
+
+        let action = RoutineAction::SessionObservation {
+            prompt: spec.prompt.to_string(),
+            ledger_kind: spec.ledger_kind.to_string(),
+            recent_ledger_events: spec.recent_ledger_events,
+            active_invariants: spec.active_invariants,
+            unresolved_observations: spec.unresolved_observations,
+            max_tokens: spec.max_tokens,
+        };
+
+        let notify = NotifyConfig {
+            channel: None,
+            user: spec.user_id.to_string(),
+            on_attention: false,
+            on_failure: false,
+            on_success: false,
+        };
+
+        let trigger = Trigger::Cron {
+            schedule: spec.schedule.to_string(),
+        };
+        let next_fire_at = next_cron_fire(spec.schedule)?;
+
+        if let Some(mut routine) = self
+            .store
+            .get_routine_by_name(spec.user_id, spec.name)
+            .await
+            .map_err(|e| RoutineError::Database {
+                reason: e.to_string(),
+            })?
+        {
+            routine.description = spec.description.to_string();
+            routine.enabled = true;
+            routine.trigger = trigger;
+            routine.action = action;
+            routine.notify = notify;
+            routine.guardrails.cooldown = Duration::from_secs(0);
+            routine.next_fire_at = next_fire_at;
+            routine.updated_at = Utc::now();
+            routine.state = serde_json::json!({
+                "managed_by": "builtin_observation_routines",
+                "ledger_kind": spec.ledger_kind,
+            });
+
+            self.store
+                .update_routine(&routine)
+                .await
+                .map_err(|e| RoutineError::Database {
+                    reason: e.to_string(),
+                })?;
+        } else {
+            let now = Utc::now();
+            let routine = Routine {
+                id: Uuid::new_v4(),
+                name: spec.name.to_string(),
+                description: spec.description.to_string(),
+                user_id: spec.user_id.to_string(),
+                enabled: true,
+                trigger,
+                action,
+                guardrails: crate::agent::routine::RoutineGuardrails {
+                    cooldown: Duration::from_secs(0),
+                    max_concurrent: 1,
+                    dedup_window: None,
+                },
+                notify,
+                last_run_at: None,
+                next_fire_at,
+                run_count: 0,
+                consecutive_failures: 0,
+                state: serde_json::json!({
+                    "managed_by": "builtin_observation_routines",
+                    "ledger_kind": spec.ledger_kind,
+                }),
+                created_at: now,
+                updated_at: now,
+            };
+
+            self.store
+                .create_routine(&routine)
+                .await
+                .map_err(|e| RoutineError::Database {
+                    reason: e.to_string(),
+                })?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Shared context passed to the execution function.
@@ -328,6 +438,26 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
             description,
             max_iterations,
         } => execute_full_job(&ctx, &routine, &run, title, description, *max_iterations).await,
+        RoutineAction::SessionObservation {
+            prompt,
+            ledger_kind,
+            recent_ledger_events,
+            active_invariants,
+            unresolved_observations,
+            max_tokens,
+        } => {
+            execute_session_observation(
+                &ctx,
+                &routine,
+                prompt,
+                ledger_kind,
+                *recent_ledger_events,
+                *active_invariants,
+                *unresolved_observations,
+                *max_tokens,
+            )
+            .await
+        }
     };
 
     // Decrement running count
@@ -566,6 +696,277 @@ async fn execute_lightweight(
     }
 
     Ok((RunStatus::Attention, Some(content.to_string()), tokens_used))
+}
+
+async fn execute_session_observation(
+    ctx: &EngineContext,
+    routine: &Routine,
+    prompt: &str,
+    ledger_kind: &str,
+    recent_ledger_events: i64,
+    active_invariants: i64,
+    unresolved_observations: i64,
+    max_tokens: u32,
+) -> Result<(RunStatus, Option<String>, Option<i32>), RoutineError> {
+    let system_prompt = match ctx.workspace.system_prompt().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(routine = %routine.name, "Failed to get system prompt: {}", e);
+            String::new()
+        }
+    };
+
+    let recent_events = if recent_ledger_events > 0 {
+        let mut events = ctx
+            .store
+            .list_recent_ledger_events_for_compression(&routine.user_id, recent_ledger_events)
+            .await
+            .map_err(|e| RoutineError::Database {
+                reason: format!("failed to load recent ledger events: {e}"),
+            })?;
+        events.reverse();
+        events
+    } else {
+        Vec::new()
+    };
+
+    let active_invariant_events = if active_invariants > 0 {
+        let mut events = ctx
+            .store
+            .list_recent_ledger_events_by_kind_prefix(
+                &routine.user_id,
+                "invariant.",
+                active_invariants,
+            )
+            .await
+            .map_err(|e| RoutineError::Database {
+                reason: format!("failed to load active invariants: {e}"),
+            })?;
+        events.reverse();
+        events
+    } else {
+        Vec::new()
+    };
+
+    let unresolved_events = if unresolved_observations > 0 {
+        let per_kind = (unresolved_observations / 2).max(1);
+        let mut tension = ctx
+            .store
+            .list_recent_ledger_events_by_kind_prefix(
+                &routine.user_id,
+                "observation.tension",
+                per_kind,
+            )
+            .await
+            .map_err(|e| RoutineError::Database {
+                reason: format!("failed to load unresolved tensions: {e}"),
+            })?;
+        let mut pattern = ctx
+            .store
+            .list_recent_ledger_events_by_kind_prefix(
+                &routine.user_id,
+                "observation.pattern",
+                per_kind,
+            )
+            .await
+            .map_err(|e| RoutineError::Database {
+                reason: format!("failed to load unresolved patterns: {e}"),
+            })?;
+        tension.reverse();
+        pattern.reverse();
+        let mut combined = Vec::with_capacity(tension.len() + pattern.len());
+        combined.extend(tension);
+        combined.extend(pattern);
+        combined
+    } else {
+        Vec::new()
+    };
+
+    let full_prompt = build_session_observation_prompt(
+        prompt,
+        &recent_events,
+        &active_invariant_events,
+        &unresolved_events,
+    );
+
+    let messages = if system_prompt.is_empty() {
+        vec![ChatMessage::user(&full_prompt)]
+    } else {
+        vec![
+            ChatMessage::system(&system_prompt),
+            ChatMessage::user(&full_prompt),
+        ]
+    };
+
+    let effective_max_tokens = match ctx.llm.model_metadata().await {
+        Ok(meta) => {
+            let from_api = meta.context_length.map(|ctx| ctx / 2).unwrap_or(max_tokens);
+            from_api.max(max_tokens)
+        }
+        Err(_) => max_tokens,
+    };
+
+    let request = CompletionRequest::new(messages)
+        .with_max_tokens(effective_max_tokens)
+        .with_temperature(0.2);
+
+    let response = ctx
+        .llm
+        .complete(request)
+        .await
+        .map_err(|e| RoutineError::LlmFailed {
+            reason: e.to_string(),
+        })?;
+
+    let content = response.content.trim();
+    let tokens_used = Some((response.input_tokens + response.output_tokens) as i32);
+
+    if content.is_empty() {
+        return if response.finish_reason == FinishReason::Length {
+            Err(RoutineError::TruncatedResponse)
+        } else {
+            Err(RoutineError::EmptyResponse)
+        };
+    }
+
+    let event_id = append_event_best_effort(
+        Some(Arc::clone(&ctx.store)),
+        routine.user_id.clone(),
+        None,
+        ledger_kind.to_string(),
+        format!("routine:{}", routine.name),
+        Some(content.to_string()),
+        serde_json::json!({
+            "routine_id": routine.id.to_string(),
+            "routine_name": routine.name,
+            "trigger": "routine",
+            "recent_ledger_event_ids": recent_events.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
+            "active_invariant_event_ids": active_invariant_events.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
+            "unresolved_observation_event_ids": unresolved_events.iter().map(|e| e.id.to_string()).collect::<Vec<_>>(),
+        }),
+    )
+    .await;
+
+    let preview = truncate(content, 240);
+    let summary = match event_id {
+        Some(id) => format!("Recorded {} as {} ({})", routine.name, ledger_kind, id),
+        None => format!(
+            "Generated {} observation, but ledger capture failed: {}",
+            ledger_kind, preview
+        ),
+    };
+
+    Ok((RunStatus::Ok, Some(summary), tokens_used))
+}
+
+fn build_session_observation_prompt(
+    prompt: &str,
+    recent_events: &[crate::ledger::LedgerEvent],
+    active_invariants: &[crate::ledger::LedgerEvent],
+    unresolved_events: &[crate::ledger::LedgerEvent],
+) -> String {
+    let mut out = String::new();
+    out.push_str(prompt.trim());
+
+    if !recent_events.is_empty() {
+        out.push_str("\n\n## Recent Ledger Events\n");
+        out.push_str(&format_events_for_prompt(recent_events));
+    }
+
+    if !active_invariants.is_empty() {
+        out.push_str("\n\n## Active Invariants\n");
+        out.push_str(&format_events_for_prompt(active_invariants));
+    }
+
+    if !unresolved_events.is_empty() {
+        out.push_str("\n\n## Unresolved Patterns Or Tensions\n");
+        out.push_str(&format_events_for_prompt(unresolved_events));
+    }
+
+    out.push_str("\n\nTools are disabled for this pass.");
+    out
+}
+
+fn format_events_for_prompt(events: &[crate::ledger::LedgerEvent]) -> String {
+    if events.is_empty() {
+        return "(none)\n".to_string();
+    }
+
+    events
+        .iter()
+        .map(|event| {
+            let content = event
+                .content
+                .as_deref()
+                .map(|c| truncate(c, 1200))
+                .unwrap_or_else(|| truncate(&event.payload.to_string(), 1200));
+            format!(
+                "- {} {} {} {}\n  content: {}\n",
+                event.id,
+                event.created_at.to_rfc3339(),
+                event.kind,
+                event.source,
+                content.replace('\n', "\\n")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+struct BuiltinObservationSpec<'a> {
+    name: &'a str,
+    description: &'a str,
+    user_id: &'a str,
+    schedule: &'a str,
+    prompt: &'a str,
+    ledger_kind: &'a str,
+    recent_ledger_events: i64,
+    active_invariants: i64,
+    unresolved_observations: i64,
+    max_tokens: u32,
+}
+
+fn builtin_observation_specs(
+    cfg: &crate::config::ObservationRoutineConfig,
+) -> Vec<BuiltinObservationSpec<'_>> {
+    vec![
+        BuiltinObservationSpec {
+            name: "observation.tension",
+            description: "Invariant maintenance loop that scans recent evidence for tensions or contradictions.",
+            user_id: &cfg.user_id,
+            schedule: &cfg.tension_schedule,
+            prompt: "You are performing invariant maintenance.\n\nInputs:\n- recent ledger events\n- active invariants\n\nTask:\nIdentify tensions or contradictions between events and invariants.\n\nIf you find one:\n- describe it\n- cite evidence\n- suggest whether the invariant may be conditional, outdated, or incomplete.\n\nDo not modify invariants directly.\nOnly report observations.",
+            ledger_kind: "observation.tension",
+            recent_ledger_events: cfg.recent_ledger_events,
+            active_invariants: cfg.active_invariants,
+            unresolved_observations: 0,
+            max_tokens: cfg.max_tokens,
+        },
+        BuiltinObservationSpec {
+            name: "observation.pattern",
+            description: "Pattern scout loop that scans recent experience for repeated behaviors and correlations.",
+            user_id: &cfg.user_id,
+            schedule: &cfg.pattern_schedule,
+            prompt: "You are scanning recent experience for repeated patterns.\n\nInputs:\n- recent ledger events\n\nTask:\nIdentify repeated behaviors or correlations that might deserve an invariant.\n\nFor each pattern:\n- describe pattern\n- cite events\n- estimate confidence",
+            ledger_kind: "observation.pattern",
+            recent_ledger_events: cfg.recent_ledger_events,
+            active_invariants: 0,
+            unresolved_observations: 0,
+            max_tokens: cfg.max_tokens,
+        },
+        BuiltinObservationSpec {
+            name: "observation.hypothesis",
+            description: "Hypothesis loop that turns unresolved patterns or tensions into small reasoning experiments.",
+            user_id: &cfg.user_id,
+            schedule: &cfg.hypothesis_schedule,
+            prompt: "You are evaluating hypotheses about behavior patterns.\n\nInputs:\n- unresolved patterns or tensions\n\nTask:\nDesign a small reasoning experiment or observation to test the pattern.\n\nReport the hypothesis and expected signal.",
+            ledger_kind: "observation.hypothesis",
+            recent_ledger_events: 0,
+            active_invariants: 0,
+            unresolved_observations: cfg.unresolved_observations,
+            max_tokens: cfg.max_tokens,
+        },
+    ]
 }
 
 /// Send a notification based on the routine's notify config and run status.

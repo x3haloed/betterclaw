@@ -435,6 +435,7 @@ impl Agent {
 
                     // Load initial event cache
                     engine.refresh_event_cache().await;
+                    engine.ensure_builtin_observation_routines().await;
 
                     // Spawn notification forwarder (mirrors heartbeat pattern)
                     let channels = self.channels.clone();

@@ -49,7 +49,7 @@ pub use self::llm::{
     AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
     OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
 };
-pub use self::routines::RoutineConfig;
+pub use self::routines::{ObservationRoutineConfig, RoutineConfig};
 pub use self::safety::SafetyConfig;
 pub use self::sandbox::{ClaudeCodeConfig, SandboxModeConfig};
 pub use self::secrets::SecretsConfig;

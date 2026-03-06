@@ -1812,6 +1812,7 @@ async fn routines_trigger_handler(
         crate::agent::routine::RoutineAction::FullJob {
             title, description, ..
         } => format!("{}: {}", title, description),
+        crate::agent::routine::RoutineAction::SessionObservation { prompt, .. } => prompt.clone(),
     };
 
     let content = format!("[routine:{}] {}", routine.name, prompt);
@@ -1962,6 +1963,7 @@ fn routine_to_info(r: &crate::agent::routine::Routine) -> RoutineInfo {
     let action_type = match &r.action {
         crate::agent::routine::RoutineAction::Lightweight { .. } => "lightweight",
         crate::agent::routine::RoutineAction::FullJob { .. } => "full_job",
+        crate::agent::routine::RoutineAction::SessionObservation { .. } => "session_observation",
     };
 
     let status = if !r.enabled {

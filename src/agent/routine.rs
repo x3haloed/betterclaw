@@ -176,6 +176,25 @@ pub enum RoutineAction {
         #[serde(default = "default_max_iterations")]
         max_iterations: u32,
     },
+    /// Single-turn observation pass with explicit ledger/invariant inputs and no tools.
+    SessionObservation {
+        /// User prompt/instructions for the observation pass.
+        prompt: String,
+        /// Ledger kind to write the assistant output as.
+        ledger_kind: String,
+        /// Number of recent compressor-suitable ledger events to inject.
+        #[serde(default)]
+        recent_ledger_events: i64,
+        /// Number of active invariants to inject.
+        #[serde(default)]
+        active_invariants: i64,
+        /// Number of unresolved observation events to inject.
+        #[serde(default)]
+        unresolved_observations: i64,
+        /// Max output tokens (default: 4096).
+        #[serde(default = "default_max_tokens")]
+        max_tokens: u32,
+    },
 }
 
 fn default_max_tokens() -> u32 {
@@ -192,6 +211,7 @@ impl RoutineAction {
         match self {
             RoutineAction::Lightweight { .. } => "lightweight",
             RoutineAction::FullJob { .. } => "full_job",
+            RoutineAction::SessionObservation { .. } => "session_observation",
         }
     }
 
@@ -254,6 +274,48 @@ impl RoutineAction {
                     max_iterations,
                 })
             }
+            "session_observation" => {
+                let prompt = config
+                    .get("prompt")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RoutineError::MissingField {
+                        context: "session_observation action".into(),
+                        field: "prompt".into(),
+                    })?
+                    .to_string();
+                let ledger_kind = config
+                    .get("ledger_kind")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| RoutineError::MissingField {
+                        context: "session_observation action".into(),
+                        field: "ledger_kind".into(),
+                    })?
+                    .to_string();
+                let recent_ledger_events = config
+                    .get("recent_ledger_events")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let active_invariants = config
+                    .get("active_invariants")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let unresolved_observations = config
+                    .get("unresolved_observations")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let max_tokens = config
+                    .get("max_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(default_max_tokens() as u64) as u32;
+                Ok(RoutineAction::SessionObservation {
+                    prompt,
+                    ledger_kind,
+                    recent_ledger_events,
+                    active_invariants,
+                    unresolved_observations,
+                    max_tokens,
+                })
+            }
             other => Err(RoutineError::UnknownActionType {
                 action_type: other.to_string(),
             }),
@@ -280,6 +342,21 @@ impl RoutineAction {
                 "title": title,
                 "description": description,
                 "max_iterations": max_iterations,
+            }),
+            RoutineAction::SessionObservation {
+                prompt,
+                ledger_kind,
+                recent_ledger_events,
+                active_invariants,
+                unresolved_observations,
+                max_tokens,
+            } => serde_json::json!({
+                "prompt": prompt,
+                "ledger_kind": ledger_kind,
+                "recent_ledger_events": recent_ledger_events,
+                "active_invariants": active_invariants,
+                "unresolved_observations": unresolved_observations,
+                "max_tokens": max_tokens,
             }),
         }
     }
@@ -457,6 +534,38 @@ mod tests {
             matches!(parsed, RoutineAction::FullJob { title, max_iterations, .. }
             if title == "Deploy review" && max_iterations == 5)
         );
+    }
+
+    #[test]
+    fn test_action_session_observation_roundtrip() {
+        let action = RoutineAction::SessionObservation {
+            prompt: "Inspect tensions".to_string(),
+            ledger_kind: "observation.tension".to_string(),
+            recent_ledger_events: 12,
+            active_invariants: 24,
+            unresolved_observations: 8,
+            max_tokens: 1536,
+        };
+        let json = action.to_config_json();
+        let parsed =
+            RoutineAction::from_db("session_observation", json).expect("parse session_observation");
+        assert!(matches!(
+            parsed,
+            RoutineAction::SessionObservation {
+                prompt,
+                ledger_kind,
+                recent_ledger_events,
+                active_invariants,
+                unresolved_observations,
+                max_tokens,
+            }
+            if prompt == "Inspect tensions"
+                && ledger_kind == "observation.tension"
+                && recent_ledger_events == 12
+                && active_invariants == 24
+                && unresolved_observations == 8
+                && max_tokens == 1536
+        ));
     }
 
     #[test]

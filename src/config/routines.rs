@@ -1,6 +1,35 @@
 use crate::config::helpers::{parse_bool_env, parse_optional_env};
 use crate::error::ConfigError;
 
+#[derive(Debug, Clone)]
+pub struct ObservationRoutineConfig {
+    pub enabled: bool,
+    pub user_id: String,
+    pub tension_schedule: String,
+    pub pattern_schedule: String,
+    pub hypothesis_schedule: String,
+    pub recent_ledger_events: i64,
+    pub active_invariants: i64,
+    pub unresolved_observations: i64,
+    pub max_tokens: u32,
+}
+
+impl Default for ObservationRoutineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            user_id: "default".to_string(),
+            tension_schedule: "0 */30 * * * *".to_string(),
+            pattern_schedule: "0 0 */2 * * *".to_string(),
+            hypothesis_schedule: "0 0 */6 * * *".to_string(),
+            recent_ledger_events: 12,
+            active_invariants: 24,
+            unresolved_observations: 12,
+            max_tokens: 2048,
+        }
+    }
+}
+
 /// Routines configuration.
 #[derive(Debug, Clone)]
 pub struct RoutineConfig {
@@ -14,6 +43,8 @@ pub struct RoutineConfig {
     pub default_cooldown_secs: u64,
     /// Max output tokens for lightweight routine LLM calls.
     pub max_lightweight_tokens: u32,
+    /// Built-in observation loops.
+    pub observation: ObservationRoutineConfig,
 }
 
 impl Default for RoutineConfig {
@@ -24,6 +55,7 @@ impl Default for RoutineConfig {
             max_concurrent_routines: 10,
             default_cooldown_secs: 300,
             max_lightweight_tokens: 4096,
+            observation: ObservationRoutineConfig::default(),
         }
     }
 }
@@ -36,6 +68,24 @@ impl RoutineConfig {
             max_concurrent_routines: parse_optional_env("ROUTINES_MAX_CONCURRENT", 10)?,
             default_cooldown_secs: parse_optional_env("ROUTINES_DEFAULT_COOLDOWN", 300)?,
             max_lightweight_tokens: parse_optional_env("ROUTINES_MAX_TOKENS", 4096)?,
+            observation: ObservationRoutineConfig {
+                enabled: parse_bool_env("OBSERVATION_ROUTINES_ENABLED", true)?,
+                user_id: std::env::var("OBSERVATION_ROUTINES_USER_ID")
+                    .unwrap_or_else(|_| "default".to_string()),
+                tension_schedule: std::env::var("OBSERVATION_TENSION_SCHEDULE")
+                    .unwrap_or_else(|_| "0 */30 * * * *".to_string()),
+                pattern_schedule: std::env::var("OBSERVATION_PATTERN_SCHEDULE")
+                    .unwrap_or_else(|_| "0 0 */2 * * *".to_string()),
+                hypothesis_schedule: std::env::var("OBSERVATION_HYPOTHESIS_SCHEDULE")
+                    .unwrap_or_else(|_| "0 0 */6 * * *".to_string()),
+                recent_ledger_events: parse_optional_env("OBSERVATION_RECENT_LEDGER_EVENTS", 12)?,
+                active_invariants: parse_optional_env("OBSERVATION_ACTIVE_INVARIANTS", 24)?,
+                unresolved_observations: parse_optional_env(
+                    "OBSERVATION_UNRESOLVED_OBSERVATIONS",
+                    12,
+                )?,
+                max_tokens: parse_optional_env("OBSERVATION_MAX_TOKENS", 2048)?,
+            },
         })
     }
 }

@@ -58,6 +58,8 @@ pub struct Routine {
 pub enum Trigger {
     /// Fire on a cron schedule (e.g. "0 9 * * MON-FRI" or "every 2h").
     Cron { schedule: String },
+    /// Fire after N inbound messages for this user have passed since the last run.
+    MessageCount { every_messages: u64 },
     /// Fire when a channel message matches a pattern.
     Event {
         /// Optional channel filter (e.g. "telegram", "slack").
@@ -81,6 +83,7 @@ impl Trigger {
     pub fn type_tag(&self) -> &'static str {
         match self {
             Trigger::Cron { .. } => "cron",
+            Trigger::MessageCount { .. } => "message_count",
             Trigger::Event { .. } => "event",
             Trigger::Webhook { .. } => "webhook",
             Trigger::Manual => "manual",
@@ -100,6 +103,16 @@ impl Trigger {
                     })?
                     .to_string();
                 Ok(Trigger::Cron { schedule })
+            }
+            "message_count" => {
+                let every_messages = config
+                    .get("every_messages")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| RoutineError::MissingField {
+                        context: "message_count trigger".into(),
+                        field: "every_messages".into(),
+                    })?;
+                Ok(Trigger::MessageCount { every_messages })
             }
             "event" => {
                 let pattern = config
@@ -138,6 +151,9 @@ impl Trigger {
     pub fn to_config_json(&self) -> serde_json::Value {
         match self {
             Trigger::Cron { schedule } => serde_json::json!({ "schedule": schedule }),
+            Trigger::MessageCount { every_messages } => serde_json::json!({
+                "every_messages": every_messages,
+            }),
             Trigger::Event { channel, pattern } => serde_json::json!({
                 "pattern": pattern,
                 "channel": channel,
@@ -507,6 +523,17 @@ mod tests {
     }
 
     #[test]
+    fn test_message_count_trigger_roundtrip() {
+        let trigger = Trigger::MessageCount { every_messages: 12 };
+        let json = trigger.to_config_json();
+        let parsed = Trigger::from_db("message_count", json).expect("parse message_count");
+        assert!(matches!(
+            parsed,
+            Trigger::MessageCount { every_messages } if every_messages == 12
+        ));
+    }
+
+    #[test]
     fn test_action_lightweight_roundtrip() {
         let action = RoutineAction::Lightweight {
             prompt: "Check PRs".to_string(),
@@ -629,6 +656,10 @@ mod tests {
             }
             .type_tag(),
             "event"
+        );
+        assert_eq!(
+            Trigger::MessageCount { every_messages: 1 }.type_tag(),
+            "message_count"
         );
         assert_eq!(
             Trigger::Webhook {

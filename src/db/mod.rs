@@ -319,6 +319,7 @@ pub trait RoutineStore: Send + Sync {
     async fn list_routines(&self, user_id: &str) -> Result<Vec<Routine>, DatabaseError>;
     async fn list_all_routines(&self) -> Result<Vec<Routine>, DatabaseError>;
     async fn list_event_routines(&self) -> Result<Vec<Routine>, DatabaseError>;
+    async fn list_message_count_routines(&self) -> Result<Vec<Routine>, DatabaseError>;
     async fn list_due_cron_routines(&self) -> Result<Vec<Routine>, DatabaseError>;
     async fn update_routine(&self, routine: &Routine) -> Result<(), DatabaseError>;
     async fn update_routine_runtime(

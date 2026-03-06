@@ -161,6 +161,70 @@ impl RoutineEngine {
         fired
     }
 
+    /// Check inbound-message-count triggers. Returns number of routines fired.
+    pub async fn check_message_count_triggers(&self, message: &IncomingMessage) -> usize {
+        let routines = match self.store.list_message_count_routines().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Failed to load message_count routines: {}", e);
+                return 0;
+            }
+        };
+
+        let mut fired = 0;
+
+        for mut routine in routines {
+            let Trigger::MessageCount { every_messages } = routine.trigger else {
+                continue;
+            };
+
+            if routine.user_id != message.user_id {
+                continue;
+            }
+
+            let mut count = routine
+                .state
+                .get("message_count_since_last_run")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            count += 1;
+
+            if count < every_messages {
+                routine.state["message_count_since_last_run"] = serde_json::json!(count);
+                if let Err(e) = self.store.update_routine(&routine).await {
+                    tracing::error!(routine = %routine.name, "Failed to persist message-count state: {}", e);
+                }
+                continue;
+            }
+
+            if !self.check_cooldown(&routine)
+                || !self.check_concurrent(&routine).await
+                || self.running_count.load(Ordering::Relaxed) >= self.config.max_concurrent_routines
+            {
+                routine.state["message_count_since_last_run"] = serde_json::json!(count);
+                if let Err(e) = self.store.update_routine(&routine).await {
+                    tracing::error!(routine = %routine.name, "Failed to persist deferred message-count state: {}", e);
+                }
+                continue;
+            }
+
+            routine.state["message_count_since_last_run"] = serde_json::json!(0);
+            if let Err(e) = self.store.update_routine(&routine).await {
+                tracing::error!(routine = %routine.name, "Failed to reset message-count state before firing: {}", e);
+                continue;
+            }
+
+            self.spawn_fire(
+                routine,
+                "message_count",
+                Some(format!("{} messages", every_messages)),
+            );
+            fired += 1;
+        }
+
+        fired
+    }
+
     /// Check all due cron routines and fire them. Called by the cron ticker.
     pub async fn check_cron_triggers(&self) {
         let routines = match self.store.list_due_cron_routines().await {
@@ -321,8 +385,6 @@ impl RoutineEngine {
         &self,
         spec: &BuiltinObservationSpec<'_>,
     ) -> Result<(), RoutineError> {
-        next_cron_fire(&spec.schedule)?;
-
         let action = RoutineAction::SessionObservation {
             prompt: spec.prompt.to_string(),
             ledger_kind: spec.ledger_kind.to_string(),
@@ -340,10 +402,10 @@ impl RoutineEngine {
             on_success: false,
         };
 
-        let trigger = Trigger::Cron {
-            schedule: spec.schedule.to_string(),
+        let trigger = Trigger::MessageCount {
+            every_messages: spec.every_messages,
         };
-        let next_fire_at = next_cron_fire(spec.schedule)?;
+        let next_fire_at = None;
 
         if let Some(mut routine) = self
             .store
@@ -364,6 +426,7 @@ impl RoutineEngine {
             routine.state = serde_json::json!({
                 "managed_by": "builtin_observation_routines",
                 "ledger_kind": spec.ledger_kind,
+                "message_count_since_last_run": 0,
             });
 
             self.store
@@ -395,6 +458,7 @@ impl RoutineEngine {
                 state: serde_json::json!({
                     "managed_by": "builtin_observation_routines",
                     "ledger_kind": spec.ledger_kind,
+                    "message_count_since_last_run": 0,
                 }),
                 created_at: now,
                 updated_at: now,
@@ -917,7 +981,7 @@ struct BuiltinObservationSpec<'a> {
     name: &'a str,
     description: &'a str,
     user_id: &'a str,
-    schedule: &'a str,
+    every_messages: u64,
     prompt: &'a str,
     ledger_kind: &'a str,
     recent_ledger_events: i64,
@@ -934,7 +998,7 @@ fn builtin_observation_specs(
             name: "observation.tension",
             description: "Invariant maintenance loop that scans recent evidence for tensions or contradictions.",
             user_id: &cfg.user_id,
-            schedule: &cfg.tension_schedule,
+            every_messages: cfg.tension_every_messages,
             prompt: "You are performing invariant maintenance.\n\nInputs:\n- recent ledger events\n- active invariants\n\nTask:\nIdentify tensions or contradictions between events and invariants.\n\nIf you find one:\n- describe it\n- cite evidence\n- suggest whether the invariant may be conditional, outdated, or incomplete.\n\nDo not modify invariants directly.\nOnly report observations.",
             ledger_kind: "observation.tension",
             recent_ledger_events: cfg.recent_ledger_events,
@@ -946,7 +1010,7 @@ fn builtin_observation_specs(
             name: "observation.pattern",
             description: "Pattern scout loop that scans recent experience for repeated behaviors and correlations.",
             user_id: &cfg.user_id,
-            schedule: &cfg.pattern_schedule,
+            every_messages: cfg.pattern_every_messages,
             prompt: "You are scanning recent experience for repeated patterns.\n\nInputs:\n- recent ledger events\n\nTask:\nIdentify repeated behaviors or correlations that might deserve an invariant.\n\nFor each pattern:\n- describe pattern\n- cite events\n- estimate confidence",
             ledger_kind: "observation.pattern",
             recent_ledger_events: cfg.recent_ledger_events,
@@ -958,7 +1022,7 @@ fn builtin_observation_specs(
             name: "observation.hypothesis",
             description: "Hypothesis loop that turns unresolved patterns or tensions into small reasoning experiments.",
             user_id: &cfg.user_id,
-            schedule: &cfg.hypothesis_schedule,
+            every_messages: cfg.hypothesis_every_messages,
             prompt: "You are evaluating hypotheses about behavior patterns.\n\nInputs:\n- unresolved patterns or tensions\n\nTask:\nDesign a small reasoning experiment or observation to test the pattern.\n\nReport the hypothesis and expected signal.",
             ledger_kind: "observation.hypothesis",
             recent_ledger_events: 0,

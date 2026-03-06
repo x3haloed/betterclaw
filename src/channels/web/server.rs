@@ -1947,6 +1947,10 @@ fn routine_to_info(r: &crate::agent::routine::Routine) -> RoutineInfo {
         crate::agent::routine::Trigger::Cron { schedule } => {
             ("cron".to_string(), format!("cron: {}", schedule))
         }
+        crate::agent::routine::Trigger::MessageCount { every_messages } => (
+            "message_count".to_string(),
+            format!("every {} messages", every_messages),
+        ),
         crate::agent::routine::Trigger::Event {
             pattern, channel, ..
         } => {

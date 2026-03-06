@@ -800,11 +800,12 @@ impl Agent {
                 }
             }
 
-            // Check event triggers (cheap in-memory regex, fires async if matched)
+            // Check routine triggers that depend on inbound messages.
             if let Some(ref engine) = routine_engine_for_loop {
-                let fired = engine.check_event_triggers(&message).await;
+                let fired = engine.check_event_triggers(&message).await
+                    + engine.check_message_count_triggers(&message).await;
                 if fired > 0 {
-                    tracing::debug!("Fired {} event-triggered routines", fired);
+                    tracing::debug!("Fired {} message-triggered routines", fired);
                 }
             }
         }

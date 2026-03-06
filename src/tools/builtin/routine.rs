@@ -137,6 +137,17 @@ impl Tool for RoutineCreateTool {
                     schedule: schedule.to_string(),
                 }
             }
+            "message_count" => {
+                let every_messages = params
+                    .get("every_messages")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| {
+                        ToolError::InvalidParameters(
+                            "every_messages is required for message_count triggers".to_string(),
+                        )
+                    })?;
+                Trigger::MessageCount { every_messages }
+            }
             "event" => {
                 let pattern = params
                     .get("event_pattern")
@@ -442,6 +453,11 @@ impl Tool for RoutineUpdateTool {
                 schedule: schedule.to_string(),
             };
             routine.next_fire_at = next_cron_fire(schedule).unwrap_or(None);
+        }
+
+        if let Some(every_messages) = params.get("every_messages").and_then(|v| v.as_u64()) {
+            routine.trigger = Trigger::MessageCount { every_messages };
+            routine.next_fire_at = None;
         }
 
         self.store

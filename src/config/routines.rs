@@ -5,9 +5,9 @@ use crate::error::ConfigError;
 pub struct ObservationRoutineConfig {
     pub enabled: bool,
     pub user_id: String,
-    pub tension_schedule: String,
-    pub pattern_schedule: String,
-    pub hypothesis_schedule: String,
+    pub tension_every_messages: u64,
+    pub pattern_every_messages: u64,
+    pub hypothesis_every_messages: u64,
     pub recent_ledger_events: i64,
     pub active_invariants: i64,
     pub unresolved_observations: i64,
@@ -19,9 +19,9 @@ impl Default for ObservationRoutineConfig {
         Self {
             enabled: true,
             user_id: "default".to_string(),
-            tension_schedule: "0 */30 * * * *".to_string(),
-            pattern_schedule: "0 0 */2 * * *".to_string(),
-            hypothesis_schedule: "0 0 */6 * * *".to_string(),
+            tension_every_messages: 6,
+            pattern_every_messages: 24,
+            hypothesis_every_messages: 72,
             recent_ledger_events: 12,
             active_invariants: 24,
             unresolved_observations: 12,
@@ -72,12 +72,18 @@ impl RoutineConfig {
                 enabled: parse_bool_env("OBSERVATION_ROUTINES_ENABLED", true)?,
                 user_id: std::env::var("OBSERVATION_ROUTINES_USER_ID")
                     .unwrap_or_else(|_| "default".to_string()),
-                tension_schedule: std::env::var("OBSERVATION_TENSION_SCHEDULE")
-                    .unwrap_or_else(|_| "0 */30 * * * *".to_string()),
-                pattern_schedule: std::env::var("OBSERVATION_PATTERN_SCHEDULE")
-                    .unwrap_or_else(|_| "0 0 */2 * * *".to_string()),
-                hypothesis_schedule: std::env::var("OBSERVATION_HYPOTHESIS_SCHEDULE")
-                    .unwrap_or_else(|_| "0 0 */6 * * *".to_string()),
+                tension_every_messages: parse_optional_env(
+                    "OBSERVATION_TENSION_EVERY_MESSAGES",
+                    6,
+                )?,
+                pattern_every_messages: parse_optional_env(
+                    "OBSERVATION_PATTERN_EVERY_MESSAGES",
+                    24,
+                )?,
+                hypothesis_every_messages: parse_optional_env(
+                    "OBSERVATION_HYPOTHESIS_EVERY_MESSAGES",
+                    72,
+                )?,
                 recent_ledger_events: parse_optional_env("OBSERVATION_RECENT_LEDGER_EVENTS", 12)?,
                 active_invariants: parse_optional_env("OBSERVATION_ACTIVE_INVARIANTS", 24)?,
                 unresolved_observations: parse_optional_env(

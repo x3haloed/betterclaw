@@ -1025,6 +1025,25 @@ impl DiscordChannel {
                     } else {
                         String::new()
                     };
+                    let image_urls: Vec<String> = d
+                         .get("attachments")
+                        .and_then(|a| a.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|att| {
+                                    let ct = att.get("content_type").and_then(|v| v.as_str()).unwrap_or("");
+                                    let name = att.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+                                    let url = att.get("url").and_then(|v| v.as_str())?;
+                                    if Self::is_image_attachment(ct, name, url) {
+                                        Some(url.to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_else(|| Vec::new());
+                    
 
                     let mut final_content = if attachment_text.is_empty() {
                         clean_content
@@ -1073,6 +1092,9 @@ impl DiscordChannel {
                     // The Discord sender is tracked separately in metadata + allowlists.
                     let mut msg = IncomingMessage::new("discord", &self.state.config.user_id, final_content)
                         .with_metadata(metadata);
+                    if !image_urls.is_empty() {
+                        msg.images = image_urls;
+                    }
                     msg.thread_id = Some(channel_id.to_string());
                     if let Some(name) = user_name {
                         msg.user_name = Some(name);

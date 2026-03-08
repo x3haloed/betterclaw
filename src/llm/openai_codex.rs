@@ -218,7 +218,10 @@ enum CodexInputItem {
 struct CodexMessageContent {
     #[serde(rename = "type")]
     kind: &'static str,
-    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -260,12 +263,23 @@ fn convert_messages_to_codex_items(
                         Role::Assistant => "output_text",
                         Role::System | Role::Tool => "input_text",
                     };
+                    let mut content = vec![CodexMessageContent {
+                        kind: content_kind,
+                        text: Some(msg.content.clone()),
+                        image_url: None,
+                    }];
+                    if msg.role == Role::User {
+                        for image_url in &msg.images {
+                            content.push(CodexMessageContent {
+                                kind: "input_image",
+                                text: None,
+                                image_url: Some(image_url.clone()),
+                            });
+                        }
+                    }
                     items.push(CodexInputItem::Message {
                         role: role.to_string(),
-                        content: vec![CodexMessageContent {
-                            kind: content_kind,
-                            text: msg.content.clone(),
-                        }],
+                        content,
                     });
                 }
                 if let Some(tool_calls) = msg.tool_calls.as_ref() {
@@ -296,7 +310,8 @@ fn convert_messages_to_codex_items(
             role: "user".to_string(),
             content: vec![CodexMessageContent {
                 kind: "input_text",
-                text: "Hello".to_string(),
+                text: Some("Hello".to_string()),
+                image_url: None,
             }],
         });
     }

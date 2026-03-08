@@ -519,6 +519,16 @@ mod tests {
 
         let messages = thread.messages();
         assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, crate::llm::Role::User);
+        assert_eq!(messages[0].content, "First message");
+        assert!(messages[0].images.is_empty());
+        assert_eq!(messages[1].role, crate::llm::Role::Assistant);
+        assert_eq!(messages[1].content, "First response");
+        assert_eq!(messages[2].role, crate::llm::Role::User);
+        assert_eq!(messages[2].content, "Second message");
+        assert!(messages[2].images.is_empty());
+        assert_eq!(messages[3].role, crate::llm::Role::Assistant);
+        assert_eq!(messages[3].content, "Second response");
     }
 
     #[test]

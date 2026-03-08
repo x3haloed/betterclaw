@@ -25,6 +25,11 @@ use crate::tools::builtin::convert_html_to_markdown;
 /// HTTP wrapper uses the same limit for consistency.
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
 
+/// Browser-like User-Agent to avoid CDN/WAF blocks against reqwest defaults.
+pub(crate) const DEFAULT_BROWSER_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 /// Tool for making HTTP requests.
 pub struct HttpTool {
     client: Client,
@@ -38,6 +43,7 @@ impl HttpTool {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
+            .user_agent(DEFAULT_BROWSER_USER_AGENT)
             .build()
             .expect("Failed to create HTTP client");
 
@@ -466,12 +472,28 @@ impl Tool for HttpTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::USER_AGENT;
 
     #[test]
     fn test_http_tool_schema_headers_is_array() {
         let tool = HttpTool::new();
         let schema = tool.parameters_schema();
         assert_eq!(schema["properties"]["headers"]["type"], "array");
+    }
+
+    #[test]
+    fn test_http_tool_client_sets_default_user_agent() {
+        let tool = HttpTool::new();
+        let request = tool
+            .client
+            .get("https://example.com")
+            .build()
+            .expect("request should build");
+
+        assert_eq!(
+            request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
+            Some(DEFAULT_BROWSER_USER_AGENT)
+        );
     }
 
     #[test]

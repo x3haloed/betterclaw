@@ -23,6 +23,12 @@ pub struct IncomingMessage {
     pub user_name: Option<String>,
     /// Message content.
     pub content: String,
+    /// Image attachments (absolute URLs) associated with this message.
+    ///
+    /// Populated by channels that support images (e.g., Discord).
+    /// Providers without image support will ignore this and fall back to
+    /// the textual  (which may include an attachments preview).
+    pub images: Vec<String>,
     /// Thread/conversation ID for threaded conversations.
     pub thread_id: Option<String>,
     /// When the message was received.
@@ -44,6 +50,7 @@ impl IncomingMessage {
             user_id: user_id.into(),
             user_name: None,
             content: content.into(),
+            images: Vec::new(),
             thread_id: None,
             received_at: Utc::now(),
             metadata: serde_json::Value::Null,

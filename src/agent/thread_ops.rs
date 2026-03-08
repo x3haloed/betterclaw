@@ -255,7 +255,9 @@ impl Agent {
             );
         }
 
-        // Start the turn and get messages
+        // Start the turn and get messages. Preserve inbound image attachments so
+        // multimodal-capable providers (e.g. Codex Responses API) receive them
+        // on the current user turn.
         let turn_messages = {
             let mut sess = session.lock().await;
             let thread = sess
@@ -263,7 +265,14 @@ impl Agent {
                 .get_mut(&thread_id)
                 .ok_or_else(|| Error::from(crate::error::JobError::NotFound { id: thread_id }))?;
             thread.start_turn(content);
-            thread.messages()
+            let mut messages = thread.messages();
+            if !message.images.is_empty()
+                && let Some(last) = messages.last_mut()
+                && last.role == crate::llm::Role::User
+            {
+                last.images = message.images.clone();
+            }
+            messages
         };
 
         // Persist user message to DB immediately so it survives crashes

@@ -22,7 +22,7 @@ use reqwest::Client;
 
 use crate::context::JobContext;
 use crate::safety::LeakDetector;
-use crate::tools::builtin::http::validate_url;
+use crate::tools::builtin::http::{DEFAULT_BROWSER_USER_AGENT, validate_url};
 use crate::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput, ToolRateLimitConfig};
 
 #[cfg(feature = "html-to-markdown")]
@@ -33,10 +33,6 @@ const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
 
 /// Maximum number of redirects to follow before giving up.
 const MAX_REDIRECTS: usize = 3;
-
-/// Chrome-like User-Agent — many sites block default `reqwest` strings.
-const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-    AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 /// Extract the `<title>` text from raw HTML without a full DOM parser.
 ///
@@ -69,7 +65,7 @@ impl WebFetchTool {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(USER_AGENT)
+            .user_agent(DEFAULT_BROWSER_USER_AGENT)
             .build()
             .expect("Failed to create HTTP client for web_fetch");
 

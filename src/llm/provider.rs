@@ -21,6 +21,11 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
+    /// Image URLs associated with this message (user role only currently used).
+    /// Providers without image support will ignore these; callers should also
+    /// include a readable fallback when possible.
+    #[serde(default)]
+    pub images: Vec<String>,
     /// Tool call ID if this is a tool result message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -39,6 +44,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             content: content.into(),
+            images: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -50,6 +56,7 @@ impl ChatMessage {
         Self {
             role: Role::User,
             content: content.into(),
+            images: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -61,6 +68,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.into(),
+            images: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -75,6 +83,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.unwrap_or_default(),
+            images: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: if tool_calls.is_empty() {
@@ -94,6 +103,7 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: content.into(),
+            images: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: Some(name.into()),
             tool_calls: None,

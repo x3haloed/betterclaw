@@ -8,13 +8,15 @@ use serde::{Deserialize, Serialize};
 use crate::error::LlmError;
 
 use crate::llm::{
-    ChatMessage, CompletionRequest, LlmProvider, ToolCall, ToolCompletionRequest, ToolDefinition,
+    ChatMessage, CompletionRequest, FinishReason, LlmProvider, ToolCall, ToolCompletionRequest,
+    ToolDefinition,
 };
 use crate::safety::SafetyLayer;
 
 /// Token the agent returns when it has nothing to say (e.g. in group chats).
 /// The dispatcher should check for this and suppress the message.
 pub const SILENT_REPLY_TOKEN: &str = "NO_REPLY";
+const GENERIC_FALLBACK_TEXT: &str = "I'm not sure how to respond to that.";
 
 /// Check if a response is a silent reply (the agent has nothing to say).
 ///
@@ -554,9 +556,8 @@ Respond in JSON format:
                 });
             }
 
-            let content = response
-                .content
-                .unwrap_or_else(|| "I'm not sure how to respond to that.".to_string());
+            let raw_content = response.content.as_deref();
+            let content = raw_content.unwrap_or(GENERIC_FALLBACK_TEXT).to_string();
 
             // Some models (e.g. GLM-4.7) emit tool calls as XML tags in content
             // instead of using the structured tool_calls field. Try to recover
@@ -584,21 +585,18 @@ Respond in JSON format:
             // null — the .or(reasoning_content) fallback picks it up, then
             // clean_response strips the think tags leaving an empty string.
             let cleaned = clean_response(&content);
+            let recovered_count = recovered.len();
             let final_text = if cleaned.trim().is_empty() {
-                if QUICK_TAG_RE.is_match(&content) {
-                    tracing::debug!(
-                        llm_request_id = %llm_request_id,
-                        "LLM response contained only internal tagged reasoning; using fallback (original len={})",
-                        content.len()
-                    );
-                } else {
-                    tracing::warn!(
-                        llm_request_id = %llm_request_id,
-                        "LLM response was empty after cleaning (original len={}), using fallback",
-                        content.len()
-                    );
-                }
-                "I'm not sure how to respond to that.".to_string()
+                log_fallback_decision(
+                    llm_request_id,
+                    "tools",
+                    raw_content,
+                    &cleaned,
+                    Some(response.finish_reason),
+                    response.tool_calls.len(),
+                    recovered_count,
+                );
+                GENERIC_FALLBACK_TEXT.to_string()
             } else {
                 cleaned
             };
@@ -630,22 +628,19 @@ Respond in JSON format:
                 output_tokens = response.output_tokens,
                 "LLM request end (text)"
             );
-            let cleaned = clean_response(&response.content);
+            let raw_content = response.content.as_str();
+            let cleaned = clean_response(raw_content);
             let final_text = if cleaned.trim().is_empty() {
-                if QUICK_TAG_RE.is_match(&response.content) {
-                    tracing::debug!(
-                        llm_request_id = %llm_request_id,
-                        "LLM response contained only internal tagged reasoning; using fallback (original len={})",
-                        response.content.len()
-                    );
-                } else {
-                    tracing::warn!(
-                        llm_request_id = %llm_request_id,
-                        "LLM response was empty after cleaning (original len={}), using fallback",
-                        response.content.len()
-                    );
-                }
-                "I'm not sure how to respond to that.".to_string()
+                log_fallback_decision(
+                    llm_request_id,
+                    "text",
+                    Some(raw_content),
+                    &cleaned,
+                    Some(response.finish_reason),
+                    0,
+                    0,
+                );
+                GENERIC_FALLBACK_TEXT.to_string()
             } else {
                 cleaned
             };
@@ -957,6 +952,83 @@ Examples (tool calls use JSON format):\n\
             provider: self.llm.model_name().to_string(),
             reason: format!("Failed to parse evaluation: {}", e),
         })
+    }
+}
+
+fn log_fallback_decision(
+    llm_request_id: uuid::Uuid,
+    mode: &str,
+    raw_content: Option<&str>,
+    cleaned: &str,
+    finish_reason: Option<FinishReason>,
+    structured_tool_calls: usize,
+    recovered_tool_calls: usize,
+) {
+    let reason = classify_fallback_reason(raw_content, cleaned);
+    let raw_preview = raw_content.map(preview_for_log).unwrap_or_else(|| "<none>".to_string());
+    let cleaned_preview = preview_for_log(cleaned);
+    let raw_len = raw_content.map(str::len).unwrap_or(0);
+    let has_reasoning_tags = raw_content.is_some_and(|text| QUICK_TAG_RE.is_match(text));
+    let has_final_tag = raw_content.is_some_and(|text| FINAL_TAG_RE.is_match(text));
+
+    if reason == "reasoning_only_without_final" {
+        tracing::debug!(
+            llm_request_id = %llm_request_id,
+            mode,
+            reason,
+            finish_reason = ?finish_reason,
+            structured_tool_calls,
+            recovered_tool_calls,
+            has_reasoning_tags,
+            has_final_tag,
+            raw_len,
+            cleaned_len = cleaned.len(),
+            raw_preview = %raw_preview,
+            cleaned_preview = %cleaned_preview,
+            "LLM fallback used"
+        );
+    } else {
+        tracing::warn!(
+            llm_request_id = %llm_request_id,
+            mode,
+            reason,
+            finish_reason = ?finish_reason,
+            structured_tool_calls,
+            recovered_tool_calls,
+            has_reasoning_tags,
+            has_final_tag,
+            raw_len,
+            cleaned_len = cleaned.len(),
+            raw_preview = %raw_preview,
+            cleaned_preview = %cleaned_preview,
+            "LLM fallback used"
+        );
+    }
+}
+
+fn classify_fallback_reason(raw_content: Option<&str>, cleaned: &str) -> &'static str {
+    match raw_content {
+        None => "provider_returned_no_content",
+        Some(raw) if raw.trim().is_empty() => "provider_returned_blank_content",
+        Some(raw) if cleaned.trim().is_empty() && QUICK_TAG_RE.is_match(raw) && !FINAL_TAG_RE.is_match(raw) => {
+            "reasoning_only_without_final"
+        }
+        Some(raw) if cleaned.trim().is_empty() && FINAL_TAG_RE.is_match(raw) => "empty_final_content",
+        Some(_) if cleaned.trim().is_empty() => "content_cleaned_to_empty",
+        Some(_) => "fallback_used",
+    }
+}
+
+fn preview_for_log(text: &str) -> String {
+    const MAX_PREVIEW_CHARS: usize = 240;
+
+    let sanitized = text.replace('\n', "\\n");
+    let mut chars = sanitized.chars();
+    let preview: String = chars.by_ref().take(MAX_PREVIEW_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{preview}...[truncated]")
+    } else {
+        preview
     }
 }
 

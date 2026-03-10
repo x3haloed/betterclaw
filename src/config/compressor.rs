@@ -2,9 +2,10 @@ use secrecy::SecretString;
 
 use crate::config::helpers::{optional_env, parse_optional_env};
 use crate::config::llm::{
-    AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig, OpenAiCodexConfig,
-    OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig, default_openai_codex_auth_path,
-    load_openai_codex_credentials, parse_extra_headers,
+    AnthropicDirectConfig, CopilotConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
+    OpenAiCodexConfig, OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
+    default_copilot_api_url, default_openai_codex_auth_path, load_openai_codex_credentials,
+    parse_extra_headers,
 };
 use crate::error::ConfigError;
 use crate::settings::Settings;
@@ -26,6 +27,13 @@ fn has_any_compressor_env() -> Result<bool, ConfigError> {
         || optional_env("COMPRESSOR_LLM_MODEL")?.is_some()
         || optional_env("COMPRESSOR_LLM_API_KEY")?.is_some()
         || optional_env("COMPRESSOR_LLM_EXTRA_HEADERS")?.is_some()
+        || optional_env("COMPRESSOR_COPILOT_TOKEN")?.is_some()
+        || optional_env("COMPRESSOR_COPILOT_INTEGRATION_ID")?.is_some()
+        || optional_env("COMPRESSOR_COPILOT_MODEL")?.is_some()
+        || optional_env("COMPRESSOR_COPILOT_API_URL")?.is_some()
+        || optional_env("COMPRESSOR_COPILOT_SESSION_ID")?.is_some()
+        || optional_env("COMPRESSOR_COPILOT_TRACE_PARENT")?.is_some()
+        || optional_env("COMPRESSOR_COPILOT_EXTRA_HEADERS")?.is_some()
         || optional_env("COMPRESSOR_OPENAI_CODEX_AUTH_PATH")?.is_some()
         || optional_env("COMPRESSOR_OPENAI_CODEX_MODEL")?.is_some()
         || optional_env("COMPRESSOR_OPENAI_CODEX_BASE_URL")?.is_some()
@@ -164,6 +172,50 @@ pub(crate) fn resolve_compressor_llm(
         None
     };
 
+    let copilot = if backend == LlmBackend::Copilot {
+        let access_token = optional_env("COMPRESSOR_COPILOT_TOKEN")?
+            .or(optional_env("COPILOT_TOKEN")?)
+            .or(optional_env("GITHUB_COPILOT_TOKEN")?)
+            .map(SecretString::from)
+            .ok_or_else(|| ConfigError::MissingRequired {
+                key: "COMPRESSOR_COPILOT_TOKEN".to_string(),
+                hint: "Set COMPRESSOR_COPILOT_TOKEN (or COPILOT_TOKEN) when COMPRESSOR_LLM_BACKEND=copilot".to_string(),
+            })?;
+        let integration_id = optional_env("COMPRESSOR_COPILOT_INTEGRATION_ID")?
+            .or(optional_env("COPILOT_INTEGRATION_ID")?)
+            .ok_or_else(|| ConfigError::MissingRequired {
+                key: "COMPRESSOR_COPILOT_INTEGRATION_ID".to_string(),
+                hint: "Set COMPRESSOR_COPILOT_INTEGRATION_ID (or COPILOT_INTEGRATION_ID) when COMPRESSOR_LLM_BACKEND=copilot".to_string(),
+            })?;
+        let base_url = optional_env("COMPRESSOR_COPILOT_API_URL")?
+            .or(optional_env("COPILOT_API_URL")?)
+            .unwrap_or_else(default_copilot_api_url);
+        let model = optional_env("COMPRESSOR_COPILOT_MODEL")?
+            .or(optional_env("COPILOT_MODEL")?)
+            .or(settings.selected_model.clone())
+            .unwrap_or_else(|| "gpt-4o".to_string());
+        let session_id = optional_env("COMPRESSOR_COPILOT_SESSION_ID")?
+            .or(optional_env("COPILOT_SESSION_ID")?);
+        let trace_parent = optional_env("COMPRESSOR_COPILOT_TRACE_PARENT")?
+            .or(optional_env("COPILOT_TRACE_PARENT")?);
+        let extra_headers = optional_env("COMPRESSOR_COPILOT_EXTRA_HEADERS")?
+            .or(optional_env("COPILOT_EXTRA_HEADERS")?)
+            .map(|val| parse_extra_headers(&val))
+            .transpose()?
+            .unwrap_or_default();
+        Some(CopilotConfig {
+            base_url,
+            access_token,
+            integration_id,
+            model,
+            session_id,
+            trace_parent,
+            extra_headers,
+        })
+    } else {
+        None
+    };
+
     let openai_codex = if backend == LlmBackend::OpenAiCodex {
         let auth_file = optional_env("COMPRESSOR_OPENAI_CODEX_AUTH_PATH")?
             .or(optional_env("OPENAI_CODEX_AUTH_PATH")?)
@@ -211,6 +263,7 @@ pub(crate) fn resolve_compressor_llm(
         anthropic,
         ollama,
         openai_compatible,
+        copilot,
         openai_codex,
         tinfoil,
     })

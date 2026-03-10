@@ -5,9 +5,11 @@
 //! - **Anthropic**: Direct API access with your own key
 //! - **Ollama**: Local model inference
 //! - **OpenAI-compatible**: Any endpoint that speaks the OpenAI API
+//! - **GitHub Copilot**: GitHub Copilot chat endpoint via bearer token + integration ID
 //! - **OpenAI Codex**: OpenAI API using Codex auth from ~/.codex/auth.json
 
 pub mod circuit_breaker;
+mod copilot;
 pub mod costs;
 pub mod failover;
 mod openai_codex;
@@ -52,6 +54,7 @@ pub fn create_llm_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, L
         LlmBackend::Anthropic => create_anthropic_provider(config),
         LlmBackend::Ollama => create_ollama_provider(config),
         LlmBackend::OpenAiCompatible => create_openai_compatible_provider(config),
+        LlmBackend::Copilot => create_copilot_provider(config),
         LlmBackend::OpenAiCodex => create_openai_codex_provider(config),
         LlmBackend::Tinfoil => create_tinfoil_provider(config),
     }?;
@@ -106,6 +109,17 @@ fn create_llm_provider_with_model(
                 .clone();
             c.model = model_override.to_string();
             create_openai_compatible_provider_from(&c)
+        }
+        LlmBackend::Copilot => {
+            let mut c = config
+                .copilot
+                .as_ref()
+                .ok_or_else(|| LlmError::AuthFailed {
+                    provider: "copilot".to_string(),
+                })?
+                .clone();
+            c.model = model_override.to_string();
+            create_copilot_provider_from(&c)
         }
         LlmBackend::OpenAiCodex => {
             let mut c = config
@@ -313,8 +327,36 @@ fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmPr
     create_openai_compatible_provider_from(compat)
 }
 
+fn create_copilot_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    let copilot = config.copilot.as_ref().ok_or_else(|| LlmError::AuthFailed {
+        provider: "copilot".to_string(),
+    })?;
+
+    create_copilot_provider_from(copilot)
+}
+
+fn create_copilot_provider_from(
+    copilot: &crate::config::CopilotConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    tracing::info!(
+        "Using GitHub Copilot endpoint (base_url: {}, model: {}, integration_id: {})",
+        copilot.base_url,
+        copilot.model,
+        copilot.integration_id,
+    );
+
+    Ok(Arc::new(copilot::CopilotProvider::new(copilot)?))
+}
+
 fn create_openai_compatible_provider_from(
     compat: &crate::config::OpenAiCompatibleConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    create_openai_compatible_provider_from_impl(compat, "openai_compatible")
+}
+
+fn create_openai_compatible_provider_from_impl(
+    compat: &crate::config::OpenAiCompatibleConfig,
+    provider_name: &str,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
     // Note: OpenRouter is "OpenAI-compatible" at the HTTP level, but its error
     // responses and some edge cases differ enough that rig-core ships a dedicated
@@ -375,7 +417,7 @@ fn create_openai_compatible_provider_from(
             .http_headers(extra_headers)
             .build()
             .map_err(|e| LlmError::RequestFailed {
-                provider: "openai_compatible".to_string(),
+                provider: provider_name.to_string(),
                 reason: format!("Failed to create OpenAI-compatible client: {}", e),
             })?
             .completions_api();

@@ -46,8 +46,8 @@ pub use self::hygiene::HygieneConfig;
 pub use self::ledger_index::LedgerIndexConfig;
 pub use self::ledger_recall::LedgerRecallConfig;
 pub use self::llm::{
-    AnthropicDirectConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig, OpenAiCodexConfig,
-    OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
+    AnthropicDirectConfig, CopilotConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
+    OpenAiCodexConfig, OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
 };
 pub use self::routines::{ObservationRoutineConfig, RoutineConfig};
 pub use self::safety::SafetyConfig;
@@ -239,6 +239,8 @@ pub async fn inject_llm_keys_from_secrets(
         ("llm_openai_api_key", "OPENAI_API_KEY"),
         ("llm_anthropic_api_key", "ANTHROPIC_API_KEY"),
         ("llm_compatible_api_key", "LLM_API_KEY"),
+        ("llm_copilot_token", "COPILOT_TOKEN"),
+        ("llm_copilot_integration_id", "COPILOT_INTEGRATION_ID"),
     ];
 
     let mut injected = HashMap::new();

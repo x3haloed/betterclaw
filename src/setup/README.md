@@ -171,6 +171,7 @@ env-var mode or skipped secrets.
 | NEAR AI Cloud | API key | `llm_nearai_api_key` | `NEARAI_API_KEY` |
 | Anthropic | API key | `anthropic_api_key` | `ANTHROPIC_API_KEY` |
 | OpenAI | API key | `openai_api_key` | `OPENAI_API_KEY` |
+| GitHub Copilot | Bearer token + integration ID | `llm_copilot_token`, `llm_copilot_integration_id` | `COPILOT_TOKEN`, `COPILOT_INTEGRATION_ID` |
 | OpenAI Codex | `~/.codex/auth.json` | - | `OPENAI_CODEX_AUTH_PATH` (optional override) |
 | Ollama | None | - | - |
 | OpenRouter¹ | API key | `llm_compatible_api_key` | `LLM_API_KEY` |
@@ -191,6 +192,12 @@ Switching between them overwrites the same credential slot.
 - Optional override path via `OPENAI_CODEX_AUTH_PATH`
 - Sets `llm_backend = "openai_codex"`
 - Clears `selected_model` so Step 4 can choose a Codex-capable model
+
+**GitHub Copilot** (`setup_copilot`):
+- Prompts for `COPILOT_TOKEN` and `COPILOT_INTEGRATION_ID`
+- Stores both values in the encrypted secrets store when available
+- Uses the default API URL `https://api.githubcopilot.com` unless overridden with env vars outside the wizard
+- Clears `selected_model` so Step 4 can choose the Copilot model name
 
 **API-key providers** (`setup_api_key_provider`):
 1. Check env var → if set, ask to reuse, persist to secrets store
@@ -231,6 +238,8 @@ mutating environment variables.
 3. On timeout or error → use static fallback list
 4. Present list + "Custom model ID" escape hatch
 5. Store in `self.settings.selected_model`
+
+**GitHub Copilot** currently uses manual model entry during Step 4 rather than API-based model discovery.
 
 **Model fetchers pass the cached API key explicitly:**
 ```rust

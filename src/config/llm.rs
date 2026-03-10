@@ -19,6 +19,8 @@ pub enum LlmBackend {
     Ollama,
     /// Any OpenAI-compatible endpoint (e.g. vLLM, LiteLLM, Together)
     OpenAiCompatible,
+    /// GitHub Copilot Chat Completions endpoint
+    Copilot,
     /// OpenAI Codex mode authenticated via ~/.codex/auth.json
     OpenAiCodex,
     /// Tinfoil private inference
@@ -34,10 +36,11 @@ impl std::str::FromStr for LlmBackend {
             "anthropic" | "claude" => Ok(Self::Anthropic),
             "ollama" => Ok(Self::Ollama),
             "openai_compatible" | "openai-compatible" | "compatible" => Ok(Self::OpenAiCompatible),
+            "copilot" | "github_copilot" | "github-copilot" => Ok(Self::Copilot),
             "openai_codex" | "openai-codex" | "codex" => Ok(Self::OpenAiCodex),
             "tinfoil" => Ok(Self::Tinfoil),
             _ => Err(format!(
-                "invalid LLM backend '{}', expected one of: openai, anthropic, ollama, openai_compatible, openai_codex, tinfoil",
+                "invalid LLM backend '{}', expected one of: openai, anthropic, ollama, openai_compatible, copilot, openai_codex, tinfoil",
                 s
             )),
         }
@@ -51,6 +54,7 @@ impl std::fmt::Display for LlmBackend {
             Self::Anthropic => write!(f, "anthropic"),
             Self::Ollama => write!(f, "ollama"),
             Self::OpenAiCompatible => write!(f, "openai_compatible"),
+            Self::Copilot => write!(f, "copilot"),
             Self::OpenAiCodex => write!(f, "openai_codex"),
             Self::Tinfoil => write!(f, "tinfoil"),
         }
@@ -68,6 +72,7 @@ impl LlmBackend {
             Self::Anthropic => "ANTHROPIC_MODEL",
             Self::Ollama => "OLLAMA_MODEL",
             Self::OpenAiCompatible => "LLM_MODEL",
+            Self::Copilot => "COPILOT_MODEL",
             Self::OpenAiCodex => "OPENAI_CODEX_MODEL",
             Self::Tinfoil => "TINFOIL_MODEL",
         }
@@ -110,6 +115,18 @@ pub struct OpenAiCompatibleConfig {
     pub extra_headers: Vec<(String, String)>,
 }
 
+/// Configuration for GitHub Copilot's chat completions endpoint.
+#[derive(Debug, Clone)]
+pub struct CopilotConfig {
+    pub base_url: String,
+    pub access_token: SecretString,
+    pub integration_id: String,
+    pub model: String,
+    pub session_id: Option<String>,
+    pub trace_parent: Option<String>,
+    pub extra_headers: Vec<(String, String)>,
+}
+
 /// Configuration for OpenAI Codex mode authenticated via ~/.codex/auth.json.
 #[derive(Debug, Clone)]
 pub struct OpenAiCodexConfig {
@@ -142,6 +159,8 @@ pub struct LlmConfig {
     pub ollama: Option<OllamaConfig>,
     /// OpenAI-compatible config (populated when backend=openai_compatible)
     pub openai_compatible: Option<OpenAiCompatibleConfig>,
+    /// GitHub Copilot config (populated when backend=copilot)
+    pub copilot: Option<CopilotConfig>,
     /// OpenAI Codex config (populated when backend=openai_codex)
     pub openai_codex: Option<OpenAiCodexConfig>,
     /// Tinfoil config (populated when backend=tinfoil)
@@ -165,6 +184,34 @@ pub(crate) fn default_openai_codex_auth_path() -> String {
         return home.join(".codex").join("auth.json").display().to_string();
     }
     ".codex/auth.json".to_string()
+}
+
+pub(crate) fn default_copilot_api_url() -> String {
+    "https://api.githubcopilot.com".to_string()
+}
+
+pub(crate) fn build_copilot_headers(config: &CopilotConfig) -> Vec<(String, String)> {
+    let mut headers = vec![(
+        "Copilot-Integration-Id".to_string(),
+        config.integration_id.clone(),
+    )];
+
+    if let Some(ref session_id) = config.session_id {
+        headers.push((
+            "X-Copilot-Session-Id".to_string(),
+            session_id.clone(),
+        ));
+    }
+
+    if let Some(ref trace_parent) = config.trace_parent {
+        headers.push((
+            "X-Copilot-Traceparent".to_string(),
+            trace_parent.clone(),
+        ));
+    }
+
+    headers.extend(config.extra_headers.clone());
+    headers
 }
 
 pub(crate) fn load_openai_codex_credentials(
@@ -368,6 +415,43 @@ impl LlmConfig {
             None
         };
 
+        let copilot = if backend == LlmBackend::Copilot {
+            let access_token = optional_env("COPILOT_TOKEN")?
+                .or(optional_env("GITHUB_COPILOT_TOKEN")?)
+                .map(SecretString::from)
+                .ok_or_else(|| ConfigError::MissingRequired {
+                    key: "COPILOT_TOKEN".to_string(),
+                    hint: "Set COPILOT_TOKEN (or GITHUB_COPILOT_TOKEN) when LLM_BACKEND=copilot"
+                        .to_string(),
+                })?;
+            let integration_id = optional_env("COPILOT_INTEGRATION_ID")?.ok_or_else(|| {
+                ConfigError::MissingRequired {
+                    key: "COPILOT_INTEGRATION_ID".to_string(),
+                    hint: "Set COPILOT_INTEGRATION_ID when LLM_BACKEND=copilot"
+                        .to_string(),
+                }
+            })?;
+            let base_url = optional_env("COPILOT_API_URL")?.unwrap_or_else(default_copilot_api_url);
+            let model = Self::resolve_model("COPILOT_MODEL", settings, "gpt-4o")?;
+            let session_id = optional_env("COPILOT_SESSION_ID")?;
+            let trace_parent = optional_env("COPILOT_TRACE_PARENT")?;
+            let extra_headers = optional_env("COPILOT_EXTRA_HEADERS")?
+                .map(|val| parse_extra_headers(&val))
+                .transpose()?
+                .unwrap_or_default();
+            Some(CopilotConfig {
+                base_url,
+                access_token,
+                integration_id,
+                model,
+                session_id,
+                trace_parent,
+                extra_headers,
+            })
+        } else {
+            None
+        };
+
         let openai_codex = if backend == LlmBackend::OpenAiCodex {
             let auth_file = optional_env("OPENAI_CODEX_AUTH_PATH")?
                 .unwrap_or_else(default_openai_codex_auth_path);
@@ -406,6 +490,7 @@ impl LlmConfig {
             anthropic,
             ollama,
             openai_compatible,
+            copilot,
             openai_codex,
             tinfoil,
         })
@@ -468,6 +553,20 @@ mod tests {
             std::env::remove_var("OPENAI_CODEX_AUTH_PATH");
             std::env::remove_var("OPENAI_CODEX_MODEL");
             std::env::remove_var("OPENAI_CODEX_BASE_URL");
+        }
+    }
+
+    fn clear_copilot_env() {
+        unsafe {
+            std::env::remove_var("LLM_BACKEND");
+            std::env::remove_var("COPILOT_TOKEN");
+            std::env::remove_var("GITHUB_COPILOT_TOKEN");
+            std::env::remove_var("COPILOT_INTEGRATION_ID");
+            std::env::remove_var("COPILOT_MODEL");
+            std::env::remove_var("COPILOT_API_URL");
+            std::env::remove_var("COPILOT_SESSION_ID");
+            std::env::remove_var("COPILOT_TRACE_PARENT");
+            std::env::remove_var("COPILOT_EXTRA_HEADERS");
         }
     }
 
@@ -552,6 +651,49 @@ mod tests {
         unsafe {
             std::env::remove_var("OPENAI_CODEX_AUTH_PATH");
         }
+    }
+
+    #[test]
+    fn copilot_uses_env_credentials_and_selected_model() {
+        let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
+        clear_copilot_env();
+
+        unsafe {
+            std::env::set_var("COPILOT_TOKEN", "ghu_copilot_test_token");
+            std::env::set_var("COPILOT_INTEGRATION_ID", "vscode-chat");
+            std::env::set_var(
+                "COPILOT_EXTRA_HEADERS",
+                "X-Interaction-Id:test-interaction",
+            );
+        }
+
+        let settings = Settings {
+            llm_backend: Some("copilot".to_string()),
+            selected_model: Some("gpt-4o".to_string()),
+            ..Default::default()
+        };
+
+        let cfg = LlmConfig::resolve(&settings).expect("resolve should succeed");
+        let copilot = cfg.copilot.expect("copilot config should be present");
+
+        assert_eq!(copilot.base_url, "https://api.githubcopilot.com");
+        assert_eq!(copilot.integration_id, "vscode-chat");
+        assert_eq!(copilot.model, "gpt-4o");
+        assert_eq!(
+            build_copilot_headers(&copilot),
+            vec![
+                (
+                    "Copilot-Integration-Id".to_string(),
+                    "vscode-chat".to_string(),
+                ),
+                (
+                    "X-Interaction-Id".to_string(),
+                    "test-interaction".to_string(),
+                ),
+            ]
+        );
+
+        clear_copilot_env();
     }
 
     #[test]

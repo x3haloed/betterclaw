@@ -11,6 +11,7 @@ configurations.
 | NEAR AI | `nearai` | OAuth (browser) | Default; multi-model |
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | Claude models |
 | OpenAI | `openai` | `OPENAI_API_KEY` | GPT models |
+| GitHub Copilot | `copilot` | `COPILOT_TOKEN` + `COPILOT_INTEGRATION_ID` | Copilot chat endpoint |
 | Ollama | `ollama` | No | Local inference |
 | OpenRouter | `openai_compatible` | `LLM_API_KEY` | 300+ models |
 | Together AI | `openai_compatible` | `LLM_API_KEY` | Fast inference |
@@ -51,6 +52,24 @@ OPENAI_API_KEY=sk-...
 ```
 
 Popular models: `gpt-4o`, `gpt-4o-mini`, `o3-mini`
+
+---
+
+## GitHub Copilot
+
+```env
+LLM_BACKEND=copilot
+COPILOT_TOKEN=ghu_...
+COPILOT_INTEGRATION_ID=vscode-chat
+COPILOT_MODEL=gpt-4o
+# COPILOT_API_URL=https://api.githubcopilot.com   # default
+# COPILOT_SESSION_ID=...                          # optional
+# COPILOT_TRACE_PARENT=...                        # optional
+# COPILOT_EXTRA_HEADERS=X-Interaction-Id:...      # optional
+```
+
+This backend uses GitHub Copilot's chat endpoint with an OpenAI-compatible transport.
+The minimum required inputs are a bearer token and a Copilot integration ID.
 
 ---
 

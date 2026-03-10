@@ -3,7 +3,7 @@
 //! The wizard guides users through:
 //! 1. Database connection
 //! 2. Security (secrets master key)
-//! 3. Inference provider (Anthropic, OpenAI, OpenAI Codex, Ollama, OpenAI-compatible)
+//! 3. Inference provider (Anthropic, OpenAI, GitHub Copilot, OpenAI Codex, Ollama, OpenAI-compatible)
 //! 4. Model selection
 //! 5. Embeddings
 //! 6. Channel configuration
@@ -509,6 +509,7 @@ impl SetupWizard {
                 match current.as_str() {
                     "anthropic" => "Anthropic (Claude)",
                     "openai" => "OpenAI",
+                    "copilot" => "GitHub Copilot",
                     "openai_codex" => "OpenAI Codex",
                     "ollama" => "Ollama (local)",
                     "openai_compatible" => "OpenAI-compatible endpoint",
@@ -520,7 +521,7 @@ impl SetupWizard {
 
             let is_known = matches!(
                 current.as_str(),
-                "anthropic" | "openai" | "openai_codex" | "ollama" | "openai_compatible"
+                "anthropic" | "openai" | "copilot" | "openai_codex" | "ollama" | "openai_compatible"
             );
 
             if is_known && confirm("Keep current provider?", true).map_err(SetupError::Io)? {
@@ -531,6 +532,7 @@ impl SetupWizard {
                 match current.as_str() {
                     "anthropic" => return self.setup_anthropic().await,
                     "openai" => return self.setup_openai().await,
+                    "copilot" => return self.setup_copilot().await,
                     "openai_codex" => return self.setup_openai_codex(),
                     "ollama" => return self.setup_ollama(),
                     "openai_compatible" => return self.setup_openai_compatible().await,
@@ -557,6 +559,7 @@ impl SetupWizard {
         let options = &[
             "Anthropic        - Claude models (direct API key)",
             "OpenAI           - GPT models (direct API key)",
+            "GitHub Copilot   - Copilot chat completions (token + integration ID)",
             "OpenAI Codex     - GPT Codex models (uses ~/.codex/auth.json)",
             "Ollama           - local models, no API key needed",
             "OpenRouter       - 200+ models via single API key",
@@ -568,10 +571,11 @@ impl SetupWizard {
         match choice {
             0 => self.setup_anthropic().await?,
             1 => self.setup_openai().await?,
-            2 => self.setup_openai_codex()?,
-            3 => self.setup_ollama()?,
-            4 => self.setup_openrouter().await?,
-            5 => self.setup_openai_compatible().await?,
+            2 => self.setup_copilot().await?,
+            3 => self.setup_openai_codex()?,
+            4 => self.setup_ollama()?,
+            5 => self.setup_openrouter().await?,
+            6 => self.setup_openai_compatible().await?,
             _ => return Err(SetupError::Config("Invalid provider selection".to_string())),
         }
 
@@ -602,6 +606,75 @@ impl SetupWizard {
             None,
         )
         .await
+    }
+
+    /// GitHub Copilot provider setup: collect token and integration ID.
+    async fn setup_copilot(&mut self) -> Result<(), SetupError> {
+        self.settings.llm_backend = Some("copilot".to_string());
+        if self.settings.selected_model.is_some() {
+            self.settings.selected_model = None;
+        }
+
+        print_info("GitHub Copilot uses a bearer token plus a Copilot integration ID.");
+        print_info("Default API URL: https://api.githubcopilot.com");
+        println!();
+
+        let token = if let Ok(existing) = std::env::var("COPILOT_TOKEN") {
+            print_info(&format!("COPILOT_TOKEN found: {}", mask_api_key(&existing)));
+            if confirm("Use this token?", true).map_err(SetupError::Io)? {
+                SecretString::from(existing)
+            } else {
+                secret_input("Copilot token").map_err(SetupError::Io)?
+            }
+        } else {
+            secret_input("Copilot token").map_err(SetupError::Io)?
+        };
+
+        if token.expose_secret().is_empty() {
+            return Err(SetupError::Config(
+                "Copilot token cannot be empty".to_string(),
+            ));
+        }
+
+        let integration_id = if let Ok(existing) = std::env::var("COPILOT_INTEGRATION_ID") {
+            print_info(&format!("Current integration ID: {}", existing));
+            if confirm("Use this integration ID?", true).map_err(SetupError::Io)? {
+                existing
+            } else {
+                input("Copilot integration ID").map_err(SetupError::Io)?
+            }
+        } else {
+            input("Copilot integration ID").map_err(SetupError::Io)?
+        };
+
+        if integration_id.is_empty() {
+            return Err(SetupError::Config(
+                "Copilot integration ID is required".to_string(),
+            ));
+        }
+
+        if let Ok(ctx) = self.init_secrets_context().await {
+            ctx.save_secret("llm_copilot_token", &token)
+                .await
+                .map_err(|e| SetupError::Config(format!("Failed to save Copilot token: {e}")))?;
+            ctx.save_secret(
+                "llm_copilot_integration_id",
+                &SecretString::from(integration_id.clone()),
+            )
+            .await
+            .map_err(|e| {
+                SetupError::Config(format!("Failed to save Copilot integration ID: {e}"))
+            })?;
+            print_success("Copilot credentials saved");
+        } else {
+            print_info(
+                "Secrets not available. Set COPILOT_TOKEN and COPILOT_INTEGRATION_ID in your environment.",
+            );
+        }
+
+        self.llm_api_key = Some(SecretString::from(token.expose_secret().to_string()));
+        print_success("GitHub Copilot configured");
+        Ok(())
     }
 
     /// OpenAI Codex provider setup: validate ~/.codex/auth.json and use it as auth source.
@@ -826,6 +899,15 @@ impl SetupWizard {
                     .map(|k| k.expose_secret().to_string());
                 let models = fetch_openai_models(cached.as_deref()).await;
                 self.select_from_model_list(&models)?;
+            }
+            "copilot" => {
+                let model_id = input("Copilot model name (e.g., gpt-4o)")
+                    .map_err(SetupError::Io)?;
+                if model_id.is_empty() {
+                    return Err(SetupError::Config("Model name is required".to_string()));
+                }
+                self.settings.selected_model = Some(model_id.clone());
+                print_success(&format!("Selected {}", model_id));
             }
             "openai_codex" => {
                 let models = codex_static_models();
@@ -1656,6 +1738,7 @@ impl SetupWizard {
             let display = match provider.as_str() {
                 "anthropic" => "Anthropic",
                 "openai" => "OpenAI",
+                "copilot" => "GitHub Copilot",
                 "openai_codex" => "OpenAI Codex",
                 "ollama" => "Ollama",
                 "openai_compatible" => "OpenAI-compatible",

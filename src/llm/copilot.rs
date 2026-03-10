@@ -412,15 +412,17 @@ impl From<CopilotChatResponse> for CopilotParsedResponse {
         });
 
         if let Some(choice) = choice {
-            let finish_reason = map_finish_reason(choice.finish_reason.as_deref());
+            let raw_finish_reason = map_finish_reason(choice.finish_reason.as_deref());
             let content = extract_text_content(choice.message.content.as_ref());
             let tool_calls = extract_tool_calls_from_response_message(&choice.message);
-            if finish_reason == FinishReason::ToolUse && tool_calls.is_empty() {
-                tracing::warn!(
-                    message = %truncate_json_for_log(choice.message.content.as_ref()),
-                    "Copilot returned tool-use finish reason but no tool calls were extracted"
-                );
-            }
+            let finish_reason = normalize_finish_reason(raw_finish_reason, &tool_calls, content.as_deref());
+            log_empty_tool_use_mismatch(
+                raw_finish_reason,
+                &tool_calls,
+                content.as_deref(),
+                choice.message.content.as_ref(),
+                false,
+            );
             Self {
                 content,
                 tool_calls,
@@ -452,15 +454,17 @@ fn parse_fallback_response(value: &JsonValue) -> Result<CopilotParsedResponse, S
         .get("message")
         .ok_or_else(|| "choice missing message object".to_string())?;
 
-    let finish_reason = map_finish_reason(choice.get("finish_reason").and_then(JsonValue::as_str));
+    let raw_finish_reason = map_finish_reason(choice.get("finish_reason").and_then(JsonValue::as_str));
     let content = extract_text_content(message.get("content"));
     let tool_calls = extract_tool_calls_from_message_json(message);
-    if finish_reason == FinishReason::ToolUse && tool_calls.is_empty() {
-        tracing::warn!(
-            message = %truncate_json_for_log(Some(message)),
-            "Copilot fallback parser saw tool-use finish reason but no tool calls were extracted"
-        );
-    }
+    let finish_reason = normalize_finish_reason(raw_finish_reason, &tool_calls, content.as_deref());
+    log_empty_tool_use_mismatch(
+        raw_finish_reason,
+        &tool_calls,
+        content.as_deref(),
+        Some(message),
+        true,
+    );
 
     let input_tokens = value
         .get("usage")
@@ -524,6 +528,49 @@ fn map_finish_reason(reason: Option<&str>) -> FinishReason {
         Some("tool_calls") | Some("tool_use") => FinishReason::ToolUse,
         Some("content_filter") => FinishReason::ContentFilter,
         _ => FinishReason::Unknown,
+    }
+}
+
+fn normalize_finish_reason(
+    finish_reason: FinishReason,
+    tool_calls: &[ToolCall],
+    content: Option<&str>,
+) -> FinishReason {
+    if finish_reason == FinishReason::ToolUse && tool_calls.is_empty() {
+        if content.is_some_and(|text| !text.trim().is_empty()) {
+            FinishReason::Stop
+        } else {
+            FinishReason::Unknown
+        }
+    } else {
+        finish_reason
+    }
+}
+
+fn log_empty_tool_use_mismatch(
+    finish_reason: FinishReason,
+    tool_calls: &[ToolCall],
+    content: Option<&str>,
+    raw_message: Option<&JsonValue>,
+    fallback: bool,
+) {
+    if finish_reason != FinishReason::ToolUse || !tool_calls.is_empty() {
+        return;
+    }
+
+    let parser = if fallback { "fallback" } else { "primary" };
+    if content.is_some_and(|text| !text.trim().is_empty()) {
+        tracing::debug!(
+            parser,
+            message = %truncate_json_for_log(raw_message),
+            "Copilot reported tool use without structured calls; treating response as text"
+        );
+    } else {
+        tracing::warn!(
+            parser,
+            message = %truncate_json_for_log(raw_message),
+            "Copilot returned tool-use finish reason but no tool calls were extracted"
+        );
     }
 }
 
@@ -754,5 +801,23 @@ mod tests {
         assert_eq!(parsed.tool_calls[0].name, "memory_search");
         assert_eq!(parsed.tool_calls[0].arguments, serde_json::json!({"query": "recent notes"}));
         assert_eq!(parsed.finish_reason, FinishReason::ToolUse);
+    }
+
+    #[test]
+    fn downgrades_empty_tool_use_without_calls_to_text_finish() {
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "tool_use",
+                "message": {
+                    "role": "assistant",
+                    "content": "<think>Need a tool but did not emit one.</think>"
+                }
+            }],
+            "usage": { "prompt_tokens": 90, "completion_tokens": 12 }
+        });
+
+        let parsed = parse_fallback_response(&body).expect("fallback parse should succeed");
+        assert!(parsed.tool_calls.is_empty());
+        assert_eq!(parsed.finish_reason, FinishReason::Stop);
     }
 }

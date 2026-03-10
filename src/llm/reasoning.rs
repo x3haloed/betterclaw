@@ -585,11 +585,19 @@ Respond in JSON format:
             // clean_response strips the think tags leaving an empty string.
             let cleaned = clean_response(&content);
             let final_text = if cleaned.trim().is_empty() {
-                tracing::warn!(
-                    llm_request_id = %llm_request_id,
-                    "LLM response was empty after cleaning (original len={}), using fallback",
-                    content.len()
-                );
+                if QUICK_TAG_RE.is_match(&content) {
+                    tracing::debug!(
+                        llm_request_id = %llm_request_id,
+                        "LLM response contained only internal tagged reasoning; using fallback (original len={})",
+                        content.len()
+                    );
+                } else {
+                    tracing::warn!(
+                        llm_request_id = %llm_request_id,
+                        "LLM response was empty after cleaning (original len={}), using fallback",
+                        content.len()
+                    );
+                }
                 "I'm not sure how to respond to that.".to_string()
             } else {
                 cleaned
@@ -624,11 +632,19 @@ Respond in JSON format:
             );
             let cleaned = clean_response(&response.content);
             let final_text = if cleaned.trim().is_empty() {
-                tracing::warn!(
-                    llm_request_id = %llm_request_id,
-                    "LLM response was empty after cleaning (original len={}), using fallback",
-                    response.content.len()
-                );
+                if QUICK_TAG_RE.is_match(&response.content) {
+                    tracing::debug!(
+                        llm_request_id = %llm_request_id,
+                        "LLM response contained only internal tagged reasoning; using fallback (original len={})",
+                        response.content.len()
+                    );
+                } else {
+                    tracing::warn!(
+                        llm_request_id = %llm_request_id,
+                        "LLM response was empty after cleaning (original len={}), using fallback",
+                        response.content.len()
+                    );
+                }
                 "I'm not sure how to respond to that.".to_string()
             } else {
                 cleaned

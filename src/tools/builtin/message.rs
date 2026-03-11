@@ -141,6 +141,7 @@ impl Tool for MessageTool {
         };
 
         let attachments: Vec<String> = match params.get("attachments") {
+            Some(v) if v.is_null() => Vec::new(),
             Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
                 ToolError::ExecutionFailed(format!("Invalid attachments format: {}", e))
             })?,
@@ -489,6 +490,32 @@ mod tests {
         assert!(
             err.contains("not found") || err.contains("Failed") || err.contains("broadcast"),
             "Expected channel error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn message_tool_treats_null_attachments_as_empty() {
+        let tool = MessageTool::new(Arc::new(ChannelManager::new()));
+        tool.set_context(Some("signal".to_string()), Some("+1234567890".to_string()))
+            .await;
+
+        let ctx = crate::context::JobContext::new("test", "test description");
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "content": "hello",
+                    "attachments": null
+                }),
+                &ctx,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            !err.contains("Invalid attachments format"),
+            "null attachments should be treated as empty, got: {}",
             err
         );
     }

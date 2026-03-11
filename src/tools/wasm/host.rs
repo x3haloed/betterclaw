@@ -380,7 +380,7 @@ fn validate_workspace_path(path: &str) -> Result<(), WasmError> {
     Ok(())
 }
 
-fn is_local_http_url(url: &str) -> bool {
+pub(crate) fn is_local_http_url(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url) else {
         return false;
     };

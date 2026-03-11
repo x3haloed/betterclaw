@@ -1018,6 +1018,10 @@ fn extract_host_from_url(url: &str) -> Option<String> {
 /// This prevents DNS rebinding attacks where an attacker's domain resolves to an
 /// internal IP after passing the allowlist check.
 fn reject_private_ip(url: &str) -> Result<(), String> {
+    if super::host::is_local_http_url(url) {
+        return Ok(());
+    }
+
     let parsed = url::Url::parse(url).map_err(|e| format!("Failed to parse URL: {e}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("Unsupported URL scheme: {}", parsed.scheme()));

@@ -236,6 +236,10 @@ impl EndpointPattern {
             return true;
         }
 
+        if ipv4_prefix_matches(&self.host, url_host) {
+            return true;
+        }
+
         // Support wildcard: *.example.com matches sub.example.com
         if let Some(suffix) = self.host.strip_prefix("*.")
             && url_host.ends_with(suffix)
@@ -250,6 +254,29 @@ impl EndpointPattern {
 
         false
     }
+}
+
+fn ipv4_prefix_matches(pattern: &str, host: &str) -> bool {
+    let Some(prefix) = pattern.strip_suffix(".*") else {
+        return false;
+    };
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return false;
+    }
+    if !host.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return false;
+    }
+
+    let prefix_parts: Vec<_> = prefix.split('.').collect();
+    let host_parts: Vec<_> = host.split('.').collect();
+    if prefix_parts.is_empty() || prefix_parts.len() >= 4 || host_parts.len() != 4 {
+        return false;
+    }
+
+    prefix_parts
+        .iter()
+        .zip(host_parts.iter())
+        .all(|(left, right)| !left.is_empty() && left == right)
 }
 
 /// Tool invocation capability.
@@ -337,6 +364,16 @@ mod tests {
         assert!(pattern.matches("sub.api.example.com", "/", "GET"));
         assert!(!pattern.matches("example.com", "/", "GET"));
         assert!(!pattern.matches("notexample.com", "/", "GET"));
+    }
+
+    #[test]
+    fn test_endpoint_pattern_ipv4_prefix_host() {
+        let pattern = EndpointPattern::host("192.168.128.*");
+
+        assert!(pattern.matches("192.168.128.60", "/", "GET"));
+        assert!(pattern.matches("192.168.128.1", "/", "GET"));
+        assert!(!pattern.matches("192.168.129.60", "/", "GET"));
+        assert!(!pattern.matches("192.168.128.60.example.com", "/", "GET"));
     }
 
     #[test]

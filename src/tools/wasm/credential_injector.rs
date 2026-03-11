@@ -315,6 +315,10 @@ pub(crate) fn host_matches_pattern(host: &str, pattern: &str) -> bool {
         return true;
     }
 
+    if ipv4_prefix_matches(pattern, host) {
+        return true;
+    }
+
     // Support wildcard: *.example.com matches sub.example.com
     if let Some(suffix) = pattern.strip_prefix("*.")
         && host.ends_with(suffix)
@@ -327,6 +331,29 @@ pub(crate) fn host_matches_pattern(host: &str, pattern: &str) -> bool {
     }
 
     false
+}
+
+fn ipv4_prefix_matches(pattern: &str, host: &str) -> bool {
+    let Some(prefix) = pattern.strip_suffix(".*") else {
+        return false;
+    };
+    if prefix.is_empty() || !prefix.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return false;
+    }
+    if !host.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return false;
+    }
+
+    let prefix_parts: Vec<_> = prefix.split('.').collect();
+    let host_parts: Vec<_> = host.split('.').collect();
+    if prefix_parts.is_empty() || prefix_parts.len() >= 4 || host_parts.len() != 4 {
+        return false;
+    }
+
+    prefix_parts
+        .iter()
+        .zip(host_parts.iter())
+        .all(|(left, right)| !left.is_empty() && left == right)
 }
 
 /// Simple base64 encoding (avoids extra dependency).
@@ -394,6 +421,17 @@ mod tests {
         assert!(host_matches_pattern("api.example.com", "*.example.com"));
         assert!(host_matches_pattern("sub.api.example.com", "*.example.com"));
         assert!(!host_matches_pattern("example.com", "*.example.com"));
+    }
+
+    #[test]
+    fn test_host_matches_ipv4_prefix() {
+        assert!(host_matches_pattern("192.168.128.60", "192.168.128.*"));
+        assert!(host_matches_pattern("192.168.128.1", "192.168.128.*"));
+        assert!(!host_matches_pattern("192.168.129.60", "192.168.128.*"));
+        assert!(!host_matches_pattern(
+            "192.168.128.60.example.com",
+            "192.168.128.*"
+        ));
     }
 
     #[test]

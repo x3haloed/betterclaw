@@ -833,10 +833,13 @@ impl Agent {
                 {
                     match &tool_result {
                         Ok(output) => {
-                            turn.record_tool_result(serde_json::json!(output));
+                            turn.record_tool_result(
+                                Some(&pending.tool_call_id),
+                                serde_json::json!(output),
+                            );
                         }
                         Err(e) => {
-                            turn.record_tool_error(e.to_string());
+                            turn.record_tool_error(Some(&pending.tool_call_id), e.to_string());
                         }
                     }
                 }
@@ -1085,8 +1088,11 @@ impl Agent {
                         && let Some(turn) = thread.last_turn_mut()
                     {
                         match &deferred_result {
-                            Ok(output) => turn.record_tool_result(serde_json::json!(output)),
-                            Err(e) => turn.record_tool_error(e.to_string()),
+                            Ok(output) => turn.record_tool_result(
+                                Some(&tc.id),
+                                serde_json::json!(output),
+                            ),
+                            Err(e) => turn.record_tool_error(Some(&tc.id), e.to_string()),
                         }
                     }
                 }
@@ -1244,6 +1250,18 @@ impl Agent {
             {
                 let mut sess = session.lock().await;
                 if let Some(thread) = sess.threads.get_mut(&thread_id) {
+                    if let Some(turn) = thread.last_turn_mut() {
+                        turn.record_tool_error(
+                            Some(&pending.tool_call_id),
+                            "Permission denied by user approval".to_string(),
+                        );
+                        for deferred in &pending.deferred_tool_calls {
+                            turn.record_tool_error(
+                                Some(&deferred.id),
+                                "Skipped because a prior tool call was rejected".to_string(),
+                            );
+                        }
+                    }
                     thread.clear_pending_approval();
                     thread.complete_turn(&rejection);
                     // User message already persisted at turn start; save rejection response

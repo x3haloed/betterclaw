@@ -357,7 +357,7 @@ impl Agent {
                     // Add the assistant message with tool_calls to context.
                     // OpenAI protocol requires this before tool-result messages.
                     context_messages.push(ChatMessage::assistant_with_tool_calls(
-                        content,
+                        content.clone(),
                         tool_calls.clone(),
                     ));
 
@@ -391,8 +391,13 @@ impl Agent {
                         if let Some(thread) = sess.threads.get_mut(&thread_id)
                             && let Some(turn) = thread.last_turn_mut()
                         {
+                            turn.set_assistant_tool_content(content.clone());
                             for (tc, safe_args) in tool_calls.iter().zip(redacted_args) {
-                                turn.record_tool_call(&tc.name, safe_args);
+                                turn.record_tool_call(
+                                    &tc.name,
+                                    safe_args,
+                                    Some(tc.id.clone()),
+                                );
                             }
                         }
                     }
@@ -816,7 +821,7 @@ impl Agent {
                                     if let Some(thread) = sess.threads.get_mut(&thread_id)
                                         && let Some(turn) = thread.last_turn_mut()
                                     {
-                                        turn.record_tool_error(error_msg.clone());
+                                        turn.record_tool_error(Some(&tc.id), error_msg.clone());
                                     }
                                 }
                                 context_messages
@@ -858,10 +863,13 @@ impl Agent {
                                     {
                                         match &tool_result {
                                             Ok(output) => {
-                                                turn.record_tool_result(serde_json::json!(output));
+                                                turn.record_tool_result(
+                                                    Some(&tc.id),
+                                                    serde_json::json!(output),
+                                                );
                                             }
                                             Err(e) => {
-                                                turn.record_tool_error(e.to_string());
+                                                turn.record_tool_error(Some(&tc.id), e.to_string());
                                             }
                                         }
                                     }

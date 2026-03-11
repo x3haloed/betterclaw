@@ -492,12 +492,7 @@ fn extract_text_content(content: Option<&JsonValue>) -> Option<String> {
         Some(JsonValue::Array(parts)) => {
             let text = parts
                 .iter()
-                .filter_map(|part| {
-                    part.get("text")
-                        .and_then(JsonValue::as_str)
-                        .map(ToOwned::to_owned)
-                        .or_else(|| part.get("content").and_then(JsonValue::as_str).map(ToOwned::to_owned))
-                })
+                .filter_map(extract_text_from_content_part)
                 .collect::<Vec<_>>()
                 .join("");
             if text.is_empty() {
@@ -506,8 +501,35 @@ fn extract_text_content(content: Option<&JsonValue>) -> Option<String> {
                 Some(text)
             }
         }
-        Some(JsonValue::Object(obj)) => obj
-            .get("text")
+        Some(value @ JsonValue::Object(_)) => extract_text_from_content_part(value),
+        _ => None,
+    }
+}
+
+fn extract_text_from_content_part(part: &JsonValue) -> Option<String> {
+    match part {
+        JsonValue::String(text) => Some(text.clone()),
+        JsonValue::Object(obj) => {
+            let part_type = obj.get("type").and_then(JsonValue::as_str);
+            if matches!(part_type, Some("tool_use" | "function_call" | "tool_call")) {
+                return None;
+            }
+
+            obj.get("text")
+                .and_then(string_from_json_value)
+                .or_else(|| obj.get("content").and_then(string_from_json_value))
+                .or_else(|| obj.get("output_text").and_then(string_from_json_value))
+                .or_else(|| obj.get("input_text").and_then(string_from_json_value))
+        }
+        _ => None,
+    }
+}
+
+fn string_from_json_value(value: &JsonValue) -> Option<String> {
+    match value {
+        JsonValue::String(text) => Some(text.clone()),
+        JsonValue::Object(obj) => obj
+            .get("value")
             .and_then(JsonValue::as_str)
             .map(ToOwned::to_owned),
         _ => None,
@@ -536,7 +558,9 @@ fn normalize_finish_reason(
     tool_calls: &[ToolCall],
     content: Option<&str>,
 ) -> FinishReason {
-    if finish_reason == FinishReason::ToolUse && tool_calls.is_empty() {
+    if !tool_calls.is_empty() {
+        FinishReason::ToolUse
+    } else if finish_reason == FinishReason::ToolUse && tool_calls.is_empty() {
         if content.is_some_and(|text| !text.trim().is_empty()) {
             FinishReason::Stop
         } else {
@@ -673,6 +697,7 @@ fn tool_call_from_content_part((idx, part): (usize, &JsonValue)) -> Option<ToolC
         .get("id")
         .and_then(JsonValue::as_str)
         .or_else(|| part.get("tool_use_id").and_then(JsonValue::as_str))
+        .or_else(|| part.get("call_id").and_then(JsonValue::as_str))
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("copilot_tool_call_{idx}"));
 
@@ -800,6 +825,76 @@ mod tests {
         assert_eq!(parsed.tool_calls[0].id, "toolu_01abc");
         assert_eq!(parsed.tool_calls[0].name, "memory_search");
         assert_eq!(parsed.tool_calls[0].arguments, serde_json::json!({"query": "recent notes"}));
+        assert_eq!(parsed.finish_reason, FinishReason::ToolUse);
+    }
+
+    #[test]
+    fn preserves_narration_when_content_also_contains_tool_use() {
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Now I will look through the file."
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_01narrated",
+                            "name": "view",
+                            "input": {
+                                "filePath": "/tmp/example.txt",
+                                "startLine": 1,
+                                "endLine": 20
+                            }
+                        }
+                    ]
+                }
+            }],
+            "usage": { "prompt_tokens": 220, "completion_tokens": 33 }
+        });
+
+        let parsed = parse_fallback_response(&body).expect("fallback parse should succeed");
+        assert_eq!(
+            parsed.content.as_deref(),
+            Some("Now I will look through the file.")
+        );
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].id, "toolu_01narrated");
+        assert_eq!(parsed.tool_calls[0].name, "view");
+        assert_eq!(parsed.finish_reason, FinishReason::ToolUse);
+    }
+
+    #[test]
+    fn preserves_text_when_top_level_tool_calls_are_present() {
+        let body = serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "Now I will look through the file.",
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "view",
+                            "arguments": "{\"filePath\":\"/tmp/example.txt\",\"startLine\":1,\"endLine\":20}"
+                        }
+                    }]
+                }
+            }],
+            "usage": { "prompt_tokens": 180, "completion_tokens": 21 }
+        });
+
+        let parsed = parse_fallback_response(&body).expect("fallback parse should succeed");
+        assert_eq!(
+            parsed.content.as_deref(),
+            Some("Now I will look through the file.")
+        );
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].name, "view");
         assert_eq!(parsed.finish_reason, FinishReason::ToolUse);
     }
 

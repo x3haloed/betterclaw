@@ -304,6 +304,7 @@ impl Thread {
         if let Some(turn) = self.turns.last_mut() {
             turn.interrupt();
         }
+        self.pending_approval = None;
         self.state = ThreadState::Interrupted;
         self.updated_at = Utc::now();
     }
@@ -319,8 +320,50 @@ impl Thread {
     /// Get all messages for context building.
     pub fn messages(&self) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
-        for turn in &self.turns {
+        for (turn_index, turn) in self.turns.iter().enumerate() {
             messages.push(ChatMessage::user(&turn.user_input));
+
+            if !turn.tool_calls.is_empty() {
+                let tool_calls = turn
+                    .tool_calls
+                    .iter()
+                    .enumerate()
+                    .map(|(call_index, call)| ToolCall {
+                        id: call
+                            .tool_call_id
+                            .clone()
+                            .unwrap_or_else(|| format!("turn_{}_tool_{}", turn_index, call_index)),
+                        name: call.name.clone(),
+                        arguments: call.parameters.clone(),
+                    })
+                    .collect();
+                messages.push(ChatMessage::assistant_with_tool_calls(
+                    turn.assistant_tool_content.clone(),
+                    tool_calls,
+                ));
+
+                for (call_index, call) in turn.tool_calls.iter().enumerate() {
+                    let tool_call_id = call
+                        .tool_call_id
+                        .clone()
+                        .unwrap_or_else(|| format!("turn_{}_tool_{}", turn_index, call_index));
+
+                    if let Some(result) = &call.result {
+                        let content = match result {
+                            serde_json::Value::String(text) => text.clone(),
+                            other => other.to_string(),
+                        };
+                        messages.push(ChatMessage::tool_result(&tool_call_id, &call.name, content));
+                    } else if let Some(error) = &call.error {
+                        messages.push(ChatMessage::tool_result(
+                            &tool_call_id,
+                            &call.name,
+                            format!("Error: {}", error),
+                        ));
+                    }
+                }
+            }
+
             if let Some(ref response) = turn.response {
                 messages.push(ChatMessage::assistant(response));
             }
@@ -348,7 +391,6 @@ impl Thread {
         self.turns.clear();
         self.state = ThreadState::Idle;
 
-        // Messages alternate: user, assistant, user, assistant...
         let mut iter = messages.into_iter().peekable();
         let mut turn_number = 0;
 
@@ -356,12 +398,51 @@ impl Thread {
             if msg.role == crate::llm::Role::User {
                 let mut turn = Turn::new(turn_number, &msg.content);
 
-                // Check if next is assistant response
                 if let Some(next) = iter.peek()
                     && next.role == crate::llm::Role::Assistant
                 {
-                    // iter.next() is guaranteed Some after a successful peek()
-                    if let Some(response) = iter.next() {
+                    if next.tool_calls.is_some() {
+                        if let Some(tool_message) = iter.next() {
+                            turn.set_assistant_tool_content(Some(tool_message.content.clone()));
+
+                            for tool_call in tool_message.tool_calls.unwrap_or_default() {
+                                turn.record_tool_call(
+                                    tool_call.name,
+                                    tool_call.arguments,
+                                    Some(tool_call.id),
+                                );
+                            }
+                        }
+
+                        while let Some(tool_msg) = iter.peek() {
+                            if tool_msg.role != crate::llm::Role::Tool {
+                                break;
+                            }
+
+                            if let Some(tool_result_message) = iter.next() {
+                                let tool_call_id = tool_result_message.tool_call_id.clone();
+                                if let Some(stripped) = tool_result_message
+                                    .content
+                                    .strip_prefix("Error: ")
+                                {
+                                    turn.record_tool_error(tool_call_id.as_deref(), stripped.to_string());
+                                } else {
+                                    turn.record_tool_result(
+                                        tool_call_id.as_deref(),
+                                        serde_json::Value::String(tool_result_message.content),
+                                    );
+                                }
+                            }
+                        }
+
+                        if let Some(next) = iter.peek()
+                            && next.role == crate::llm::Role::Assistant
+                            && next.tool_calls.is_none()
+                            && let Some(response) = iter.next()
+                        {
+                            turn.complete(&response.content);
+                        }
+                    } else if let Some(response) = iter.next() {
                         turn.complete(&response.content);
                     }
                 }
@@ -399,6 +480,9 @@ pub struct Turn {
     pub response: Option<String>,
     /// Tool calls made during this turn.
     pub tool_calls: Vec<TurnToolCall>,
+    /// Optional assistant narration that accompanied the tool calls.
+    #[serde(default)]
+    pub assistant_tool_content: Option<String>,
     /// Turn state.
     pub state: TurnState,
     /// When the turn started.
@@ -417,6 +501,7 @@ impl Turn {
             user_input: user_input.into(),
             response: None,
             tool_calls: Vec::new(),
+            assistant_tool_content: None,
             state: TurnState::Processing,
             started_at: Utc::now(),
             completed_at: None,
@@ -442,29 +527,68 @@ impl Turn {
     pub fn interrupt(&mut self) {
         self.state = TurnState::Interrupted;
         self.completed_at = Some(Utc::now());
+        self.complete_pending_tool_calls_as_error("Interrupted");
     }
 
     /// Record a tool call.
-    pub fn record_tool_call(&mut self, name: impl Into<String>, params: serde_json::Value) {
+    pub fn record_tool_call(
+        &mut self,
+        name: impl Into<String>,
+        params: serde_json::Value,
+        tool_call_id: Option<String>,
+    ) {
         self.tool_calls.push(TurnToolCall {
             name: name.into(),
             parameters: params,
+            tool_call_id,
             result: None,
             error: None,
         });
     }
 
+    /// Store assistant narration emitted alongside tool calls.
+    pub fn set_assistant_tool_content(&mut self, content: Option<String>) {
+        self.assistant_tool_content = content.filter(|text| !text.is_empty());
+    }
+
     /// Record tool call result.
-    pub fn record_tool_result(&mut self, result: serde_json::Value) {
-        if let Some(call) = self.tool_calls.last_mut() {
+    pub fn record_tool_result(&mut self, tool_call_id: Option<&str>, result: serde_json::Value) {
+        if let Some(call) = self.find_tool_call_mut(tool_call_id) {
             call.result = Some(result);
+            call.error = None;
         }
     }
 
     /// Record tool call error.
-    pub fn record_tool_error(&mut self, error: impl Into<String>) {
-        if let Some(call) = self.tool_calls.last_mut() {
+    pub fn record_tool_error(&mut self, tool_call_id: Option<&str>, error: impl Into<String>) {
+        if let Some(call) = self.find_tool_call_mut(tool_call_id) {
             call.error = Some(error.into());
+            call.result = None;
+        }
+    }
+
+    fn find_tool_call_mut(&mut self, tool_call_id: Option<&str>) -> Option<&mut TurnToolCall> {
+        let target_idx = if let Some(id) = tool_call_id {
+            self.tool_calls
+                .iter()
+                .position(|call| call.tool_call_id.as_deref() == Some(id))
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.tool_calls
+                .iter()
+                .position(|call| call.result.is_none() && call.error.is_none())
+        });
+
+        target_idx.and_then(|idx| self.tool_calls.get_mut(idx))
+    }
+
+    fn complete_pending_tool_calls_as_error(&mut self, reason: &str) {
+        for call in &mut self.tool_calls {
+            if call.result.is_none() && call.error.is_none() {
+                call.error = Some(reason.to_string());
+            }
         }
     }
 }
@@ -476,6 +600,9 @@ pub struct TurnToolCall {
     pub name: String,
     /// Parameters passed to the tool.
     pub parameters: serde_json::Value,
+    /// Original tool call ID from the LLM, if available.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
     /// Result from the tool (if successful).
     pub result: Option<serde_json::Value>,
     /// Error from the tool (if failed).
@@ -534,11 +661,59 @@ mod tests {
     #[test]
     fn test_turn_tool_calls() {
         let mut turn = Turn::new(0, "Test input");
-        turn.record_tool_call("echo", serde_json::json!({"message": "test"}));
-        turn.record_tool_result(serde_json::json!("test"));
+        turn.record_tool_call(
+            "echo",
+            serde_json::json!({"message": "test"}),
+            Some("call_1".to_string()),
+        );
+        turn.record_tool_result(Some("call_1"), serde_json::json!("test"));
 
         assert_eq!(turn.tool_calls.len(), 1);
         assert!(turn.tool_calls[0].result.is_some());
+        assert_eq!(turn.tool_calls[0].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[test]
+    fn test_turn_tool_results_match_by_id() {
+        let mut turn = Turn::new(0, "Test input");
+        turn.record_tool_call("first", serde_json::json!({}), Some("call_1".to_string()));
+        turn.record_tool_call("second", serde_json::json!({}), Some("call_2".to_string()));
+
+        turn.record_tool_result(Some("call_1"), serde_json::json!("one"));
+        turn.record_tool_error(Some("call_2"), "two failed");
+
+        assert_eq!(turn.tool_calls[0].result, Some(serde_json::json!("one")));
+        assert_eq!(turn.tool_calls[0].error, None);
+        assert_eq!(turn.tool_calls[1].result, None);
+        assert_eq!(turn.tool_calls[1].error.as_deref(), Some("two failed"));
+    }
+
+    #[test]
+    fn test_thread_messages_preserve_tool_turns() {
+        let mut thread = Thread::new(Uuid::new_v4());
+        thread.start_turn("Read a file");
+        {
+            let turn = thread.last_turn_mut().expect("turn");
+            turn.set_assistant_tool_content(Some("Now I will inspect the file.".to_string()));
+            turn.record_tool_call(
+                "view",
+                serde_json::json!({"filePath": "/tmp/example.txt"}),
+                Some("call_view".to_string()),
+            );
+            turn.record_tool_result(Some("call_view"), serde_json::json!("contents"));
+        }
+        thread.complete_turn("The file says contents.");
+
+        let messages = thread.messages();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, crate::llm::Role::User);
+        assert_eq!(messages[1].role, crate::llm::Role::Assistant);
+        assert_eq!(messages[1].content, "Now I will inspect the file.");
+        assert!(messages[1].tool_calls.is_some());
+        assert_eq!(messages[2].role, crate::llm::Role::Tool);
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_view"));
+        assert_eq!(messages[3].role, crate::llm::Role::Assistant);
+        assert_eq!(messages[3].content, "The file says contents.");
     }
 
     #[test]
@@ -568,6 +743,34 @@ mod tests {
     }
 
     #[test]
+    fn test_restore_from_messages_with_tool_turn() {
+        let mut thread = Thread::new(Uuid::new_v4());
+
+        let messages = vec![
+            ChatMessage::user("Inspect the file"),
+            ChatMessage::assistant_with_tool_calls(
+                Some("Now I will inspect the file.".to_string()),
+                vec![ToolCall {
+                    id: "call_view".to_string(),
+                    name: "view".to_string(),
+                    arguments: serde_json::json!({"filePath": "/tmp/example.txt"}),
+                }],
+            ),
+            ChatMessage::tool_result("call_view", "view", "contents"),
+            ChatMessage::assistant("The file says contents."),
+        ];
+
+        thread.restore_from_messages(messages);
+
+        assert_eq!(thread.turns.len(), 1);
+        assert_eq!(thread.turns[0].assistant_tool_content.as_deref(), Some("Now I will inspect the file."));
+        assert_eq!(thread.turns[0].tool_calls.len(), 1);
+        assert_eq!(thread.turns[0].tool_calls[0].tool_call_id.as_deref(), Some("call_view"));
+        assert_eq!(thread.turns[0].tool_calls[0].result, Some(serde_json::json!("contents")));
+        assert_eq!(thread.turns[0].response.as_deref(), Some("The file says contents."));
+    }
+
+    #[test]
     fn test_restore_from_messages_incomplete_turn() {
         let mut thread = Thread::new(Uuid::new_v4());
 
@@ -583,6 +786,21 @@ mod tests {
         assert_eq!(thread.turns.len(), 2);
         assert_eq!(thread.turns[1].user_input, "How are you?");
         assert!(thread.turns[1].response.is_none());
+    }
+
+    #[test]
+    fn test_interrupt_marks_pending_tool_calls_as_errors() {
+        let mut thread = Thread::new(Uuid::new_v4());
+        thread.start_turn("Do work");
+        {
+            let turn = thread.last_turn_mut().expect("turn");
+            turn.record_tool_call("shell", serde_json::json!({}), Some("call_shell".to_string()));
+        }
+
+        thread.interrupt();
+
+        assert_eq!(thread.state, ThreadState::Interrupted);
+        assert_eq!(thread.turns[0].tool_calls[0].error.as_deref(), Some("Interrupted"));
     }
 
     #[test]
@@ -913,8 +1131,12 @@ mod tests {
     #[test]
     fn test_turn_tool_call_error() {
         let mut turn = Turn::new(0, "test");
-        turn.record_tool_call("http", serde_json::json!({"url": "example.com"}));
-        turn.record_tool_error("timeout");
+        turn.record_tool_call(
+            "http",
+            serde_json::json!({"url": "example.com"}),
+            Some("call_http".to_string()),
+        );
+        turn.record_tool_error(Some("call_http"), "timeout");
 
         assert_eq!(turn.tool_calls.len(), 1);
         assert_eq!(turn.tool_calls[0].error, Some("timeout".to_string()));

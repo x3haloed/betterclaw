@@ -5,6 +5,8 @@
 //! - Workspace write access (scoped to channel namespace)
 //! - Rate limiting for message emission
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::channels::wasm::capabilities::{ChannelCapabilities, EmitRateLimitConfig};
@@ -310,14 +312,29 @@ impl ChannelHostState {
 /// Uses `std::sync::RwLock` (not tokio) because WASM execution runs
 /// inside `spawn_blocking`.
 pub struct ChannelWorkspaceStore {
-    data: std::sync::RwLock<std::collections::HashMap<String, String>>,
+    data: std::sync::RwLock<HashMap<String, String>>,
+    root_dir: Option<PathBuf>,
 }
 
 impl ChannelWorkspaceStore {
     /// Create a new empty workspace store.
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
-            data: std::sync::RwLock::new(std::collections::HashMap::new()),
+            data: std::sync::RwLock::new(HashMap::new()),
+            root_dir: None,
+        }
+    }
+
+    /// Create a workspace store backed by files under `root_dir`.
+    ///
+    /// Existing files are loaded at startup so channel state survives process
+    /// restarts.
+    pub fn new_persistent(root_dir: PathBuf) -> Self {
+        let data = load_workspace_files(&root_dir);
+        Self {
+            data: std::sync::RwLock::new(data),
+            root_dir: Some(root_dir),
         }
     }
 
@@ -334,6 +351,15 @@ impl ChannelWorkspaceStore {
                     "Committing workspace write to channel store"
                 );
                 data.insert(write.path.clone(), write.content.clone());
+                if let Some(root_dir) = &self.root_dir
+                    && let Err(error) = persist_workspace_write(root_dir, write)
+                {
+                    tracing::warn!(
+                        path = %write.path,
+                        error = %error,
+                        "Failed to persist channel workspace write"
+                    );
+                }
             }
         }
     }
@@ -343,6 +369,43 @@ impl crate::tools::wasm::WorkspaceReader for ChannelWorkspaceStore {
     fn read(&self, path: &str) -> Option<String> {
         self.data.read().ok()?.get(path).cloned()
     }
+}
+
+fn load_workspace_files(root_dir: &Path) -> HashMap<String, String> {
+    let mut data = HashMap::new();
+    load_workspace_dir(root_dir, root_dir, &mut data);
+    data
+}
+
+fn load_workspace_dir(root_dir: &Path, dir: &Path, data: &mut HashMap<String, String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            load_workspace_dir(root_dir, &path, data);
+            continue;
+        }
+
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(relative) = path.strip_prefix(root_dir) else {
+            continue;
+        };
+        let key = relative.to_string_lossy().replace('\\', "/");
+        data.insert(key, contents);
+    }
+}
+
+fn persist_workspace_write(root_dir: &Path, write: &PendingWorkspaceWrite) -> std::io::Result<()> {
+    let full_path = root_dir.join(&write.path);
+    if let Some(parent) = full_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(full_path, &write.content)
 }
 
 /// Rate limiter for channel message emission.
@@ -676,6 +739,25 @@ mod tests {
 
         let value = state3.workspace_read("cursor").unwrap();
         assert_eq!(value, Some("200".to_string()));
+    }
+
+    #[test]
+    fn test_persistent_workspace_store_survives_reopen() {
+        use crate::channels::wasm::host::{ChannelWorkspaceStore, PendingWorkspaceWrite};
+        use crate::tools::wasm::WorkspaceReader;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = ChannelWorkspaceStore::new_persistent(temp_dir.path().to_path_buf());
+        store.commit_writes(&[PendingWorkspaceWrite {
+            path: "channels/tidepool-channel/state/domain_cursors.json".to_string(),
+            content: r#"{"1":18}"#.to_string(),
+        }]);
+
+        let reopened = ChannelWorkspaceStore::new_persistent(temp_dir.path().to_path_buf());
+        assert_eq!(
+            reopened.read("channels/tidepool-channel/state/domain_cursors.json"),
+            Some(r#"{"1":18}"#.to_string())
+        );
     }
 
     #[test]

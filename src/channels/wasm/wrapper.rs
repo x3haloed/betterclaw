@@ -40,6 +40,7 @@ use wasmtime::Store;
 use wasmtime::component::Linker;
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 
+use crate::bootstrap::betterclaw_base_dir;
 use crate::channels::wasm::capabilities::ChannelCapabilities;
 use crate::channels::wasm::error::WasmChannelError;
 use crate::channels::wasm::host::{
@@ -646,8 +647,8 @@ pub struct WasmChannel {
     /// Pairing store for DM pairing (guest access control).
     pairing_store: Arc<PairingStore>,
 
-    /// In-memory workspace store persisting writes across callback invocations.
-    /// Ensures WASM channels can maintain state (e.g., polling offsets) between ticks.
+    /// Workspace store persisting writes across callback invocations and restarts.
+    /// Ensures WASM channels can maintain state (e.g., polling offsets) durably.
     workspace_store: Arc<ChannelWorkspaceStore>,
 
     /// Last-seen message metadata (contains chat_id for broadcast routing).
@@ -718,7 +719,9 @@ impl WasmChannel {
             credentials: Arc::new(RwLock::new(HashMap::new())),
             typing_task: RwLock::new(None),
             pairing_store,
-            workspace_store: Arc::new(ChannelWorkspaceStore::new()),
+            workspace_store: Arc::new(ChannelWorkspaceStore::new_persistent(
+                betterclaw_base_dir().join("channel-workspace"),
+            )),
             last_broadcast_metadata: Arc::new(tokio::sync::RwLock::new(None)),
             settings_store,
             secrets_store: None,

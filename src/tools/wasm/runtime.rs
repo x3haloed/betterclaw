@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use wasmtime::Store;
 use wasmtime::component::Linker;
 use wasmtime::{Config, Engine, OptLevel};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::tools::wasm::error::WasmError;
 use crate::tools::wasm::limits::{FuelConfig, ResourceLimits};
@@ -27,7 +28,29 @@ wasmtime::component::bindgen!({
 /// which causes any store with an expired epoch deadline to trap.
 pub const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(500);
 
-struct MetadataStore;
+struct MetadataStore {
+    wasi: WasiCtx,
+    table: ResourceTable,
+}
+
+impl MetadataStore {
+    fn new() -> Self {
+        Self {
+            wasi: WasiCtxBuilder::new().build(),
+            table: ResourceTable::new(),
+        }
+    }
+}
+
+impl WasiView for MetadataStore {
+    fn ctx(&mut self) -> &mut WasiCtx {
+        &mut self.wasi
+    }
+
+    fn table(&mut self) -> &mut ResourceTable {
+        &mut self.table
+    }
+}
 
 impl near::agent::host::Host for MetadataStore {
     fn log(&mut self, _level: near::agent::host::LogLevel, _message: String) {}
@@ -307,8 +330,10 @@ fn extract_tool_metadata(
     engine: &Engine,
     component: &wasmtime::component::Component,
 ) -> Result<(String, serde_json::Value), WasmError> {
-    let mut store = Store::new(engine, MetadataStore);
+    let mut store = Store::new(engine, MetadataStore::new());
     let mut linker = Linker::new(engine);
+    wasmtime_wasi::add_to_linker_sync(&mut linker)
+        .map_err(|e| WasmError::ConfigError(format!("Failed to add WASI functions: {}", e)))?;
     near::agent::host::add_to_linker(&mut linker, |state: &mut MetadataStore| state)
         .map_err(|e| WasmError::ConfigError(format!("Failed to add host functions: {}", e)))?;
 

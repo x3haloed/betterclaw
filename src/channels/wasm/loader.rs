@@ -75,13 +75,21 @@ impl WasmChannelLoader {
         let wasm_bytes = fs::read(wasm_path).await?;
 
         // Read capabilities file
-        let (capabilities, config_json, description, cap_file) =
+        let (channel_name, capabilities, config_json, description, cap_file) =
             if let Some(cap_path) = capabilities_path {
                 if cap_path.exists() {
                     let cap_bytes = fs::read(cap_path).await?;
                     let cap_file = ChannelCapabilitiesFile::from_bytes(&cap_bytes)
                         .map_err(|e| WasmChannelError::InvalidCapabilities(e.to_string()))?;
                     cap_file.validate();
+                    let declared_name = cap_file.name.trim();
+                    if declared_name.is_empty()
+                        || declared_name.contains('/')
+                        || declared_name.contains('\\')
+                        || declared_name.contains("..")
+                    {
+                        return Err(WasmChannelError::InvalidName(cap_file.name.clone()));
+                    }
 
                     // Debug: log raw capabilities
                     tracing::debug!(
@@ -94,7 +102,7 @@ impl WasmChannelLoader {
 
                     // Debug: log resulting capabilities
                     tracing::info!(
-                        channel = name,
+                        channel = declared_name,
                         http_allowed = caps.tool_capabilities.http.is_some(),
                         http_allowlist_count = caps
                             .tool_capabilities
@@ -108,13 +116,20 @@ impl WasmChannelLoader {
                     let config = cap_file.config_json();
                     let desc = cap_file.description.clone();
 
-                    (caps, config, desc, Some(cap_file))
+                    (
+                        declared_name.to_string(),
+                        caps,
+                        config,
+                        desc,
+                        Some(cap_file),
+                    )
                 } else {
                     tracing::warn!(
                         path = %cap_path.display(),
                         "Capabilities file not found, using defaults"
                     );
                     (
+                        name.to_string(),
                         ChannelCapabilities::for_channel(name),
                         "{}".to_string(),
                         None,
@@ -123,6 +138,7 @@ impl WasmChannelLoader {
                 }
             } else {
                 (
+                    name.to_string(),
                     ChannelCapabilities::for_channel(name),
                     "{}".to_string(),
                     None,
@@ -133,7 +149,7 @@ impl WasmChannelLoader {
         // Prepare the module
         let prepared = self
             .runtime
-            .prepare(name, &wasm_bytes, None, description)
+            .prepare(&channel_name, &wasm_bytes, None, description)
             .await?;
 
         // Create the channel
@@ -150,7 +166,7 @@ impl WasmChannelLoader {
         }
 
         tracing::info!(
-            name = name,
+            name = %channel_name,
             wasm_path = %wasm_path.display(),
             "Loaded WASM channel from file"
         );

@@ -178,7 +178,19 @@ impl Agent {
         let mut context_messages = initial_messages;
 
         // Create a JobContext for tool execution (chat doesn't have a real job)
-        let job_ctx = JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+        let mut job_ctx =
+            JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+        job_ctx.metadata = serde_json::json!({
+            "incoming_message": {
+                "id": message.id.to_string(),
+                "channel": message.channel.clone(),
+                "user_id": message.user_id.clone(),
+                "user_name": message.user_name.clone(),
+                "thread_id": message.thread_id.clone(),
+                "content": message.content.clone(),
+                "metadata": message.metadata.clone(),
+            }
+        });
 
         let max_tool_iterations = self.config.max_tool_iterations;
         // Force a text-only response on the last iteration to guarantee termination

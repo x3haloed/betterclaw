@@ -341,14 +341,27 @@ fn extract_tool_metadata(
         .map_err(|e| WasmError::InstantiationFailed(e.to_string()))?;
 
     let tool_iface = instance.near_agent_tool();
-    let description = tool_iface
-        .call_description(&mut store)
-        .map_err(|e| WasmError::Trapped(format!("Failed to extract tool description: {}", e)))?;
-    let schema_json = tool_iface
-        .call_schema(&mut store)
-        .map_err(|e| WasmError::Trapped(format!("Failed to extract tool schema: {}", e)))?;
-    let schema = serde_json::from_str(&schema_json)
-        .map_err(|e| WasmError::InvalidResponseJson(format!("Invalid tool schema JSON: {}", e)))?;
+    let description = match tool_iface.call_description(&mut store) {
+        Ok(description) => description,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to extract WASM tool description; using fallback");
+            "WASM sandboxed tool".to_string()
+        }
+    };
+
+    let schema = match tool_iface.call_schema(&mut store) {
+        Ok(schema_json) => serde_json::from_str(&schema_json).map_err(|e| {
+            WasmError::InvalidResponseJson(format!("Invalid tool schema JSON: {}", e))
+        })?,
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to extract WASM tool schema; using permissive fallback");
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+            })
+        }
+    };
 
     Ok((description, schema))
 }

@@ -1043,7 +1043,7 @@ impl DiscordChannel {
                                 .collect()
                         })
                         .unwrap_or_else(|| Vec::new());
-                    
+
 
                     let mut final_content = if attachment_text.is_empty() {
                         clean_content

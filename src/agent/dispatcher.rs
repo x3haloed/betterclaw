@@ -393,11 +393,7 @@ impl Agent {
                         {
                             turn.set_assistant_tool_content(content.clone());
                             for (tc, safe_args) in tool_calls.iter().zip(redacted_args) {
-                                turn.record_tool_call(
-                                    &tc.name,
-                                    safe_args,
-                                    Some(tc.id.clone()),
-                                );
+                                turn.record_tool_call(&tc.name, safe_args, Some(tc.id.clone()));
                             }
                         }
                     }

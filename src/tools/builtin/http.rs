@@ -26,8 +26,7 @@ use crate::tools::builtin::convert_html_to_markdown;
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
 
 /// Browser-like User-Agent to avoid CDN/WAF blocks against reqwest defaults.
-pub(crate) const DEFAULT_BROWSER_USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+pub(crate) const DEFAULT_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 /// Tool for making HTTP requests.
@@ -491,7 +490,10 @@ mod tests {
             .expect("request should build");
 
         assert_eq!(
-            request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
+            request
+                .headers()
+                .get(USER_AGENT)
+                .and_then(|v| v.to_str().ok()),
             Some(DEFAULT_BROWSER_USER_AGENT)
         );
     }

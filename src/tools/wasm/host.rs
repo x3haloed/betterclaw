@@ -262,7 +262,10 @@ impl HostState {
         // Use the allowlist validator
         use crate::tools::wasm::allowlist::AllowlistValidator;
 
-        let validator = AllowlistValidator::new(capability.allowlist.clone());
+        let mut validator = AllowlistValidator::new(capability.allowlist.clone());
+        if is_loopback_http_url(url) {
+            validator = validator.allow_http();
+        }
         let result = validator.validate(url, method);
 
         if result.is_allowed() {
@@ -377,15 +380,32 @@ fn validate_workspace_path(path: &str) -> Result<(), WasmError> {
     Ok(())
 }
 
+fn is_loopback_http_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+
+    if parsed.scheme() != "http" {
+        return false;
+    }
+
+    matches!(
+        parsed.host_str().map(|host| host.to_ascii_lowercase()),
+        Some(host) if host == "localhost" || host == "127.0.0.1" || host == "::1"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use crate::tools::wasm::capabilities::{
-        Capabilities, SecretsCapability, WorkspaceCapability, WorkspaceReader,
+        Capabilities, EndpointPattern, HttpCapability, SecretsCapability, WorkspaceCapability,
+        WorkspaceReader,
     };
     use crate::tools::wasm::host::{
-        HostState, LogLevel, MAX_LOG_ENTRIES, MAX_LOG_MESSAGE_BYTES, validate_workspace_path,
+        HostState, LogLevel, MAX_LOG_ENTRIES, MAX_LOG_MESSAGE_BYTES, is_loopback_http_url,
+        validate_workspace_path,
     };
 
     struct MockReader {
@@ -578,6 +598,47 @@ mod tests {
 
         // 51st should fail
         assert!(state.record_http_request().is_err());
+    }
+
+    #[test]
+    fn test_loopback_http_is_allowed_when_allowlisted() {
+        let capabilities = Capabilities {
+            http: Some(HttpCapability::new(vec![EndpointPattern::host(
+                "127.0.0.1",
+            )])),
+            ..Default::default()
+        };
+
+        let state = HostState::new(capabilities);
+        assert!(
+            state
+                .check_http_allowed("http://127.0.0.1:3001/v1/database/tidepool-dev/sql", "POST")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_non_loopback_http_is_still_denied() {
+        let capabilities = Capabilities {
+            http: Some(HttpCapability::new(vec![EndpointPattern::host(
+                "example.com",
+            )])),
+            ..Default::default()
+        };
+
+        let state = HostState::new(capabilities);
+        let err = state
+            .check_http_allowed("http://example.com/api", "GET")
+            .unwrap_err();
+        assert!(err.contains("InsecureScheme"));
+    }
+
+    #[test]
+    fn test_is_loopback_http_url_helper() {
+        assert!(is_loopback_http_url("http://localhost:3000/test"));
+        assert!(is_loopback_http_url("http://127.0.0.1:3001/test"));
+        assert!(!is_loopback_http_url("https://127.0.0.1:3001/test"));
+        assert!(!is_loopback_http_url("http://example.com/test"));
     }
 
     #[test]

@@ -43,10 +43,11 @@ impl CopilotProvider {
         );
 
         for (key, value) in crate::config::llm::build_copilot_headers(config) {
-            let name = HeaderName::from_bytes(key.as_bytes()).map_err(|e| LlmError::RequestFailed {
-                provider: "copilot".to_string(),
-                reason: format!("Invalid header name {key:?}: {e}"),
-            })?;
+            let name =
+                HeaderName::from_bytes(key.as_bytes()).map_err(|e| LlmError::RequestFailed {
+                    provider: "copilot".to_string(),
+                    reason: format!("Invalid header name {key:?}: {e}"),
+                })?;
             let val = HeaderValue::from_str(&value).map_err(|e| LlmError::RequestFailed {
                 provider: "copilot".to_string(),
                 reason: format!("Invalid header value for {key}: {e}"),
@@ -75,8 +76,16 @@ impl CopilotProvider {
         format!("{}/chat/completions", self.base_url)
     }
 
-    async fn send_request(&self, body: &CopilotChatRequest) -> Result<CopilotParsedResponse, LlmError> {
-        let response = self.client.post(self.endpoint_url()).json(body).send().await?;
+    async fn send_request(
+        &self,
+        body: &CopilotChatRequest,
+    ) -> Result<CopilotParsedResponse, LlmError> {
+        let response = self
+            .client
+            .post(self.endpoint_url())
+            .json(body)
+            .send()
+            .await?;
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
 
@@ -109,13 +118,14 @@ impl CopilotProvider {
                     body = %truncate_for_log(&text),
                     "Copilot response did not match expected schema; attempting permissive parse"
                 );
-                let value: JsonValue = serde_json::from_str(&text).map_err(|json_err| LlmError::InvalidResponse {
-                    provider: "copilot".to_string(),
-                    reason: format!(
-                        "Failed to parse Copilot JSON response: {json_err}; body: {}",
-                        truncate_for_log(&text)
-                    ),
-                })?;
+                let value: JsonValue =
+                    serde_json::from_str(&text).map_err(|json_err| LlmError::InvalidResponse {
+                        provider: "copilot".to_string(),
+                        reason: format!(
+                            "Failed to parse Copilot JSON response: {json_err}; body: {}",
+                            truncate_for_log(&text)
+                        ),
+                    })?;
                 parse_fallback_response(&value).map_err(|fallback_err| LlmError::InvalidResponse {
                     provider: "copilot".to_string(),
                     reason: format!(
@@ -217,7 +227,10 @@ impl CopilotChatRequest {
     ) -> Self {
         Self {
             model: request.model.unwrap_or_else(|| default_model.to_string()),
-            messages: messages.iter().map(CopilotMessage::from_chat_message).collect(),
+            messages: messages
+                .iter()
+                .map(CopilotMessage::from_chat_message)
+                .collect(),
             tools: Vec::new(),
             tool_choice: None,
             max_tokens: request.max_tokens,
@@ -234,7 +247,10 @@ impl CopilotChatRequest {
     ) -> Self {
         Self {
             model: request.model.unwrap_or_else(|| default_model.to_string()),
-            messages: messages.iter().map(CopilotMessage::from_chat_message).collect(),
+            messages: messages
+                .iter()
+                .map(CopilotMessage::from_chat_message)
+                .collect(),
             tools: request.tools.iter().map(CopilotTool::from_tool).collect(),
             tool_choice: request.tool_choice,
             max_tokens: request.max_tokens,
@@ -302,7 +318,8 @@ impl CopilotMessage {
         };
 
         let tool_calls = message.tool_calls.as_ref().map(|calls| {
-            calls.iter()
+            calls
+                .iter()
                 .map(|tc| CopilotToolCallOut {
                     id: tc.id.clone(),
                     kind: "function",
@@ -415,7 +432,8 @@ impl From<CopilotChatResponse> for CopilotParsedResponse {
             let raw_finish_reason = map_finish_reason(choice.finish_reason.as_deref());
             let content = extract_text_content(choice.message.content.as_ref());
             let tool_calls = extract_tool_calls_from_response_message(&choice.message);
-            let finish_reason = normalize_finish_reason(raw_finish_reason, &tool_calls, content.as_deref());
+            let finish_reason =
+                normalize_finish_reason(raw_finish_reason, &tool_calls, content.as_deref());
             log_empty_tool_use_mismatch(
                 raw_finish_reason,
                 &tool_calls,
@@ -454,7 +472,8 @@ fn parse_fallback_response(value: &JsonValue) -> Result<CopilotParsedResponse, S
         .get("message")
         .ok_or_else(|| "choice missing message object".to_string())?;
 
-    let raw_finish_reason = map_finish_reason(choice.get("finish_reason").and_then(JsonValue::as_str));
+    let raw_finish_reason =
+        map_finish_reason(choice.get("finish_reason").and_then(JsonValue::as_str));
     let content = extract_text_content(message.get("content"));
     let tool_calls = extract_tool_calls_from_message_json(message);
     let finish_reason = normalize_finish_reason(raw_finish_reason, &tool_calls, content.as_deref());
@@ -495,11 +514,7 @@ fn extract_text_content(content: Option<&JsonValue>) -> Option<String> {
                 .filter_map(extract_text_from_content_part)
                 .collect::<Vec<_>>()
                 .join("");
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
+            if text.is_empty() { None } else { Some(text) }
         }
         Some(value @ JsonValue::Object(_)) => extract_text_from_content_part(value),
         _ => None,
@@ -625,7 +640,8 @@ fn extract_tool_calls_from_message_json(message: &JsonValue) -> Vec<ToolCall> {
         .get("tool_calls")
         .and_then(JsonValue::as_array)
         .map(|calls| {
-            calls.iter()
+            calls
+                .iter()
                 .enumerate()
                 .filter_map(tool_call_from_openai_json)
                 .collect::<Vec<_>>()
@@ -642,7 +658,10 @@ fn extract_tool_calls_from_message_json(message: &JsonValue) -> Vec<ToolCall> {
 fn tool_call_from_openai_json((idx, tc): (usize, &JsonValue)) -> Option<ToolCall> {
     let function = tc.get("function")?;
     let name = function.get("name")?.as_str()?.to_string();
-    let arguments = function.get("arguments").cloned().unwrap_or(JsonValue::Null);
+    let arguments = function
+        .get("arguments")
+        .cloned()
+        .unwrap_or(JsonValue::Null);
     Some(ToolCall {
         id: tc
             .get("id")
@@ -661,13 +680,18 @@ fn extract_tool_calls_from_content(content: Option<&JsonValue>) -> Vec<ToolCall>
             .enumerate()
             .filter_map(tool_call_from_content_part)
             .collect(),
-        Some(value @ JsonValue::Object(_)) => tool_call_from_content_part((0, value)).into_iter().collect(),
+        Some(value @ JsonValue::Object(_)) => tool_call_from_content_part((0, value))
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
 }
 
 fn tool_call_from_content_part((idx, part): (usize, &JsonValue)) -> Option<ToolCall> {
-    let kind = part.get("type").and_then(JsonValue::as_str).unwrap_or_default();
+    let kind = part
+        .get("type")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
     if !matches!(kind, "tool_use" | "function_call" | "tool_call") {
         return None;
     }
@@ -710,7 +734,8 @@ fn tool_call_from_content_part((idx, part): (usize, &JsonValue)) -> Option<ToolC
 
 fn extract_error_message(body: &str) -> Option<String> {
     let value: JsonValue = serde_json::from_str(body).ok()?;
-    value.get("message")
+    value
+        .get("message")
         .and_then(JsonValue::as_str)
         .map(ToOwned::to_owned)
         .or_else(|| {
@@ -824,7 +849,10 @@ mod tests {
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].id, "toolu_01abc");
         assert_eq!(parsed.tool_calls[0].name, "memory_search");
-        assert_eq!(parsed.tool_calls[0].arguments, serde_json::json!({"query": "recent notes"}));
+        assert_eq!(
+            parsed.tool_calls[0].arguments,
+            serde_json::json!({"query": "recent notes"})
+        );
         assert_eq!(parsed.finish_reason, FinishReason::ToolUse);
     }
 

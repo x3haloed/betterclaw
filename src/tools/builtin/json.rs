@@ -199,9 +199,6 @@ mod tests {
             .and_then(|p| p.get("data"))
             .expect("data schema missing");
 
-        assert_eq!(
-            data.get("type"),
-            Some(&serde_json::json!("string"))
-        );
+        assert_eq!(data.get("type"), Some(&serde_json::json!("string")));
     }
 }

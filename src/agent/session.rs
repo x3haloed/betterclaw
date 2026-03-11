@@ -324,19 +324,18 @@ impl Thread {
             messages.push(ChatMessage::user(&turn.user_input));
 
             if !turn.tool_calls.is_empty() {
-                let tool_calls = turn
-                    .tool_calls
-                    .iter()
-                    .enumerate()
-                    .map(|(call_index, call)| ToolCall {
-                        id: call
-                            .tool_call_id
-                            .clone()
-                            .unwrap_or_else(|| format!("turn_{}_tool_{}", turn_index, call_index)),
-                        name: call.name.clone(),
-                        arguments: call.parameters.clone(),
-                    })
-                    .collect();
+                let tool_calls =
+                    turn.tool_calls
+                        .iter()
+                        .enumerate()
+                        .map(|(call_index, call)| ToolCall {
+                            id: call.tool_call_id.clone().unwrap_or_else(|| {
+                                format!("turn_{}_tool_{}", turn_index, call_index)
+                            }),
+                            name: call.name.clone(),
+                            arguments: call.parameters.clone(),
+                        })
+                        .collect();
                 messages.push(ChatMessage::assistant_with_tool_calls(
                     turn.assistant_tool_content.clone(),
                     tool_calls,
@@ -421,11 +420,13 @@ impl Thread {
 
                             if let Some(tool_result_message) = iter.next() {
                                 let tool_call_id = tool_result_message.tool_call_id.clone();
-                                if let Some(stripped) = tool_result_message
-                                    .content
-                                    .strip_prefix("Error: ")
+                                if let Some(stripped) =
+                                    tool_result_message.content.strip_prefix("Error: ")
                                 {
-                                    turn.record_tool_error(tool_call_id.as_deref(), stripped.to_string());
+                                    turn.record_tool_error(
+                                        tool_call_id.as_deref(),
+                                        stripped.to_string(),
+                                    );
                                 } else {
                                     turn.record_tool_result(
                                         tool_call_id.as_deref(),
@@ -763,11 +764,23 @@ mod tests {
         thread.restore_from_messages(messages);
 
         assert_eq!(thread.turns.len(), 1);
-        assert_eq!(thread.turns[0].assistant_tool_content.as_deref(), Some("Now I will inspect the file."));
+        assert_eq!(
+            thread.turns[0].assistant_tool_content.as_deref(),
+            Some("Now I will inspect the file.")
+        );
         assert_eq!(thread.turns[0].tool_calls.len(), 1);
-        assert_eq!(thread.turns[0].tool_calls[0].tool_call_id.as_deref(), Some("call_view"));
-        assert_eq!(thread.turns[0].tool_calls[0].result, Some(serde_json::json!("contents")));
-        assert_eq!(thread.turns[0].response.as_deref(), Some("The file says contents."));
+        assert_eq!(
+            thread.turns[0].tool_calls[0].tool_call_id.as_deref(),
+            Some("call_view")
+        );
+        assert_eq!(
+            thread.turns[0].tool_calls[0].result,
+            Some(serde_json::json!("contents"))
+        );
+        assert_eq!(
+            thread.turns[0].response.as_deref(),
+            Some("The file says contents.")
+        );
     }
 
     #[test]
@@ -794,13 +807,20 @@ mod tests {
         thread.start_turn("Do work");
         {
             let turn = thread.last_turn_mut().expect("turn");
-            turn.record_tool_call("shell", serde_json::json!({}), Some("call_shell".to_string()));
+            turn.record_tool_call(
+                "shell",
+                serde_json::json!({}),
+                Some("call_shell".to_string()),
+            );
         }
 
         thread.interrupt();
 
         assert_eq!(thread.state, ThreadState::Interrupted);
-        assert_eq!(thread.turns[0].tool_calls[0].error.as_deref(), Some("Interrupted"));
+        assert_eq!(
+            thread.turns[0].tool_calls[0].error.as_deref(),
+            Some("Interrupted")
+        );
     }
 
     #[test]

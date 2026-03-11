@@ -730,10 +730,7 @@ mod tests {
 
     #[test]
     fn assistant_history_uses_output_text_content_type() {
-        let messages = vec![
-            ChatMessage::user("hello"),
-            ChatMessage::assistant("world"),
-        ];
+        let messages = vec![ChatMessage::user("hello"), ChatMessage::assistant("world")];
 
         let items = convert_messages_to_codex_items(&messages).expect("convert");
         match &items[0] {

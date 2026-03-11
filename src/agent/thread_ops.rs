@@ -1088,10 +1088,9 @@ impl Agent {
                         && let Some(turn) = thread.last_turn_mut()
                     {
                         match &deferred_result {
-                            Ok(output) => turn.record_tool_result(
-                                Some(&tc.id),
-                                serde_json::json!(output),
-                            ),
+                            Ok(output) => {
+                                turn.record_tool_result(Some(&tc.id), serde_json::json!(output))
+                            }
                             Err(e) => turn.record_tool_error(Some(&tc.id), e.to_string()),
                         }
                     }

@@ -194,8 +194,8 @@ pub(crate) fn resolve_compressor_llm(
             .or(optional_env("COPILOT_MODEL")?)
             .or(settings.selected_model.clone())
             .unwrap_or_else(|| "gpt-4o".to_string());
-        let session_id = optional_env("COMPRESSOR_COPILOT_SESSION_ID")?
-            .or(optional_env("COPILOT_SESSION_ID")?);
+        let session_id =
+            optional_env("COMPRESSOR_COPILOT_SESSION_ID")?.or(optional_env("COPILOT_SESSION_ID")?);
         let trace_parent = optional_env("COMPRESSOR_COPILOT_TRACE_PARENT")?
             .or(optional_env("COPILOT_TRACE_PARENT")?);
         let extra_headers = optional_env("COMPRESSOR_COPILOT_EXTRA_HEADERS")?

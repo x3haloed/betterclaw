@@ -521,7 +521,12 @@ impl SetupWizard {
 
             let is_known = matches!(
                 current.as_str(),
-                "anthropic" | "openai" | "copilot" | "openai_codex" | "ollama" | "openai_compatible"
+                "anthropic"
+                    | "openai"
+                    | "copilot"
+                    | "openai_codex"
+                    | "ollama"
+                    | "openai_compatible"
             );
 
             if is_known && confirm("Keep current provider?", true).map_err(SetupError::Io)? {
@@ -901,8 +906,8 @@ impl SetupWizard {
                 self.select_from_model_list(&models)?;
             }
             "copilot" => {
-                let model_id = input("Copilot model name (e.g., gpt-4o)")
-                    .map_err(SetupError::Io)?;
+                let model_id =
+                    input("Copilot model name (e.g., gpt-4o)").map_err(SetupError::Io)?;
                 if model_id.is_empty() {
                     return Err(SetupError::Config("Model name is required".to_string()));
                 }

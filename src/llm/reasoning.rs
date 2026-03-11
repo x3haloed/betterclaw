@@ -965,7 +965,9 @@ fn log_fallback_decision(
     recovered_tool_calls: usize,
 ) {
     let reason = classify_fallback_reason(raw_content, cleaned);
-    let raw_preview = raw_content.map(preview_for_log).unwrap_or_else(|| "<none>".to_string());
+    let raw_preview = raw_content
+        .map(preview_for_log)
+        .unwrap_or_else(|| "<none>".to_string());
     let cleaned_preview = preview_for_log(cleaned);
     let raw_len = raw_content.map(str::len).unwrap_or(0);
     let has_reasoning_tags = raw_content.is_some_and(|text| QUICK_TAG_RE.is_match(text));
@@ -1010,10 +1012,16 @@ fn classify_fallback_reason(raw_content: Option<&str>, cleaned: &str) -> &'stati
     match raw_content {
         None => "provider_returned_no_content",
         Some(raw) if raw.trim().is_empty() => "provider_returned_blank_content",
-        Some(raw) if cleaned.trim().is_empty() && QUICK_TAG_RE.is_match(raw) && !FINAL_TAG_RE.is_match(raw) => {
+        Some(raw)
+            if cleaned.trim().is_empty()
+                && QUICK_TAG_RE.is_match(raw)
+                && !FINAL_TAG_RE.is_match(raw) =>
+        {
             "reasoning_only_without_final"
         }
-        Some(raw) if cleaned.trim().is_empty() && FINAL_TAG_RE.is_match(raw) => "empty_final_content",
+        Some(raw) if cleaned.trim().is_empty() && FINAL_TAG_RE.is_match(raw) => {
+            "empty_final_content"
+        }
         Some(_) if cleaned.trim().is_empty() => "content_cleaned_to_empty",
         Some(_) => "fallback_used",
     }

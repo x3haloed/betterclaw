@@ -197,17 +197,11 @@ pub(crate) fn build_copilot_headers(config: &CopilotConfig) -> Vec<(String, Stri
     )];
 
     if let Some(ref session_id) = config.session_id {
-        headers.push((
-            "X-Copilot-Session-Id".to_string(),
-            session_id.clone(),
-        ));
+        headers.push(("X-Copilot-Session-Id".to_string(), session_id.clone()));
     }
 
     if let Some(ref trace_parent) = config.trace_parent {
-        headers.push((
-            "X-Copilot-Traceparent".to_string(),
-            trace_parent.clone(),
-        ));
+        headers.push(("X-Copilot-Traceparent".to_string(), trace_parent.clone()));
     }
 
     headers.extend(config.extra_headers.clone());
@@ -427,8 +421,7 @@ impl LlmConfig {
             let integration_id = optional_env("COPILOT_INTEGRATION_ID")?.ok_or_else(|| {
                 ConfigError::MissingRequired {
                     key: "COPILOT_INTEGRATION_ID".to_string(),
-                    hint: "Set COPILOT_INTEGRATION_ID when LLM_BACKEND=copilot"
-                        .to_string(),
+                    hint: "Set COPILOT_INTEGRATION_ID when LLM_BACKEND=copilot".to_string(),
                 }
             })?;
             let base_url = optional_env("COPILOT_API_URL")?.unwrap_or_else(default_copilot_api_url);
@@ -661,10 +654,7 @@ mod tests {
         unsafe {
             std::env::set_var("COPILOT_TOKEN", "ghu_copilot_test_token");
             std::env::set_var("COPILOT_INTEGRATION_ID", "vscode-chat");
-            std::env::set_var(
-                "COPILOT_EXTRA_HEADERS",
-                "X-Interaction-Id:test-interaction",
-            );
+            std::env::set_var("COPILOT_EXTRA_HEADERS", "X-Interaction-Id:test-interaction");
         }
 
         let settings = Settings {

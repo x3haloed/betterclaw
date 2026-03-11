@@ -328,9 +328,12 @@ fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmPr
 }
 
 fn create_copilot_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let copilot = config.copilot.as_ref().ok_or_else(|| LlmError::AuthFailed {
-        provider: "copilot".to_string(),
-    })?;
+    let copilot = config
+        .copilot
+        .as_ref()
+        .ok_or_else(|| LlmError::AuthFailed {
+            provider: "copilot".to_string(),
+        })?;
 
     create_copilot_provider_from(copilot)
 }

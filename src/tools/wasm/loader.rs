@@ -121,25 +121,31 @@ impl WasmToolLoader {
         let wasm_bytes = fs::read(wasm_path).await?;
 
         // Read capabilities (optional) and extract OAuth refresh config
-        let (capabilities, oauth_refresh) = if let Some(cap_path) = capabilities_path {
-            if cap_path.exists() {
-                let cap_bytes = fs::read(cap_path).await?;
-                let cap_file = CapabilitiesFile::from_bytes(&cap_bytes)
-                    .map_err(|e| WasmLoadError::InvalidCapabilities(e.to_string()))?;
-                cap_file.validate(name);
-                let caps = cap_file.to_capabilities();
-                let oauth = resolve_oauth_refresh_config(&cap_file);
-                (caps, oauth)
+        let (capabilities, oauth_refresh, description_override, schema_override) =
+            if let Some(cap_path) = capabilities_path {
+                if cap_path.exists() {
+                    let cap_bytes = fs::read(cap_path).await?;
+                    let cap_file = CapabilitiesFile::from_bytes(&cap_bytes)
+                        .map_err(|e| WasmLoadError::InvalidCapabilities(e.to_string()))?;
+                    cap_file.validate(name);
+                    let caps = cap_file.to_capabilities();
+                    let oauth = resolve_oauth_refresh_config(&cap_file);
+                    (
+                        caps,
+                        oauth,
+                        cap_file.description.clone(),
+                        cap_file.parameters_schema.clone(),
+                    )
+                } else {
+                    tracing::warn!(
+                        path = %cap_path.display(),
+                        "Capabilities file not found, using default (no permissions)"
+                    );
+                    (Capabilities::default(), None, None, None)
+                }
             } else {
-                tracing::warn!(
-                    path = %cap_path.display(),
-                    "Capabilities file not found, using default (no permissions)"
-                );
-                (Capabilities::default(), None)
-            }
-        } else {
-            (Capabilities::default(), None)
-        };
+                (Capabilities::default(), None, None, None)
+            };
 
         // Register the tool
         self.registry
@@ -149,8 +155,8 @@ impl WasmToolLoader {
                 runtime: &self.runtime,
                 capabilities,
                 limits: None,
-                description: None,
-                schema: None,
+                description: description_override.as_deref(),
+                schema: schema_override,
                 secrets_store: self.secrets_store.clone(),
                 oauth_refresh,
             })

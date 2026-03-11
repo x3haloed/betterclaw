@@ -263,7 +263,7 @@ impl HostState {
         use crate::tools::wasm::allowlist::AllowlistValidator;
 
         let mut validator = AllowlistValidator::new(capability.allowlist.clone());
-        if is_loopback_http_url(url) {
+        if is_local_http_url(url) {
             validator = validator.allow_http();
         }
         let result = validator.validate(url, method);
@@ -380,7 +380,7 @@ fn validate_workspace_path(path: &str) -> Result<(), WasmError> {
     Ok(())
 }
 
-fn is_loopback_http_url(url: &str) -> bool {
+fn is_local_http_url(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url) else {
         return false;
     };
@@ -389,10 +389,22 @@ fn is_loopback_http_url(url: &str) -> bool {
         return false;
     }
 
-    matches!(
-        parsed.host_str().map(|host| host.to_ascii_lowercase()),
-        Some(host) if host == "localhost" || host == "127.0.0.1" || host == "::1"
-    )
+    let Some(host) = parsed.host_str().map(|host| host.to_ascii_lowercase()) else {
+        return false;
+    };
+
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+        return true;
+    }
+
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+
+    match ip {
+        std::net::IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_link_local(),
+        std::net::IpAddr::V6(ipv6) => ipv6.is_unique_local() || ipv6.is_unicast_link_local(),
+    }
 }
 
 #[cfg(test)]
@@ -404,7 +416,7 @@ mod tests {
         WorkspaceReader,
     };
     use crate::tools::wasm::host::{
-        HostState, LogLevel, MAX_LOG_ENTRIES, MAX_LOG_MESSAGE_BYTES, is_loopback_http_url,
+        HostState, LogLevel, MAX_LOG_ENTRIES, MAX_LOG_MESSAGE_BYTES, is_local_http_url,
         validate_workspace_path,
     };
 
@@ -601,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn test_loopback_http_is_allowed_when_allowlisted() {
+    fn test_local_http_is_allowed_when_allowlisted() {
         let capabilities = Capabilities {
             http: Some(HttpCapability::new(vec![EndpointPattern::host(
                 "127.0.0.1",
@@ -634,11 +646,13 @@ mod tests {
     }
 
     #[test]
-    fn test_is_loopback_http_url_helper() {
-        assert!(is_loopback_http_url("http://localhost:3000/test"));
-        assert!(is_loopback_http_url("http://127.0.0.1:3001/test"));
-        assert!(!is_loopback_http_url("https://127.0.0.1:3001/test"));
-        assert!(!is_loopback_http_url("http://example.com/test"));
+    fn test_is_local_http_url_helper() {
+        assert!(is_local_http_url("http://localhost:3000/test"));
+        assert!(is_local_http_url("http://127.0.0.1:3001/test"));
+        assert!(is_local_http_url("http://192.168.128.10:3001/test"));
+        assert!(is_local_http_url("http://10.0.0.25:3001/test"));
+        assert!(!is_local_http_url("https://127.0.0.1:3001/test"));
+        assert!(!is_local_http_url("http://example.com/test"));
     }
 
     #[test]

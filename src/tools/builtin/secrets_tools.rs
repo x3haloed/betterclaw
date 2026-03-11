@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::context::JobContext;
-use crate::secrets::SecretsStore;
+use crate::secrets::{CreateSecretParams, SecretsStore};
 use crate::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput, require_str};
 
 // ── secret_list ──────────────────────────────────────────────────────────────
@@ -80,6 +80,92 @@ impl Tool for SecretListTool {
         });
 
         Ok(ToolOutput::success(output, start.elapsed()))
+    }
+}
+
+// ── secret_delete ─────────────────────────────────────────────────────────────
+
+pub struct SecretSetTool {
+    store: Arc<dyn SecretsStore + Send + Sync>,
+}
+
+impl SecretSetTool {
+    pub fn new(store: Arc<dyn SecretsStore + Send + Sync>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl Tool for SecretSetTool {
+    fn name(&self) -> &str {
+        "secret_set"
+    }
+
+    fn description(&self) -> &str {
+        "Store or update a secret by name. Use this when a tool returns a token that should be saved for future authenticated use."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the secret to create or update."
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Secret value to store."
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Optional provider hint."
+                }
+            },
+            "required": ["name", "value"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: &JobContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let start = std::time::Instant::now();
+        let name = require_str(&params, "name")?;
+        let value = require_str(&params, "value")?;
+
+        let mut create = CreateSecretParams::new(name, value);
+        if let Some(provider) = params.get("provider").and_then(|v| v.as_str()) {
+            create = create.with_provider(provider);
+        }
+
+        let secret = self
+            .store
+            .create(&ctx.user_id, create)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        Ok(ToolOutput::success(
+            serde_json::json!({
+                "status": "stored",
+                "name": secret.name,
+                "provider": secret.provider,
+            }),
+            start.elapsed(),
+        ))
+    }
+
+    fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement {
+        ApprovalRequirement::UnlessAutoApproved
+    }
+
+    fn sensitive_params(&self) -> &[&str] {
+        &["value"]
+    }
+
+    fn requires_sanitization(&self) -> bool {
+        false
     }
 }
 
@@ -218,5 +304,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result2.result["status"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn test_secret_set() {
+        let store = test_store();
+        let set = SecretSetTool::new(Arc::clone(&store) as Arc<dyn SecretsStore + Send + Sync>);
+        let ctx = test_ctx();
+
+        let result = set
+            .execute(
+                serde_json::json!({
+                    "name": "tidepool_token",
+                    "value": "tok-123",
+                    "provider": "tidepool"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.result["status"], "stored");
+        assert_eq!(result.result["name"], "tidepool_token");
+        assert!(store.exists(&ctx.user_id, "tidepool_token").await.unwrap());
     }
 }

@@ -34,7 +34,7 @@ pub use message::MessageTool;
 pub use routine::{
     RoutineCreateTool, RoutineDeleteTool, RoutineHistoryTool, RoutineListTool, RoutineUpdateTool,
 };
-pub use secrets_tools::{SecretDeleteTool, SecretListTool};
+pub use secrets_tools::{SecretDeleteTool, SecretListTool, SecretSetTool};
 pub use shell::ShellTool;
 pub use skill_tools::{SkillInstallTool, SkillListTool, SkillRemoveTool, SkillSearchTool};
 pub use time::TimeTool;

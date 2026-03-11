@@ -61,6 +61,9 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "skill_search",
     "skill_install",
     "skill_remove",
+    "secret_set",
+    "secret_list",
+    "secret_delete",
     "message",
     "current_message",
     "web_fetch",
@@ -337,10 +340,11 @@ impl ToolRegistry {
         &self,
         store: Arc<dyn crate::secrets::SecretsStore + Send + Sync>,
     ) {
-        use crate::tools::builtin::{SecretDeleteTool, SecretListTool};
+        use crate::tools::builtin::{SecretDeleteTool, SecretListTool, SecretSetTool};
         self.register_sync(Arc::new(SecretListTool::new(Arc::clone(&store))));
+        self.register_sync(Arc::new(SecretSetTool::new(Arc::clone(&store))));
         self.register_sync(Arc::new(SecretDeleteTool::new(store)));
-        tracing::info!("Registered 2 secret management tools (list, delete)");
+        tracing::info!("Registered 3 secret management tools (list, set, delete)");
     }
 
     /// Register extension management tools (search, install, auth, activate, list, remove).

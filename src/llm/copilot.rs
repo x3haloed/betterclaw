@@ -19,6 +19,14 @@ use crate::llm::rig_adapter::normalize_schema_strict;
 
 const DEFAULT_COPILOT_USER_AGENT: &str = "BetterClaw";
 const MAX_LOG_BODY_CHARS: usize = 4_000;
+const COPILOT_CONTEXT_LIMIT_PATTERNS: &[&str] = &[
+    "input length and max_tokens exceed context limit",
+    "input length exceeds context limit",
+    "prompt is too long",
+    "your input exceeds the context window of this model",
+    "prompt token count",
+    "exceeds the limit of",
+];
 
 pub struct CopilotProvider {
     client: reqwest::Client,
@@ -123,6 +131,9 @@ impl CopilotProvider {
             let reason = extract_error_message(&text)
                 .unwrap_or_else(|| format!("HTTP {}: {}", status, truncate_for_log(&text)));
             tracing::warn!(status = %status, body = %truncate_for_log(&text), "Copilot request failed");
+            if let Some((used, limit)) = detect_context_length_exceeded(&reason) {
+                return Err(LlmError::ContextLengthExceeded { used, limit });
+            }
             return Err(LlmError::RequestFailed {
                 provider: "copilot".to_string(),
                 reason,
@@ -782,6 +793,29 @@ fn truncate_json_for_log(value: Option<&JsonValue>) -> String {
         .unwrap_or_default()
 }
 
+fn detect_context_length_exceeded(message: &str) -> Option<(usize, usize)> {
+    let normalized = message.to_ascii_lowercase();
+    let matches_known_pattern = COPILOT_CONTEXT_LIMIT_PATTERNS
+        .iter()
+        .any(|pattern| normalized.contains(pattern));
+
+    if !matches_known_pattern {
+        return None;
+    }
+
+    let numbers = normalized
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<usize>().ok())
+        .collect::<Vec<_>>();
+
+    match numbers.as_slice() {
+        [used, limit, ..] => Some((*used, *limit)),
+        [limit] => Some((0, *limit)),
+        _ => Some((0, 0)),
+    }
+}
+
 fn normalize_tool_name(name: &str, known_tools: &std::collections::HashSet<String>) -> String {
     if known_tools.contains(name) {
         return name.to_string();
@@ -878,6 +912,27 @@ mod tests {
         let dur = parse_retry_after(&headers).expect("expected duration");
         // allow some leeway due to test timing
         assert!(dur.as_secs() >= 3 && dur.as_secs() <= 7, "dur={:?}", dur);
+    }
+
+    #[test]
+    fn detects_live_prompt_token_overflow_shape() {
+        let message = "prompt token count of 144286 exceeds the limit of 128000";
+        assert_eq!(
+            detect_context_length_exceeded(message),
+            Some((144286, 128000))
+        );
+    }
+
+    #[test]
+    fn detects_sdk_known_context_window_phrase() {
+        let message = "Your input exceeds the context window of this model.";
+        assert_eq!(detect_context_length_exceeded(message), Some((0, 0)));
+    }
+
+    #[test]
+    fn ignores_unrelated_request_failures() {
+        let message = "upstream provider unavailable";
+        assert_eq!(detect_context_length_exceeded(message), None);
     }
 
     #[test]

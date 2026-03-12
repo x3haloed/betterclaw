@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -178,6 +179,7 @@ impl Agent {
         let mut context_messages = initial_messages;
 
         // Create a JobContext for tool execution (chat doesn't have a real job)
+        let normalized_metadata = normalize_incoming_message_metadata(&message.channel, &message.metadata);
         let mut job_ctx =
             JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
         job_ctx.metadata = serde_json::json!({
@@ -188,7 +190,7 @@ impl Agent {
                 "user_name": message.user_name.clone(),
                 "thread_id": message.thread_id.clone(),
                 "content": message.content.clone(),
-                "metadata": message.metadata.clone(),
+                "metadata": normalized_metadata,
             }
         });
 
@@ -1175,6 +1177,55 @@ fn compact_messages_for_retry(messages: &[ChatMessage]) -> Vec<ChatMessage> {
     }
 
     compacted
+}
+
+fn normalize_incoming_message_metadata(channel: &str, metadata: &Value) -> Value {
+    if !channel.starts_with("tidepool") {
+        return metadata.clone();
+    }
+
+    fn normalize_value(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut normalized = serde_json::Map::with_capacity(map.len());
+                for (key, val) in map {
+                    let next = if key == "reply_to_message_id" {
+                        normalize_reply_to_message_id(val)
+                    } else {
+                        normalize_value(val)
+                    };
+                    normalized.insert(key.clone(), next);
+                }
+                Value::Object(normalized)
+            }
+            Value::Array(items) => Value::Array(items.iter().map(normalize_value).collect()),
+            _ => value.clone(),
+        }
+    }
+
+    fn normalize_reply_to_message_id(value: &Value) -> Value {
+        match value {
+            Value::Array(items) if items.len() == 2 => {
+                match items.first().and_then(Value::as_u64) {
+                    Some(0) => items.get(1).cloned().unwrap_or(Value::Null),
+                    Some(1) => Value::Null,
+                    _ => value.clone(),
+                }
+            }
+            Value::Object(map) => {
+                if let Some(some) = map.get("some") {
+                    some.clone()
+                } else if map.contains_key("none") {
+                    Value::Null
+                } else {
+                    value.clone()
+                }
+            }
+            _ => value.clone(),
+        }
+    }
+
+    normalize_value(metadata)
 }
 
 /// Strip internal `[Called tool ...]` and `[Tool ... returned: ...]` markers
@@ -2266,5 +2317,32 @@ mod tests {
         let input = "This is a normal response with [brackets] inside.";
         let result = super::strip_internal_tool_call_text(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn normalize_tidepool_reply_to_from_sum_tuple() {
+        let metadata = serde_json::json!({
+            "domain_id": 1,
+            "reply_to_message_id": [0, 8211],
+            "messages": [
+                {"message_id": 10, "reply_to_message_id": [1, []]}
+            ]
+        });
+
+        let normalized = super::normalize_incoming_message_metadata("tidepool", &metadata);
+
+        assert_eq!(normalized["reply_to_message_id"], 8211);
+        assert!(normalized["messages"][0]["reply_to_message_id"].is_null());
+    }
+
+    #[test]
+    fn leaves_non_tidepool_metadata_unchanged() {
+        let metadata = serde_json::json!({
+            "reply_to_message_id": [0, 8211]
+        });
+
+        let normalized = super::normalize_incoming_message_metadata("signal", &metadata);
+
+        assert_eq!(normalized, metadata);
     }
 }

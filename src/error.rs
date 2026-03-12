@@ -138,6 +138,9 @@ pub enum LlmError {
         retry_after: Option<Duration>,
     },
 
+    #[error("Provider {provider} dropped request due to backoff: {reason}")]
+    Dropped { provider: String, reason: String },
+
     #[error("Invalid response from {provider}: {reason}")]
     InvalidResponse { provider: String, reason: String },
 

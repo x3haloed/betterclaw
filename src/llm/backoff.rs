@@ -1,0 +1,241 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use tokio::sync::RwLock;
+
+use crate::error::LlmError;
+use crate::llm::provider::{CompletionRequest, CompletionResponse, LlmProvider, ToolCompletionRequest, ToolCompletionResponse, ModelMetadata};
+
+/// Shared backoff registry keyed by provider name.
+#[derive(Debug, Default)]
+pub struct ProviderBackoff {
+    inner: RwLock<HashMap<String, Instant>>,
+}
+
+impl ProviderBackoff {
+    pub fn new() -> Self {
+        Self {
+            inner: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Set backoff for `provider` for `duration` from now.
+    pub async fn set_backoff(&self, provider: &str, duration: Duration) {
+        let mut m = self.inner.write().await;
+        m.insert(provider.to_string(), Instant::now() + duration);
+    }
+
+    /// Get remaining backoff duration for `provider`, if any.
+    pub async fn get_remaining(&self, provider: &str) -> Option<Duration> {
+        let m = self.inner.read().await;
+        if let Some(deadline) = m.get(provider) {
+            let now = Instant::now();
+            if *deadline > now {
+                Some(*deadline - now)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Clear expired entries (optional helper).
+    pub async fn clear_expired(&self, provider: &str) {
+        let mut m = self.inner.write().await;
+        if let Some(deadline) = m.get(provider) {
+            if Instant::now() >= *deadline {
+                m.remove(provider);
+            }
+        }
+    }
+}
+
+/// Wrapper that observes `RateLimited` responses and records the provider-suggested backoff.
+pub struct BackoffObserverProvider {
+    inner: Arc<dyn LlmProvider>,
+    backoff: Arc<ProviderBackoff>,
+}
+
+impl BackoffObserverProvider {
+    pub fn new(inner: Arc<dyn LlmProvider>, backoff: Arc<ProviderBackoff>) -> Self {
+        Self { inner, backoff }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for BackoffObserverProvider {
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn cost_per_token(&self) -> (rust_decimal::Decimal, rust_decimal::Decimal) {
+        self.inner.cost_per_token()
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        match self.inner.complete(request).await {
+            Ok(r) => Ok(r),
+            Err(err) => {
+                if let LlmError::RateLimited { retry_after: Some(d), .. } = &err {
+                    self.backoff.set_backoff(self.inner.model_name(), *d).await;
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn complete_with_tools(&self, request: ToolCompletionRequest) -> Result<ToolCompletionResponse, LlmError> {
+        match self.inner.complete_with_tools(request).await {
+            Ok(r) => Ok(r),
+            Err(err) => {
+                if let LlmError::RateLimited { retry_after: Some(d), .. } = &err {
+                    self.backoff.set_backoff(self.inner.model_name(), *d).await;
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        self.inner.list_models().await
+    }
+
+    async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> {
+        self.inner.model_metadata().await
+    }
+
+    fn active_model_name(&self) -> String {
+        self.inner.active_model_name()
+    }
+
+    fn set_model(&self, model: &str) -> Result<(), LlmError> {
+        self.inner.set_model(model)
+    }
+
+    fn calculate_cost(&self, input_tokens: u32, output_tokens: u32) -> rust_decimal::Decimal {
+        self.inner.calculate_cost(input_tokens, output_tokens)
+    }
+}
+
+/// Guard wrapper that checks provider-level backoff before forwarding calls.
+pub struct BackoffGuardProvider {
+    inner: Arc<dyn LlmProvider>,
+    backoff: Arc<ProviderBackoff>,
+    drop_on_backoff: bool,
+}
+
+impl BackoffGuardProvider {
+    pub fn new(inner: Arc<dyn LlmProvider>, backoff: Arc<ProviderBackoff>, drop_on_backoff: bool) -> Self {
+        Self { inner, backoff, drop_on_backoff }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for BackoffGuardProvider {
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn cost_per_token(&self) -> (rust_decimal::Decimal, rust_decimal::Decimal) {
+        self.inner.cost_per_token()
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        if let Some(remaining) = self.backoff.get_remaining(self.inner.model_name()).await {
+            if self.drop_on_backoff {
+                return Err(LlmError::Dropped { provider: self.inner.model_name().to_string(), reason: format!("backoff active for {:.0}s", remaining.as_secs_f64()) });
+            } else {
+                return Err(LlmError::RateLimited { provider: self.inner.model_name().to_string(), retry_after: Some(remaining) });
+            }
+        }
+        self.inner.complete(request).await
+    }
+
+    async fn complete_with_tools(&self, request: ToolCompletionRequest) -> Result<ToolCompletionResponse, LlmError> {
+        if let Some(remaining) = self.backoff.get_remaining(self.inner.model_name()).await {
+            if self.drop_on_backoff {
+                return Err(LlmError::Dropped { provider: self.inner.model_name().to_string(), reason: format!("backoff active for {:.0}s", remaining.as_secs_f64()) });
+            } else {
+                return Err(LlmError::RateLimited { provider: self.inner.model_name().to_string(), retry_after: Some(remaining) });
+            }
+        }
+        self.inner.complete_with_tools(request).await
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        self.inner.list_models().await
+    }
+
+    async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> {
+        self.inner.model_metadata().await
+    }
+
+    fn active_model_name(&self) -> String {
+        self.inner.active_model_name()
+    }
+
+    fn set_model(&self, model: &str) -> Result<(), LlmError> {
+        self.inner.set_model(model)
+    }
+
+    fn calculate_cost(&self, input_tokens: u32, output_tokens: u32) -> rust_decimal::Decimal {
+        self.inner.calculate_cost(input_tokens, output_tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use rust_decimal::Decimal;
+
+    struct FakeRateLimited;
+
+    #[async_trait]
+    impl LlmProvider for FakeRateLimited {
+        fn model_name(&self) -> &str { "fake" }
+        fn cost_per_token(&self) -> (Decimal, Decimal) { (Decimal::ZERO, Decimal::ZERO) }
+        async fn complete(&self, _request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+            Err(LlmError::RateLimited { provider: "fake".to_string(), retry_after: Some(Duration::from_secs(2)) })
+        }
+        async fn complete_with_tools(&self, _request: ToolCompletionRequest) -> Result<ToolCompletionResponse, LlmError> {
+            Err(LlmError::RateLimited { provider: "fake".to_string(), retry_after: Some(Duration::from_secs(2)) })
+        }
+        async fn list_models(&self) -> Result<Vec<String>, LlmError> { Ok(vec![]) }
+        async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> { Ok(ModelMetadata { id: "fake".to_string(), context_length: None }) }
+        fn active_model_name(&self) -> String { "fake".to_string() }
+        fn set_model(&self, _model: &str) -> Result<(), LlmError> { Ok(()) }
+        fn calculate_cost(&self, _i: u32, _o: u32) -> Decimal { Decimal::ZERO }
+    }
+
+    #[tokio::test]
+    async fn observer_sets_backoff() {
+        let backoff = Arc::new(ProviderBackoff::new());
+        let inner = Arc::new(FakeRateLimited);
+        let obs = BackoffObserverProvider::new(inner, Arc::clone(&backoff));
+
+        let _ = obs.complete(crate::llm::CompletionRequest::new(vec![])).await;
+        let rem = backoff.get_remaining("fake").await;
+        assert!(rem.is_some(), "backoff should be set");
+    }
+
+    #[tokio::test]
+    async fn guard_blocks_when_backoff_set() {
+        let backoff = Arc::new(ProviderBackoff::new());
+        backoff.set_backoff("fake", Duration::from_secs(5)).await;
+        let inner = Arc::new(FakeRateLimited);
+        let guard = BackoffGuardProvider::new(inner, Arc::clone(&backoff), true);
+
+        let err = guard.complete(crate::llm::CompletionRequest::new(vec![])).await.unwrap_err();
+        match err {
+            LlmError::Dropped { provider, reason } => {
+                assert_eq!(provider, "fake");
+                assert!(reason.contains("backoff active"));
+            }
+            _ => panic!("expected Dropped"),
+        }
+    }
+}

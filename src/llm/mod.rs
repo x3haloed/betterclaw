@@ -18,6 +18,8 @@ mod reasoning;
 mod request_id;
 pub mod response_cache;
 pub mod retry;
+mod backoff;
+pub use backoff::{BackoffGuardProvider, BackoffObserverProvider, ProviderBackoff};
 mod rig_adapter;
 pub mod smart_routing;
 
@@ -465,6 +467,7 @@ pub fn create_cheap_llm_provider(
 #[allow(clippy::type_complexity)]
 pub fn build_provider_chain(
     config: &LlmConfig,
+    backoff: Option<std::sync::Arc<crate::llm::backoff::ProviderBackoff>>,
 ) -> Result<(Arc<dyn LlmProvider>, Option<Arc<dyn LlmProvider>>), LlmError> {
     let llm = create_llm_provider(config)?;
     tracing::info!("LLM provider initialized: {}", llm.model_name());
@@ -482,6 +485,8 @@ pub fn build_provider_chain(
     } else {
         llm
     };
+
+    // (backoff observer wrapper applied at end of chain)
 
     // 2. Smart routing (cheap/primary split)
     let llm: Arc<dyn LlmProvider> = if let Some(ref cheap_model) = config.tuning.cheap_model {
@@ -574,6 +579,14 @@ pub fn build_provider_chain(
     if let Some(ref cheap) = cheap_llm {
         tracing::info!("Cheap LLM provider initialized: {}", cheap.model_name());
     }
+
+    // If a shared backoff registry was provided, wrap the final chain with an
+    // observer that records provider-suggested `Retry-After` values.
+    let llm = if let Some(b) = backoff {
+        Arc::new(crate::llm::backoff::BackoffObserverProvider::new(llm, b)) as Arc<dyn LlmProvider>
+    } else {
+        llm
+    };
 
     Ok((llm, cheap_llm))
 }

@@ -241,9 +241,27 @@ impl AppBuilder {
         ),
         anyhow::Error,
     > {
-        let (llm, cheap_llm) = crate::llm::build_provider_chain(&self.config.llm)?;
+        // Shared provider backoff registry (keyed by provider name).
+        let backoff = std::sync::Arc::new(crate::llm::ProviderBackoff::new());
+
+        let (llm, cheap_llm) = crate::llm::build_provider_chain(&self.config.llm, Some(std::sync::Arc::clone(&backoff)))?;
+        // Wrap returned chain with a guard that checks provider-level backoff. Main LLM
+        // will not drop requests on backoff (drop_on_backoff = false).
+        let llm = Arc::new(crate::llm::BackoffGuardProvider::new(
+            llm,
+            std::sync::Arc::clone(&backoff),
+            false,
+        )) as Arc<dyn LlmProvider>;
+
         let (compressor_llm, _compressor_cheap) =
-            crate::llm::build_provider_chain(&self.config.compressor_llm)?;
+            crate::llm::build_provider_chain(&self.config.compressor_llm, Some(std::sync::Arc::clone(&backoff)))?;
+        // Compressor is re-entrant; drop outbound requests while provider is in backoff.
+        let compressor_llm = Arc::new(crate::llm::BackoffGuardProvider::new(
+            compressor_llm,
+            std::sync::Arc::clone(&backoff),
+            true,
+        )) as Arc<dyn LlmProvider>;
+
         Ok((llm, cheap_llm, compressor_llm))
     }
 

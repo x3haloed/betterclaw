@@ -9,7 +9,7 @@
 /// Strict CI-time validation of a JSON schema against OpenAI strict-mode rules.
 ///
 /// Use this function in tests and CI to catch subtle schema defects that the
-/// lenient runtime validator allows (freeform properties, missing
+/// lenient runtime validator allows (missing property types, missing
 /// `additionalProperties`, enum-type mismatches).
 ///
 /// For the lenient runtime variant used at tool-registration time, see
@@ -81,16 +81,12 @@ fn check_object_schema(schema: &serde_json::Value, path: &str) -> Vec<String> {
         }
     }
 
-    // Rule 4: every property should have a "type" field
+    // Rule 4: every property must have a "type" field
     for (key, prop) in properties {
         let prop_path = format!("{path}.{key}");
 
         if prop.get("type").is_none() {
-            // Freeform properties (no type) are intentionally allowed in some tools
-            // (json "data", http "body") for OpenAI compatibility with union types.
-            // We flag them as warnings but don't treat them as hard errors.
-            // Uncomment the next line to enforce strict typing:
-            // errors.push(format!("{prop_path}: property missing \"type\" field"));
+            errors.push(format!("{prop_path}: property missing \"type\" field"));
             continue;
         }
 
@@ -946,7 +942,7 @@ mod tests {
         });
         assert!(validate_strict_schema(&bad_enum, "ext_enum_mismatch").is_err());
 
-        // Nested object without type (deeply nested MCP schema)
+        // Nested object without type should be rejected, not just top-level fields.
         let bad_nested = serde_json::json!({
             "type": "object",
             "properties": {
@@ -958,9 +954,6 @@ mod tests {
                 }
             }
         });
-        // This may pass or fail depending on whether we enforce type on every
-        // nested property -- the validator allows freeform for compatibility.
-        // The important thing is it doesn't panic.
-        let _ = validate_strict_schema(&bad_nested, "ext_nested_no_type");
+        assert!(validate_strict_schema(&bad_nested, "ext_nested_no_type").is_err());
     }
 }

@@ -1,12 +1,11 @@
 //! Validates that all built-in tool schemas conform to OpenAI strict-mode rules.
 //!
 //! This catches the class of bugs where `required` keys aren't in `properties`,
-//! properties are missing `type` (intentional freeform is allowed), or nested
-//! objects/arrays are malformed.
+//! properties are missing `type`, or nested objects/arrays are malformed.
 //!
 //! See: <https://github.com/nearai/betterclaw/issues/352> (QA plan, item 1.1)
 
-use betterclaw::tools::validate_tool_schema;
+use betterclaw::tools::schema_validator::validate_strict_schema;
 use betterclaw::tools::{Tool, ToolRegistry};
 
 /// Validate schemas of all tools registered via `register_builtin_tools()` and
@@ -31,8 +30,7 @@ async fn all_core_builtin_tool_schemas_are_valid() {
     let mut all_errors = Vec::new();
     for tool in &tools {
         let schema = tool.parameters_schema();
-        let errors = validate_tool_schema(&schema, tool.name());
-        if !errors.is_empty() {
+        if let Err(errors) = validate_strict_schema(&schema, tool.name()) {
             all_errors.push(format!(
                 "Tool '{}' has schema errors:\n  {}",
                 tool.name(),
@@ -82,23 +80,18 @@ async fn core_registration_covers_expected_tools() {
 /// Validate individual tool schemas that are known to use non-trivial patterns.
 /// These are regression tests for specific bugs.
 #[test]
-fn json_tool_freeform_data_field_is_valid() {
-    // Regression: json tool's "data" field intentionally has no "type" for
-    // OpenAI compatibility (union types with arrays require "items").
+fn json_tool_data_field_is_strictly_typed() {
+    // Regression: OpenAI rejects tool properties without a "type" key.
     let tool = betterclaw::tools::builtin::JsonTool;
     let schema = tool.parameters_schema();
-    let errors = validate_tool_schema(&schema, "json");
-    assert!(errors.is_empty(), "json tool schema errors: {errors:?}");
+    validate_strict_schema(&schema, "json").expect("json tool schema should be strict-mode valid");
 
-    // Verify the freeform pattern is still in place
+    // Verify the schema matches the implementation contract.
     let data = schema
         .get("properties")
         .and_then(|p| p.get("data"))
         .expect("json tool should have 'data' property");
-    assert!(
-        data.get("type").is_none(),
-        "json.data should be freeform (no type) for OpenAI compatibility"
-    );
+    assert_eq!(data.get("type").and_then(|t| t.as_str()), Some("string"));
 }
 
 #[test]
@@ -106,8 +99,7 @@ fn http_tool_headers_array_is_valid() {
     // Regression: http tool's "headers" is an array of {name, value} objects.
     let tool = betterclaw::tools::builtin::HttpTool::new();
     let schema = tool.parameters_schema();
-    let errors = validate_tool_schema(&schema, "http");
-    assert!(errors.is_empty(), "http tool schema errors: {errors:?}");
+    validate_strict_schema(&schema, "http").expect("http tool schema should be strict-mode valid");
 
     // Verify array structure
     let headers = schema
@@ -129,14 +121,12 @@ fn http_tool_headers_array_is_valid() {
 fn time_tool_schema_is_valid() {
     let tool = betterclaw::tools::builtin::TimeTool;
     let schema = tool.parameters_schema();
-    let errors = validate_tool_schema(&schema, "time");
-    assert!(errors.is_empty(), "time tool schema errors: {errors:?}");
+    validate_strict_schema(&schema, "time").expect("time tool schema should be strict-mode valid");
 }
 
 #[test]
 fn shell_tool_schema_is_valid() {
     let tool = betterclaw::tools::builtin::ShellTool::new();
     let schema = tool.parameters_schema();
-    let errors = validate_tool_schema(&schema, "shell");
-    assert!(errors.is_empty(), "shell tool schema errors: {errors:?}");
+    validate_strict_schema(&schema, "shell").expect("shell tool schema should be strict-mode valid");
 }

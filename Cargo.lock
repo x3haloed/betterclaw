@@ -526,6 +526,7 @@ dependencies = [
  "hkdf",
  "html-to-markdown-rs",
  "http-body-util",
+ "httpdate",
  "hyper 1.8.1",
  "hyper-util",
  "insta",

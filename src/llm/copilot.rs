@@ -6,6 +6,8 @@ use rust_decimal::Decimal;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::time::{Duration, SystemTime};
+use httpdate::parse_http_date;
 
 use crate::error::LlmError;
 use crate::llm::costs;
@@ -87,6 +89,7 @@ impl CopilotProvider {
             .send()
             .await?;
         let status = response.status();
+        let headers = response.headers().clone();
         let text = response.text().await.unwrap_or_default();
 
         if status.as_u16() == 401 || status.as_u16() == 403 {
@@ -100,7 +103,23 @@ impl CopilotProvider {
             });
         }
 
+        // Map common non-success statuses to richer `LlmError` variants when possible.
         if !status.is_success() {
+            // Handle 429 rate limiting specially so callers can use provider-suggested retry delays.
+            if status.as_u16() == 429 {
+                // Parse Retry-After hints from headers. Accept three possible forms (in order):
+                // 1. `retry-after-ms` header (milliseconds)
+                // 2. `Retry-After` header as integer seconds
+                // 3. `Retry-After` header as an HTTP-date (RFC7231)
+                let retry_after = parse_retry_after(&headers);
+
+                tracing::warn!(status = %status, body = %truncate_for_log(&text), "Copilot rate limited");
+                return Err(LlmError::RateLimited {
+                    provider: "copilot".to_string(),
+                    retry_after,
+                });
+            }
+
             let reason = extract_error_message(&text)
                 .unwrap_or_else(|| format!("HTTP {}: {}", status, truncate_for_log(&text)));
             tracing::warn!(status = %status, body = %truncate_for_log(&text), "Copilot request failed");
@@ -777,9 +796,89 @@ fn normalize_tool_name(name: &str, known_tools: &std::collections::HashSet<Strin
     name.to_string()
 }
 
+
+
+/// Parse common `Retry-After` header variants and return a `Duration` to wait if available.
+fn parse_retry_after(headers: &HeaderMap) -> Option<Duration> {
+    // 1) Check `retry-after-ms` (milliseconds) - some services provide this.
+    let name = HeaderName::from_static("retry-after-ms");
+    if let Some(val) = headers.get(&name) {
+        if let Ok(s) = val.to_str() {
+            if let Ok(ms) = s.parse::<f64>() {
+                if ms.is_finite() && ms >= 0.0 {
+                    let ms_u = ms.round() as u64;
+                    return Some(Duration::from_millis(ms_u));
+                }
+            }
+        }
+    }
+
+    // 2) Standard `Retry-After` header - try numeric seconds first.
+    if let Some(val) = headers.get(reqwest::header::RETRY_AFTER) {
+        if let Ok(s) = val.to_str() {
+            // Try integer/float seconds
+            if let Ok(secs_f) = s.parse::<f64>() {
+                if secs_f.is_finite() && secs_f >= 0.0 {
+                    return Some(Duration::from_secs_f64(secs_f));
+                }
+            }
+
+            // Fall back to HTTP-date parsing (RFC7231)
+            if let Ok(parsed) = parse_http_date(s) {
+                let now = SystemTime::now();
+                if let Ok(dur) = parsed.duration_since(now) {
+                    // If the date is in the past, treat as immediate (no retry-after)
+                    if dur.as_secs() == 0 && dur.subsec_nanos() == 0 {
+                        return None;
+                    }
+                    return Some(dur);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn parses_retry_after_seconds() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            HeaderValue::from_static("10"),
+        );
+        let dur = parse_retry_after(&headers).expect("expected duration");
+        assert_eq!(dur, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn parses_retry_after_ms() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("retry-after-ms"),
+            HeaderValue::from_static("1500"),
+        );
+        let dur = parse_retry_after(&headers).expect("expected duration");
+        assert_eq!(dur, Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn parses_retry_after_http_date() {
+        let mut headers = HeaderMap::new();
+        // choose a time a few seconds in the future
+        let ts = SystemTime::now() + Duration::from_secs(5);
+        let http_date = httpdate::fmt_http_date(ts);
+        headers.insert(reqwest::header::RETRY_AFTER, HeaderValue::from_str(&http_date).unwrap());
+        let dur = parse_retry_after(&headers).expect("expected duration");
+        // allow some leeway due to test timing
+        assert!(dur.as_secs() >= 3 && dur.as_secs() <= 7, "dur={:?}", dur);
+    }
 
     #[test]
     fn parses_simple_completion_response() {

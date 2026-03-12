@@ -61,6 +61,7 @@ async fn core_registration_covers_expected_tools() {
 
     let expected = &[
         "apply_patch",
+        "current_message",
         "echo",
         "http",
         "json",

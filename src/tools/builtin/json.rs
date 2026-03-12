@@ -28,7 +28,6 @@ impl Tool for JsonTool {
                     "description": "The JSON operation to perform"
                 },
                 "data": {
-                    "type": "string",
                     "description": "JSON input as a string. For query/stringify/validate, provide stringified JSON."
                 },
                 "path": {
@@ -192,13 +191,13 @@ mod tests {
     }
 
     #[test]
-    fn test_json_tool_schema_data_is_string() {
+    fn test_json_tool_schema_data_is_freeform() {
         let schema = JsonTool.parameters_schema();
         let data = schema
             .get("properties")
             .and_then(|p| p.get("data"))
             .expect("data schema missing");
 
-        assert_eq!(data.get("type"), Some(&serde_json::json!("string")));
+        assert!(data.get("type").is_none());
     }
 }

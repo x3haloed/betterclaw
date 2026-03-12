@@ -57,6 +57,15 @@ pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
     }
 }
 
+fn visible_response_or_suppressed_empty(content: String) -> Option<String> {
+    if crate::llm::is_silent_reply(&content) {
+        tracing::debug!("Suppressing silent reply token");
+        Some(String::new())
+    } else {
+        Some(content)
+    }
+}
+
 /// Core dependencies for the agent.
 ///
 /// Bundles the shared components to reduce argument count.
@@ -980,15 +989,7 @@ impl Agent {
 
         // Convert SubmissionResult to response string
         match result? {
-            SubmissionResult::Response { content } => {
-                // Suppress silent replies (e.g. from group chat "nothing to say" responses)
-                if crate::llm::is_silent_reply(&content) {
-                    tracing::debug!("Suppressing silent reply token");
-                    Ok(None)
-                } else {
-                    Ok(Some(content))
-                }
-            }
+            SubmissionResult::Response { content } => Ok(visible_response_or_suppressed_empty(content)),
             SubmissionResult::Ok { message } => Ok(message),
             SubmissionResult::Error { message } => Ok(Some(format!("Error: {}", message))),
             SubmissionResult::Interrupted => Ok(Some("Interrupted.".into())),
@@ -1023,7 +1024,8 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_for_preview;
+    use super::{truncate_for_preview, visible_response_or_suppressed_empty};
+    use crate::llm::SILENT_REPLY_TOKEN;
 
     #[test]
     fn test_truncate_short_input() {
@@ -1085,5 +1087,21 @@ mod tests {
         let result = truncate_for_preview(input, 8);
         // 'h','e','l','l','o',' ','世','界' = 8 chars
         assert_eq!(result, "hello 世界...");
+    }
+
+    #[test]
+    fn test_silent_reply_is_suppressed_without_shutdown_sentinel() {
+        assert_eq!(
+            visible_response_or_suppressed_empty(SILENT_REPLY_TOKEN.to_string()),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn test_normal_reply_stays_visible() {
+        assert_eq!(
+            visible_response_or_suppressed_empty("hello".to_string()),
+            Some("hello".to_string())
+        );
     }
 }

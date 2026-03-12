@@ -120,6 +120,112 @@ impl LlmProvider for BackoffObserverProvider {
     }
 }
 
+/// Optional pre-flight backoff provider that spaces requests to a provider
+/// by ensuring at least `min_interval` between consecutive requests.
+pub struct PreflightBackoffProvider {
+    inner: Arc<dyn LlmProvider>,
+    min_interval: Duration,
+    // last request timestamp per provider name
+    last: RwLock<HashMap<String, Instant>>,
+}
+
+impl PreflightBackoffProvider {
+    pub fn new(inner: Arc<dyn LlmProvider>, min_interval: Duration) -> Self {
+        Self {
+            inner,
+            min_interval,
+            last: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for PreflightBackoffProvider {
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn cost_per_token(&self) -> (rust_decimal::Decimal, rust_decimal::Decimal) {
+        self.inner.cost_per_token()
+    }
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        let name = self.inner.model_name().to_string();
+        // Check last time
+        if let Some(remaining) = {
+            let m = self.last.read().await;
+            m.get(&name).map(|deadline| {
+                if *deadline > Instant::now() {
+                    *deadline - Instant::now()
+                } else {
+                    Duration::ZERO
+                }
+            })
+        } {
+            if remaining > Duration::ZERO {
+                tracing::info!(provider=%name, wait_ms=%remaining.as_millis(), "Preflight backoff delaying request");
+                tokio::time::sleep(remaining).await;
+            }
+        }
+
+        // Reserve slot: set next allowed time
+        let next = Instant::now() + self.min_interval;
+        {
+            let mut m = self.last.write().await;
+            m.insert(name.clone(), next);
+        }
+
+        self.inner.complete(request).await
+    }
+
+    async fn complete_with_tools(&self, request: ToolCompletionRequest) -> Result<ToolCompletionResponse, LlmError> {
+        let name = self.inner.model_name().to_string();
+        if let Some(remaining) = {
+            let m = self.last.read().await;
+            m.get(&name).map(|deadline| {
+                if *deadline > Instant::now() {
+                    *deadline - Instant::now()
+                } else {
+                    Duration::ZERO
+                }
+            })
+        } {
+            if remaining > Duration::ZERO {
+                tracing::info!(provider=%name, wait_ms=%remaining.as_millis(), "Preflight backoff delaying tool request");
+                tokio::time::sleep(remaining).await;
+            }
+        }
+
+        let next = Instant::now() + self.min_interval;
+        {
+            let mut m = self.last.write().await;
+            m.insert(name.clone(), next);
+        }
+
+        self.inner.complete_with_tools(request).await
+    }
+
+    async fn list_models(&self) -> Result<Vec<String>, LlmError> {
+        self.inner.list_models().await
+    }
+
+    async fn model_metadata(&self) -> Result<ModelMetadata, LlmError> {
+        self.inner.model_metadata().await
+    }
+
+    fn active_model_name(&self) -> String {
+        self.inner.active_model_name()
+    }
+
+    fn set_model(&self, model: &str) -> Result<(), LlmError> {
+        self.inner.set_model(model)
+    }
+
+    fn calculate_cost(&self, input_tokens: u32, output_tokens: u32) -> rust_decimal::Decimal {
+        self.inner.calculate_cost(input_tokens, output_tokens)
+    }
+}
+
 /// Guard wrapper that checks provider-level backoff before forwarding calls.
 pub struct BackoffGuardProvider {
     inner: Arc<dyn LlmProvider>,

@@ -19,7 +19,7 @@ mod request_id;
 pub mod response_cache;
 pub mod retry;
 mod backoff;
-pub use backoff::{BackoffGuardProvider, BackoffObserverProvider, ProviderBackoff};
+pub use backoff::{BackoffGuardProvider, BackoffObserverProvider, ProviderBackoff, PreflightBackoffProvider};
 mod rig_adapter;
 pub mod smart_routing;
 
@@ -582,6 +582,15 @@ pub fn build_provider_chain(
 
     // If a shared backoff registry was provided, wrap the final chain with an
     // observer that records provider-suggested `Retry-After` values.
+    // Optional preflight backoff: space requests before sending (configurable)
+    let llm: Arc<dyn LlmProvider> = if config.tuning.preflight_backoff_enabled {
+        let interval = std::time::Duration::from_secs(config.tuning.preflight_backoff_secs);
+        tracing::info!(secs=%config.tuning.preflight_backoff_secs, "Preflight backoff enabled: spacing requests by {}s", config.tuning.preflight_backoff_secs);
+        Arc::new(crate::llm::PreflightBackoffProvider::new(llm, interval)) as Arc<dyn LlmProvider>
+    } else {
+        llm
+    };
+
     let llm = if let Some(b) = backoff {
         Arc::new(crate::llm::backoff::BackoffObserverProvider::new(llm, b)) as Arc<dyn LlmProvider>
     } else {

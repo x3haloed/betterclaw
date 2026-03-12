@@ -281,6 +281,12 @@ pub struct LlmTuningConfig {
     /// gets an uncertain response from the cheap model, re-send to primary.
     /// Default: true.
     pub smart_routing_cascade: bool,
+    /// Optional preflight backoff: when enabled, the provider chain will
+    /// ensure a minimum interval between requests to the same provider to
+    /// avoid hitting rate limits aggressively.
+    pub preflight_backoff_enabled: bool,
+    /// Minimum interval in seconds between requests when preflight backoff is enabled.
+    pub preflight_backoff_secs: u64,
 }
 
 impl LlmConfig {
@@ -336,6 +342,8 @@ impl LlmConfig {
             failover_cooldown_secs: parse_optional_env("LLM_FAILOVER_COOLDOWN_SECS", 300)?,
             failover_cooldown_threshold: parse_optional_env("LLM_FAILOVER_THRESHOLD", 3)?,
             smart_routing_cascade: parse_optional_env("SMART_ROUTING_CASCADE", true)?,
+            preflight_backoff_enabled: crate::config::helpers::parse_bool_env("LLM_PREFLIGHT_BACKOFF_ENABLED", false)?,
+            preflight_backoff_secs: parse_optional_env("LLM_PREFLIGHT_BACKOFF_SECS", 1)?,
         };
 
         // Resolve provider-specific configs based on backend

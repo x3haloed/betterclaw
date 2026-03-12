@@ -63,6 +63,8 @@ fn compressor_tuning() -> Result<LlmTuningConfig, ConfigError> {
         failover_cooldown_secs: 300,
         failover_cooldown_threshold: 3,
         smart_routing_cascade: false,
+        preflight_backoff_enabled: false,
+        preflight_backoff_secs: 1,
     })
 }
 

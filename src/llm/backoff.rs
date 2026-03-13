@@ -29,26 +29,22 @@ impl ProviderBackoff {
 
     /// Get remaining backoff duration for `provider`, if any.
     pub async fn get_remaining(&self, provider: &str) -> Option<Duration> {
-        let m = self.inner.read().await;
-        if let Some(deadline) = m.get(provider) {
-            let now = Instant::now();
-            if *deadline > now {
-                Some(*deadline - now)
-            } else {
+        let now = Instant::now();
+        let deadline = {
+            let m = self.inner.read().await;
+            m.get(provider).copied()
+        };
+
+        match deadline {
+            Some(deadline) if deadline > now => Some(deadline - now),
+            Some(_) => {
+                let mut m = self.inner.write().await;
+                if m.get(provider).is_some_and(|deadline| Instant::now() >= *deadline) {
+                    m.remove(provider);
+                }
                 None
             }
-        } else {
-            None
-        }
-    }
-
-    /// Clear expired entries (optional helper).
-    pub async fn clear_expired(&self, provider: &str) {
-        let mut m = self.inner.write().await;
-        if let Some(deadline) = m.get(provider) {
-            if Instant::now() >= *deadline {
-                m.remove(provider);
-            }
+            None => None,
         }
     }
 }
@@ -340,5 +336,21 @@ mod tests {
             }
             _ => panic!("expected Dropped"),
         }
+    }
+
+    #[tokio::test]
+    async fn get_remaining_removes_expired_entries() {
+        let backoff = ProviderBackoff::new();
+        backoff.set_backoff("fake", Duration::from_millis(1)).await;
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        assert!(backoff.get_remaining("fake").await.is_none());
+
+        let inner = backoff.inner.read().await;
+        assert!(
+            !inner.contains_key("fake"),
+            "expired provider entries should be cleaned up when observed"
+        );
     }
 }

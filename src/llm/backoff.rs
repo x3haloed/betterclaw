@@ -151,28 +151,30 @@ impl LlmProvider for PreflightBackoffProvider {
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         let name = self.inner.model_name().to_string();
-        // Check last time
-        if let Some(remaining) = {
-            let m = self.last.read().await;
-            m.get(&name).map(|deadline| {
-                if *deadline > Instant::now() {
-                    *deadline - Instant::now()
-                } else {
-                    Duration::ZERO
-                }
-            })
-        } {
-            if remaining > Duration::ZERO {
-                tracing::info!(provider=%name, wait_ms=%remaining.as_millis(), "Preflight backoff delaying request");
-                tokio::time::sleep(remaining).await;
-            }
-        }
-
-        // Reserve slot: set next allowed time
-        let next = Instant::now() + self.min_interval;
-        {
+        // Atomic check-and-reserve: acquire write lock, inspect deadline, sleep
+        // if another caller holds the slot, then retry. This prevents two
+        // concurrent callers from both observing a stale state and proceeding
+        // without spacing.
+        loop {
+            // Acquire write lock to both inspect and reserve the slot.
             let mut m = self.last.write().await;
+            if let Some(deadline) = m.get(&name) {
+                let now = Instant::now();
+                if *deadline > now {
+                    let remaining = *deadline - now;
+                    // Drop lock before sleeping so other tasks can observe the
+                    // active deadline and avoid busy-waiting.
+                    drop(m);
+                    tracing::info!(provider=%name, wait_ms=%remaining.as_millis(), "Preflight backoff delaying request");
+                    tokio::time::sleep(remaining).await;
+                    // After sleeping, loop and try to reserve again.
+                    continue;
+                }
+            }
+            // No active deadline — reserve the slot and proceed.
+            let next = Instant::now() + self.min_interval;
             m.insert(name.clone(), next);
+            break;
         }
 
         self.inner.complete(request).await
@@ -180,26 +182,21 @@ impl LlmProvider for PreflightBackoffProvider {
 
     async fn complete_with_tools(&self, request: ToolCompletionRequest) -> Result<ToolCompletionResponse, LlmError> {
         let name = self.inner.model_name().to_string();
-        if let Some(remaining) = {
-            let m = self.last.read().await;
-            m.get(&name).map(|deadline| {
-                if *deadline > Instant::now() {
-                    *deadline - Instant::now()
-                } else {
-                    Duration::ZERO
-                }
-            })
-        } {
-            if remaining > Duration::ZERO {
-                tracing::info!(provider=%name, wait_ms=%remaining.as_millis(), "Preflight backoff delaying tool request");
-                tokio::time::sleep(remaining).await;
-            }
-        }
-
-        let next = Instant::now() + self.min_interval;
-        {
+        loop {
             let mut m = self.last.write().await;
+            if let Some(deadline) = m.get(&name) {
+                let now = Instant::now();
+                if *deadline > now {
+                    let remaining = *deadline - now;
+                    drop(m);
+                    tracing::info!(provider=%name, wait_ms=%remaining.as_millis(), "Preflight backoff delaying tool request");
+                    tokio::time::sleep(remaining).await;
+                    continue;
+                }
+            }
+            let next = Instant::now() + self.min_interval;
             m.insert(name.clone(), next);
+            break;
         }
 
         self.inner.complete_with_tools(request).await

@@ -39,6 +39,22 @@ pub enum ProviderProtocol {
     Ollama,
 }
 
+/// Which implementation path should instantiate the provider.
+///
+/// Most providers are generic and can be created from `protocol` alone.
+/// A small set use custom Rust code for auth or request semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderImplementation {
+    /// Generic protocol-backed provider built from registry metadata alone.
+    #[default]
+    Registry,
+    /// GitHub Copilot custom implementation.
+    Copilot,
+    /// OpenAI Codex custom implementation.
+    OpenAiCodex,
+}
+
 /// How the setup wizard should collect credentials for this provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -152,6 +168,9 @@ pub struct ProviderDefinition {
     pub aliases: Vec<String>,
     /// Which API protocol to use.
     pub protocol: ProviderProtocol,
+    /// Which implementation path should build this provider.
+    #[serde(default)]
+    pub implementation: ProviderImplementation,
     /// Default base URL. `None` means use the rig-core default for the protocol.
     #[serde(default)]
     pub default_base_url: Option<String>,
@@ -331,8 +350,8 @@ mod tests {
             serde_json::from_str(include_str!("../../providers.json")).unwrap(),
         );
         assert!(
-            registry.all().len() >= 5,
-            "should have at least 5 built-in providers"
+            registry.all().len() >= 7,
+            "should have at least 7 built-in providers"
         );
     }
 
@@ -344,6 +363,20 @@ mod tests {
         let openai = registry.find("openai").expect("openai should exist");
         assert_eq!(openai.id, "openai");
         assert_eq!(openai.protocol, ProviderProtocol::OpenAiCompletions);
+    }
+
+    #[test]
+    fn test_find_custom_provider_entries() {
+        let registry = ProviderRegistry::new(
+            serde_json::from_str(include_str!("../../providers.json")).unwrap(),
+        );
+        let copilot = registry.find("copilot").expect("copilot should exist");
+        assert_eq!(copilot.implementation, ProviderImplementation::Copilot);
+
+        let codex = registry
+            .find("openai_codex")
+            .expect("openai_codex should exist");
+        assert_eq!(codex.implementation, ProviderImplementation::OpenAiCodex);
     }
 
     #[test]

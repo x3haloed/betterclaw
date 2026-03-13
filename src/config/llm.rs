@@ -7,7 +7,7 @@ use crate::bootstrap::betterclaw_base_dir;
 use crate::config::helpers::{optional_env, parse_optional_env};
 use crate::error::ConfigError;
 use crate::llm::config::*;
-use crate::llm::registry::{ProviderProtocol, ProviderRegistry};
+use crate::llm::registry::{ProviderImplementation, ProviderProtocol, ProviderRegistry};
 use crate::llm::session::SessionConfig;
 use crate::settings::Settings;
 
@@ -70,16 +70,14 @@ impl LlmConfig {
 
         // Validate the backend is known
         let backend_lower = backend.to_lowercase();
+        let backend_def = registry.find(&backend_lower);
         let is_nearai =
             backend_lower == "nearai" || backend_lower == "near_ai" || backend_lower == "near";
-        let is_openai_codex = matches!(
-            backend_lower.as_str(),
-            "openai_codex" | "openai-codex" | "codex"
-        );
-        let is_copilot = matches!(
-            backend_lower.as_str(),
-            "copilot" | "github_copilot" | "github-copilot"
-        );
+        let implementation = backend_def
+            .map(|def| def.implementation)
+            .unwrap_or(ProviderImplementation::Registry);
+        let is_openai_codex = implementation == ProviderImplementation::OpenAiCodex;
+        let is_copilot = implementation == ProviderImplementation::Copilot;
         let is_bedrock =
             backend_lower == "bedrock" || backend_lower == "aws_bedrock" || backend_lower == "aws";
 
@@ -147,6 +145,7 @@ impl LlmConfig {
         };
 
         let copilot = if is_copilot {
+            let def = backend_def.expect("copilot backend should resolve from provider registry");
             let access_token = optional_env("COPILOT_TOKEN")?
                 .or(optional_env("GITHUB_COPILOT_TOKEN")?)
                 .map(SecretString::from)
@@ -160,14 +159,26 @@ impl LlmConfig {
                     key: "COPILOT_INTEGRATION_ID".to_string(),
                     hint: "Set COPILOT_INTEGRATION_ID when LLM_BACKEND=copilot".to_string(),
                 })?;
-            let base_url =
-                optional_env("COPILOT_API_URL")?.unwrap_or_else(default_copilot_api_url);
-            let model = optional_env("COPILOT_MODEL")?
+            let base_url = def
+                .base_url_env
+                .as_deref()
+                .map(optional_env)
+                .transpose()?
+                .flatten()
+                .or_else(|| def.default_base_url.clone())
+                .unwrap_or_else(default_copilot_api_url);
+            let model_env = def.model_env.as_str();
+            let model = optional_env(model_env)?
                 .or_else(|| settings.selected_model.clone())
-                .unwrap_or_else(|| "gpt-4o".to_string());
+                .unwrap_or_else(|| def.default_model.clone());
             let session_id = optional_env("COPILOT_SESSION_ID")?;
             let trace_parent = optional_env("COPILOT_TRACE_PARENT")?;
-            let extra_headers = optional_env("COPILOT_EXTRA_HEADERS")?
+            let extra_headers = def
+                .extra_headers_env
+                .as_deref()
+                .map(optional_env)
+                .transpose()?
+                .flatten()
                 .map(|val| parse_extra_headers(&val))
                 .transpose()?
                 .unwrap_or_default();
@@ -185,16 +196,24 @@ impl LlmConfig {
         };
 
         let openai_codex = if is_openai_codex {
+            let def =
+                backend_def.expect("openai_codex backend should resolve from provider registry");
             let auth_file = optional_env("OPENAI_CODEX_AUTH_PATH")?
                 .unwrap_or_else(default_openai_codex_auth_path);
             let (access_token, account_id) = load_openai_codex_credentials(&auth_file)?;
-            let base_url = optional_env("OPENAI_CODEX_BASE_URL")?
+            let base_url = def
+                .base_url_env
+                .as_deref()
+                .map(optional_env)
+                .transpose()?
+                .flatten()
                 .or_else(|| optional_env("LLM_BASE_URL").ok().flatten())
+                .or_else(|| def.default_base_url.clone())
                 .unwrap_or_else(|| "https://chatgpt.com/backend-api/codex".to_string());
-            let model = optional_env("OPENAI_CODEX_MODEL")?
+            let model = optional_env(def.model_env.as_str())?
                 .or_else(|| optional_env("LLM_MODEL").ok().flatten())
                 .or_else(|| settings.selected_model.clone())
-                .unwrap_or_else(|| "gpt-5.3-codex".to_string());
+                .unwrap_or_else(|| def.default_model.clone());
             Some(OpenAiCodexConfig {
                 base_url,
                 auth_file,

@@ -1,5 +1,36 @@
 [
   {
+    "id": "copilot",
+    "aliases": [
+      "github_copilot",
+      "github-copilot"
+    ],
+    "protocol": "open_ai_completions",
+    "implementation": "copilot",
+    "default_base_url": "https://api.githubcopilot.com",
+    "base_url_env": "COPILOT_API_URL",
+    "api_key_env": "COPILOT_TOKEN",
+    "api_key_required": true,
+    "model_env": "COPILOT_MODEL",
+    "default_model": "gpt-4o",
+    "extra_headers_env": "COPILOT_EXTRA_HEADERS",
+    "description": "GitHub Copilot chat completions (custom auth and headers)"
+  },
+  {
+    "id": "openai_codex",
+    "aliases": [
+      "openai-codex",
+      "codex"
+    ],
+    "protocol": "open_ai_completions",
+    "implementation": "open_ai_codex",
+    "default_base_url": "https://chatgpt.com/backend-api/codex",
+    "base_url_env": "OPENAI_CODEX_BASE_URL",
+    "model_env": "OPENAI_CODEX_MODEL",
+    "default_model": "gpt-5.3-codex",
+    "description": "OpenAI Codex backend via local Codex auth file"
+  },
+  {
     "id": "openai",
     "aliases": [
       "open_ai"

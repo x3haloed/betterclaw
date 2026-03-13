@@ -1,6 +1,5 @@
 use betterclaw::config::{
-    CompressorLoopConfig, DatabaseConfig, EmbeddingsConfig, LedgerIndexConfig,
-    LedgerRecallConfig,
+    CompressorLoopConfig, DatabaseConfig, EmbeddingsConfig, LedgerIndexConfig, LedgerRecallConfig,
 };
 use betterclaw::db::{Database, LedgerChunkHit, LedgerChunkStore, LedgerStore, WorkspaceStore};
 use betterclaw::tools::builtin::{
@@ -22,7 +21,10 @@ fn config_hub_exposes_continuity_types() {
 
 #[test]
 fn db_hub_exposes_ledger_and_workspace_traits() {
-    fn assert_database_shape<T: ?Sized + Database + LedgerStore + LedgerChunkStore + WorkspaceStore>() {}
+    fn assert_database_shape<
+        T: ?Sized + Database + LedgerStore + LedgerChunkStore + WorkspaceStore,
+    >() {
+    }
 
     assert_database_shape::<dyn Database>();
     let _ = std::mem::size_of::<LedgerChunkHit>();

@@ -15,7 +15,9 @@ use async_trait::async_trait;
 use betterclaw::agent::{Agent, AgentDeps};
 use betterclaw::app::{AppBuilder, AppBuilderFlags};
 use betterclaw::channels::web::log_layer::LogBroadcaster;
-use betterclaw::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
+use betterclaw::channels::{
+    Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
+};
 use betterclaw::config::Config;
 use betterclaw::db::Database;
 use betterclaw::error::ChannelError;

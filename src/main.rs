@@ -92,7 +92,8 @@ async fn async_main() -> anyhow::Result<()> {
             max_iterations,
         }) => {
             init_worker_tracing();
-            return betterclaw::worker::run_worker(*job_id, orchestrator_url, *max_iterations).await;
+            return betterclaw::worker::run_worker(*job_id, orchestrator_url, *max_iterations)
+                .await;
         }
         Some(Command::ClaudeBridge {
             job_id,
@@ -434,7 +435,8 @@ async fn async_main() -> anyhow::Result<()> {
     let mut sse_sender: Option<
         tokio::sync::broadcast::Sender<betterclaw::channels::web::types::SseEvent>,
     > = None;
-    let mut routine_engine_slot: Option<betterclaw::channels::web::server::RoutineEngineSlot> = None;
+    let mut routine_engine_slot: Option<betterclaw::channels::web::server::RoutineEngineSlot> =
+        None;
     if let Some(ref gw_config) = config.channels.gateway {
         let mut gw =
             GatewayChannel::new(gw_config.clone()).with_llm_provider(Arc::clone(&components.llm));
@@ -637,7 +639,8 @@ async fn async_main() -> anyhow::Result<()> {
         .map(|db| Arc::clone(db) as Arc<dyn betterclaw::db::SettingsStore>);
 
     if config.ledger_index.enabled {
-        if let (Some(store), Some(embeddings)) = (components.db.clone(), components.embeddings.clone())
+        if let (Some(store), Some(embeddings)) =
+            (components.db.clone(), components.embeddings.clone())
         {
             let _ledger_indexer = betterclaw::agent::spawn_ledger_indexer(
                 store,

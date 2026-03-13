@@ -785,15 +785,9 @@ impl Agent {
             "Message details"
         );
 
-        // Set message tool context for this turn (current channel and target)
-        // For Signal, use signal_target from metadata (group:ID or phone number),
-        // otherwise fall back to user_id
-        let target = message
-            .metadata
-            .get("signal_target")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| message.user_id.clone());
+        // Set message tool context for this turn using channel-specific routing
+        // metadata when available, otherwise fall back to the message user_id.
+        let target = resolve_message_tool_target(&message.metadata, &message.user_id);
         self.tools()
             .set_message_tool_context(Some(message.channel.clone()), Some(target))
             .await;
@@ -957,7 +951,7 @@ impl Agent {
 
         // Convert SubmissionResult to response string
         match result? {
-                SubmissionResult::Response { content } => {
+            SubmissionResult::Response { content } => {
                 // Suppress silent replies (e.g. from group chat "nothing to say" responses)
                 if crate::llm::is_silent_reply(&content) {
                     tracing::debug!("Suppressing silent reply token");
@@ -1000,9 +994,18 @@ impl Agent {
     }
 }
 
+fn resolve_message_tool_target(metadata: &serde_json::Value, user_id: &str) -> String {
+    metadata
+        .get("signal_target")
+        .and_then(|v| v.as_str())
+        .or_else(|| metadata.get("tidepool_target").and_then(|v| v.as_str()))
+        .map(ToString::to_string)
+        .unwrap_or_else(|| user_id.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::truncate_for_preview;
+    use super::{resolve_message_tool_target, truncate_for_preview};
 
     #[test]
     fn test_truncate_short_input() {
@@ -1064,5 +1067,38 @@ mod tests {
         let result = truncate_for_preview(input, 8);
         // 'h','e','l','l','o',' ','世','界' = 8 chars
         assert_eq!(result, "hello 世界...");
+    }
+
+    #[test]
+    fn test_resolve_message_tool_target_prefers_signal_target() {
+        let metadata = serde_json::json!({
+            "signal_target": "group:abc123",
+            "tidepool_target": "tidepool:domain:42",
+        });
+
+        assert_eq!(
+            resolve_message_tool_target(&metadata, "default"),
+            "group:abc123"
+        );
+    }
+
+    #[test]
+    fn test_resolve_message_tool_target_uses_tidepool_target() {
+        let metadata = serde_json::json!({
+            "tidepool_target": "tidepool:domain:42",
+        });
+
+        assert_eq!(
+            resolve_message_tool_target(&metadata, "default"),
+            "tidepool:domain:42"
+        );
+    }
+
+    #[test]
+    fn test_resolve_message_tool_target_falls_back_to_user_id() {
+        assert_eq!(
+            resolve_message_tool_target(&serde_json::Value::Null, "default"),
+            "default"
+        );
     }
 }

@@ -15,7 +15,9 @@ use futures::StreamExt;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
-use betterclaw::channels::{Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate};
+use betterclaw::channels::{
+    Channel, IncomingMessage, MessageStream, OutgoingResponse, StatusUpdate,
+};
 use betterclaw::error::ChannelError;
 
 // ---------------------------------------------------------------------------

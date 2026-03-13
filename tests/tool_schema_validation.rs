@@ -127,7 +127,8 @@ fn time_tool_schema_is_valid() {
 fn shell_tool_schema_is_valid() {
     let tool = betterclaw::tools::builtin::ShellTool::new();
     let schema = tool.parameters_schema();
-    validate_strict_schema(&schema, "shell").expect("shell tool schema should be strict-mode valid");
+    validate_strict_schema(&schema, "shell")
+        .expect("shell tool schema should be strict-mode valid");
 }
 
 /// Validates that all core tools work correctly under a multi-threaded tokio runtime.

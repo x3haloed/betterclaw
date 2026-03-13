@@ -12,8 +12,8 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
 };
-use futures::stream;
 use betterclaw::channels::relay::client::{RelayClient, RelayError};
+use futures::stream;
 use secrecy::SecretString;
 use serde::Deserialize;
 use tokio::net::TcpListener;

@@ -12,6 +12,7 @@ mod anthropic_oauth;
 #[cfg(feature = "bedrock")]
 mod bedrock;
 mod copilot;
+mod backoff;
 pub mod circuit_breaker;
 pub mod config;
 pub mod costs;
@@ -65,6 +66,8 @@ use std::sync::Arc;
 
 use rig::client::CompletionClient;
 use secrecy::ExposeSecret;
+
+use crate::llm::backoff::{BackoffGuardProvider, BackoffObserverProvider, PreflightBackoffProvider, ProviderBackoff};
 
 // LlmConfig, NearAiConfig, RegistryProviderConfig, and LlmError are
 // re-exported via `pub use` above from config and error submodules.
@@ -553,6 +556,33 @@ pub async fn build_provider_chain(
     let cheap_llm = create_cheap_llm_provider(config, session)?;
     if let Some(ref cheap) = cheap_llm {
         tracing::debug!("Cheap LLM provider initialized: {}", cheap.model_name());
+    }
+
+    // Install provider backoff observers/guards and optional preflight spacing.
+    // This watches for provider `RateLimited` errors and records provider-suggested
+    // retry-after values, and (optionally) spaces outgoing requests by a
+    // configured minimum interval to reduce rapid-fire requests.
+    let backoff_registry = std::sync::Arc::new(ProviderBackoff::new());
+
+    // Observer records provider-suggested backoffs when the underlying
+    // provider returns `RateLimited` with a `retry_after` value.
+    let llm: Arc<dyn LlmProvider> = Arc::new(BackoffObserverProvider::new(llm, backoff_registry.clone()));
+
+    // Guard checks recorded provider backoff and short-circuits requests
+    // while a provider-level backoff is active. Use `false` so callers see
+    // a `RateLimited` error with the remaining duration rather than dropping.
+    let llm: Arc<dyn LlmProvider> = Arc::new(BackoffGuardProvider::new(llm, backoff_registry.clone(), false));
+
+    // Optional preflight spacing controlled by env vars. If enabled, wrap the
+    // chain with `PreflightBackoffProvider` which ensures at least the
+    // configured number of seconds between consecutive requests to a provider.
+    if std::env::var("LLM_PREFLIGHT_BACKOFF_ENABLED").map(|v| v == "true").unwrap_or(false) {
+        let secs = std::env::var("LLM_PREFLIGHT_BACKOFF_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(1);
+        let llm = Arc::new(PreflightBackoffProvider::new(llm, std::time::Duration::from_secs(secs)));
+        return Ok((llm, cheap_llm, recording_handle));
     }
 
     Ok((llm, cheap_llm, recording_handle))

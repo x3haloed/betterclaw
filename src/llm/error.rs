@@ -14,6 +14,9 @@ pub enum LlmError {
         retry_after: Option<Duration>,
     },
 
+    #[error("Dropped request for provider {provider}: {reason}")]
+    Dropped { provider: String, reason: String },
+
     #[error("Invalid response from {provider}: {reason}")]
     InvalidResponse { provider: String, reason: String },
 

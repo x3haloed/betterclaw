@@ -844,7 +844,10 @@ impl Agent {
 
             // Execute the approved tool and continue the loop
             let mut job_ctx =
-                JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+                JobContext::with_user(&message.user_id, "chat", "Interactive chat session")
+                    .with_working_dir(
+                        crate::workspace::FsWorkspace::new(&message.user_id).files_dir(),
+                    );
             job_ctx.http_interceptor = self.deps.http_interceptor.clone();
             // Prefer a valid timezone from the approval message, fall back to the
             // resolved timezone stored when the approval was originally requested.

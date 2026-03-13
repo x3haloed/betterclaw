@@ -24,6 +24,14 @@ const MAX_WRITE_SIZE: usize = 5 * 1024 * 1024;
 /// Maximum directory listing entries.
 const MAX_DIR_ENTRIES: usize = 500;
 
+fn resolve_tool_path(
+    path_str: &str,
+    base_dir: Option<&Path>,
+    ctx: &JobContext,
+) -> Result<PathBuf, ToolError> {
+    validate_path(path_str, base_dir.or(ctx.working_dir.as_deref()))
+}
+
 /// Read file contents tool.
 #[derive(Debug, Default)]
 pub struct ReadFileTool {
@@ -76,7 +84,7 @@ impl Tool for ReadFileTool {
     async fn execute(
         &self,
         params: serde_json::Value,
-        _ctx: &JobContext,
+        ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let path_str = require_str(&params, "path")?;
 
@@ -85,7 +93,7 @@ impl Tool for ReadFileTool {
 
         let start = std::time::Instant::now();
 
-        let path = validate_path(path_str, self.base_dir.as_deref())?;
+        let path = resolve_tool_path(path_str, self.base_dir.as_deref(), ctx)?;
 
         // Check file size
         let metadata = fs::metadata(&path)
@@ -197,7 +205,7 @@ impl Tool for WriteFileTool {
     async fn execute(
         &self,
         params: serde_json::Value,
-        _ctx: &JobContext,
+        ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let path_str = require_str(&params, "path")?;
 
@@ -214,7 +222,7 @@ impl Tool for WriteFileTool {
             )));
         }
 
-        let path = validate_path(path_str, self.base_dir.as_deref())?;
+        let path = resolve_tool_path(path_str, self.base_dir.as_deref(), ctx)?;
 
         // Create parent directories
         if let Some(parent) = path.parent() {
@@ -305,7 +313,7 @@ impl Tool for ListDirTool {
     async fn execute(
         &self,
         params: serde_json::Value,
-        _ctx: &JobContext,
+        ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let path_str = params.get("path").and_then(|v| v.as_str()).unwrap_or(".");
 
@@ -321,7 +329,7 @@ impl Tool for ListDirTool {
 
         let start = std::time::Instant::now();
 
-        let path = validate_path(path_str, self.base_dir.as_deref())?;
+        let path = resolve_tool_path(path_str, self.base_dir.as_deref(), ctx)?;
 
         let mut entries = Vec::new();
         list_dir_inner(&path, &path, recursive, max_depth, 0, &mut entries).await?;
@@ -507,7 +515,7 @@ impl Tool for ApplyPatchTool {
     async fn execute(
         &self,
         params: serde_json::Value,
-        _ctx: &JobContext,
+        ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let path_str = require_str(&params, "path")?;
 
@@ -522,7 +530,7 @@ impl Tool for ApplyPatchTool {
 
         let start = std::time::Instant::now();
 
-        let path = validate_path(path_str, self.base_dir.as_deref())?;
+        let path = resolve_tool_path(path_str, self.base_dir.as_deref(), ctx)?;
 
         // Read current content
         let content = fs::read_to_string(&path)
@@ -721,6 +729,102 @@ mod tests {
 
         let entries = result.result.get("entries").unwrap().as_array().unwrap();
         assert!(entries.len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_uses_job_workdir_for_relative_paths() {
+        let dir = TempDir::new().unwrap();
+        let docs_dir = dir.path().join("documents");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+        let file_path = docs_dir.join("orientation-map.md");
+        std::fs::write(&file_path, "hello from workdir\n").unwrap();
+
+        let tool = ReadFileTool::new();
+        let ctx = JobContext::default().with_working_dir(dir.path());
+
+        let result = tool
+            .execute(
+                serde_json::json!({"path": "documents/orientation-map.md"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = result.result.get("content").unwrap().as_str().unwrap();
+        assert!(content.contains("hello from workdir"));
+    }
+
+    #[tokio::test]
+    async fn test_list_dir_uses_job_workdir_for_relative_paths() {
+        let dir = TempDir::new().unwrap();
+        let docs_dir = dir.path().join("documents");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+        std::fs::write(docs_dir.join("note.txt"), "content").unwrap();
+
+        let tool = ListDirTool::new();
+        let ctx = JobContext::default().with_working_dir(dir.path());
+
+        let result = tool
+            .execute(serde_json::json!({"path": "documents"}), &ctx)
+            .await
+            .unwrap();
+
+        let entries = result.result.get("entries").unwrap().as_array().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.as_str() == Some("note.txt (7B)"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_file_uses_job_workdir_for_relative_paths() {
+        let dir = TempDir::new().unwrap();
+        let docs_dir = dir.path().join("documents");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+
+        let tool = WriteFileTool::new();
+        let ctx = JobContext::default().with_working_dir(dir.path());
+
+        tool.execute(
+            serde_json::json!({
+                "path": "documents/new-note.txt",
+                "content": "hello"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(docs_dir.join("new-note.txt")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_uses_job_workdir_for_relative_paths() {
+        let dir = TempDir::new().unwrap();
+        let docs_dir = dir.path().join("documents");
+        std::fs::create_dir_all(&docs_dir).unwrap();
+        let file_path = docs_dir.join("snippet.txt");
+        std::fs::write(&file_path, "old value\n").unwrap();
+
+        let tool = ApplyPatchTool::new();
+        let ctx = JobContext::default().with_working_dir(dir.path());
+
+        tool.execute(
+            serde_json::json!({
+                "path": "documents/snippet.txt",
+                "old_string": "old value",
+                "new_string": "new value"
+            }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(file_path).unwrap(), "new value\n");
     }
 
     #[test]

@@ -184,7 +184,8 @@ impl Agent {
 
         // Create a JobContext for tool execution (chat doesn't have a real job)
         let mut job_ctx =
-            JobContext::with_user(&message.user_id, "chat", "Interactive chat session");
+            JobContext::with_user(&message.user_id, "chat", "Interactive chat session")
+                .with_working_dir(crate::workspace::FsWorkspace::new(&message.user_id).files_dir());
         job_ctx.http_interceptor = self.deps.http_interceptor.clone();
         job_ctx.user_timezone = user_tz.name().to_string();
 
@@ -795,9 +796,11 @@ impl<'a> LoopDelegate for ChatDelegate<'a> {
                             turn.record_tool_error(error_msg.clone());
                         }
                     }
-                    reason_ctx
-                        .messages
-                        .push(ChatMessage::tool_result(&tc.id, &tc.name, error_msg.clone()));
+                    reason_ctx.messages.push(ChatMessage::tool_result(
+                        &tc.id,
+                        &tc.name,
+                        error_msg.clone(),
+                    ));
                     let _ = self
                         .agent
                         .append_ledger_event(

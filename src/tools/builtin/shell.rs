@@ -583,6 +583,7 @@ impl ShellTool {
         &self,
         cmd: &str,
         workdir: Option<&str>,
+        job_workdir: Option<&Path>,
         timeout: Option<u64>,
         extra_env: &HashMap<String, String>,
     ) -> Result<(String, i64), ToolError> {
@@ -607,6 +608,7 @@ impl ShellTool {
         // Determine working directory
         let cwd = workdir
             .map(PathBuf::from)
+            .or_else(|| job_workdir.map(Path::to_path_buf))
             .or_else(|| self.working_dir.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
@@ -682,7 +684,13 @@ impl Tool for ShellTool {
 
         let start = std::time::Instant::now();
         let (output, exit_code) = self
-            .execute_command(command, workdir, timeout, &ctx.extra_env)
+            .execute_command(
+                command,
+                workdir,
+                ctx.working_dir.as_deref(),
+                timeout,
+                &ctx.extra_env,
+            )
             .await?;
         let duration = start.elapsed();
 

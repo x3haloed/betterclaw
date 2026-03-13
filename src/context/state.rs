@@ -1,6 +1,7 @@
 //! Job state machine.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -166,6 +167,9 @@ pub struct JobContext {
     pub tool_output_stash: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
     /// User's preferred timezone (IANA name, e.g. "America/New_York"). Defaults to "UTC".
     pub user_timezone: String,
+    /// Preferred working directory for shell and filesystem tools.
+    #[serde(skip)]
+    pub working_dir: Option<PathBuf>,
 }
 
 impl JobContext {
@@ -206,12 +210,19 @@ impl JobContext {
             metadata: serde_json::Value::Null,
             tool_output_stash: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             user_timezone: "UTC".to_string(),
+            working_dir: None,
         }
     }
 
     /// Set the user timezone on this context.
     pub fn with_timezone(mut self, tz: impl Into<String>) -> Self {
         self.user_timezone = tz.into();
+        self
+    }
+
+    /// Set the working directory that filesystem-aware tools should use.
+    pub fn with_working_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.working_dir = Some(dir.into());
         self
     }
 

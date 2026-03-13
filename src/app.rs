@@ -661,6 +661,7 @@ impl AppBuilder {
         // backend-specific config blocks resolved, fail early with a clear error
         // instead of a confusing runtime failure.
         let llm_config_present = self.config.llm.provider.is_some()
+            || self.config.llm.copilot.is_some()
             || self.config.llm.openai_codex.is_some()
             || self.config.llm.bedrock.is_some()
             || matches!(

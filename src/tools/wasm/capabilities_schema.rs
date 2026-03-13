@@ -41,13 +41,13 @@ use crate::tools::wasm::{
 /// Root schema for a capabilities JSON file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CapabilitiesFile {
-    /// Optional human-readable description override.
+    /// Extension version (semver).
     #[serde(default)]
-    pub description: Option<String>,
+    pub version: Option<String>,
 
-    /// Optional JSON Schema override for tool parameters.
+    /// WIT interface version this extension was compiled against (semver).
     #[serde(default)]
-    pub parameters_schema: Option<serde_json::Value>,
+    pub wit_version: Option<String>,
 
     /// HTTP request capability.
     #[serde(default)]
@@ -103,8 +103,6 @@ impl CapabilitiesFile {
     fn resolve_nested(mut self) -> Self {
         if let Some(inner) = self.capabilities.take() {
             let inner = inner.resolve_nested();
-            self.description = self.description.or(inner.description);
-            self.parameters_schema = self.parameters_schema.or(inner.parameters_schema);
             self.http = self.http.or(inner.http);
             self.secrets = self.secrets.or(inner.secrets);
             self.tool_invoke = self.tool_invoke.or(inner.tool_invoke);

@@ -18,6 +18,9 @@ pub struct HookBootstrapSummary {
     pub bundled_hooks: usize,
     /// Number of plugin-provided rule hooks registered.
     pub plugin_hooks: usize,
+    /// Deprecated compatibility field kept so older BetterClaw startup logging
+    /// can merge cleanly with upstream hook bootstrap changes.
+    pub workspace_hooks: usize,
     /// Number of outbound webhook hooks registered.
     pub outbound_webhooks: usize,
     /// Number of invalid hook configs skipped.
@@ -27,7 +30,7 @@ pub struct HookBootstrapSummary {
 impl HookBootstrapSummary {
     /// Total number of hooks registered across all categories.
     pub fn total_hooks(&self) -> usize {
-        self.bundled_hooks + self.plugin_hooks + self.outbound_webhooks
+        self.bundled_hooks + self.plugin_hooks + self.workspace_hooks + self.outbound_webhooks
     }
 }
 

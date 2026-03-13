@@ -1,7 +1,7 @@
-//! Memory tools for persistent workspace memory.
+//! Workspace-memory tools for persistent document memory.
 //!
 //! These tools allow the agent to:
-//! - Search past memories, decisions, and context
+//! - Search workspace documents and notes
 //! - Read and write files in the workspace
 //!
 //! # Usage
@@ -9,8 +9,9 @@
 //! The agent should use `memory_search` before answering questions about
 //! prior work, decisions, dates, people, preferences, or todos.
 //!
-//! Use `memory_write` to persist important facts that should be remembered
-//! across sessions.
+//! Use `memory_write` to persist editable notes and long-lived workspace
+//! documents. BetterClaw's canonical continuity/history plane remains the
+//! append-only ledger; these tools operate on the human-legible workspace.
 
 use std::sync::Arc;
 
@@ -172,7 +173,7 @@ impl Tool for MemoryWriteTool {
     async fn execute(
         &self,
         params: serde_json::Value,
-        _ctx: &JobContext,
+        ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
 
@@ -239,11 +240,12 @@ impl Tool for MemoryWriteTool {
                 paths::MEMORY.to_string()
             }
             "daily_log" => {
+                let tz = crate::timezone::parse_timezone(&ctx.user_timezone)
+                    .unwrap_or(chrono_tz::Tz::UTC);
                 self.workspace
-                    .append_daily_log(content)
+                    .append_daily_log_tz(content, tz)
                     .await
-                    .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {}", e)))?;
-                format!("daily/{}.md", chrono::Utc::now().format("%Y-%m-%d"))
+                    .map_err(|e| ToolError::ExecutionFailed(format!("Write failed: {}", e)))?
             }
             "heartbeat" => {
                 if append {

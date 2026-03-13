@@ -117,6 +117,8 @@ impl LlmProvider for OpenAiCodexProvider {
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
             finish_reason: parsed.finish_reason,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 
@@ -136,6 +138,8 @@ impl LlmProvider for OpenAiCodexProvider {
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
             finish_reason: parsed.finish_reason,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 
@@ -269,12 +273,14 @@ fn convert_messages_to_codex_items(
                         image_url: None,
                     }];
                     if msg.role == Role::User {
-                        for image_url in &msg.images {
-                            content.push(CodexMessageContent {
-                                kind: "input_image",
-                                text: None,
-                                image_url: Some(image_url.clone()),
-                            });
+                        for part in &msg.content_parts {
+                            if let crate::llm::ContentPart::ImageUrl { image_url } = part {
+                                content.push(CodexMessageContent {
+                                    kind: "input_image",
+                                    text: None,
+                                    image_url: Some(image_url.url.clone()),
+                                });
+                            }
                         }
                     }
                     items.push(CodexInputItem::Message {

@@ -10,8 +10,7 @@ use clap::Subcommand;
 use tokio::fs;
 
 use crate::bootstrap::betterclaw_base_dir;
-use crate::config::Config;
-use crate::secrets::{CreateSecretParams, SecretsCrypto, SecretsStore};
+use crate::secrets::{CreateSecretParams, SecretsStore};
 use crate::tools::wasm::{CapabilitiesFile, compute_binary_hash};
 
 /// Default tools directory.
@@ -552,40 +551,7 @@ fn validate_tool_name(name: &str) -> anyhow::Result<()> {
 
 /// Initialize the secrets store from environment config.
 async fn init_secrets_store() -> anyhow::Result<Arc<dyn SecretsStore + Send + Sync>> {
-    let config = Config::from_env().await?;
-    let master_key = config.secrets.master_key().ok_or_else(|| {
-        anyhow::anyhow!(
-            "SECRETS_MASTER_KEY not set. Run 'betterclaw onboard' first or set it in .env"
-        )
-    })?;
-
-    let crypto = SecretsCrypto::new(master_key.clone())?;
-
-    use crate::db::Database as _;
-    use crate::db::libsql::LibSqlBackend;
-    use secrecy::ExposeSecret as _;
-
-    let default_path = crate::config::default_libsql_path();
-    let db_path = config
-        .database
-        .libsql_path
-        .as_deref()
-        .unwrap_or(&default_path);
-
-    let backend = if let Some(ref url) = config.database.libsql_url {
-        let token = config.database.libsql_auth_token.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("LIBSQL_AUTH_TOKEN is required when LIBSQL_URL is set")
-        })?;
-        LibSqlBackend::new_remote_replica(db_path, url, token.expose_secret()).await?
-    } else {
-        LibSqlBackend::new_local(db_path).await?
-    };
-    backend.run_migrations().await?;
-
-    Ok(Arc::new(crate::secrets::LibSqlSecretsStore::new(
-        backend.shared_db(),
-        Arc::new(crypto),
-    )))
+    crate::cli::init_secrets_store().await
 }
 
 /// Configure authentication for a tool.

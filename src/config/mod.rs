@@ -1,14 +1,18 @@
 //! Configuration for BetterClaw.
 //!
 //! Settings are loaded with priority: env var > database > default.
-//! `DATABASE_BACKEND` and libsql connection details live in `~/.betterclaw/.env` (loaded via dotenvy early
+//! `DATABASE_URL` lives in `~/.betterclaw/.env` (loaded via dotenvy early
 //! in startup). Everything else comes from env vars, the DB settings
 //! table, or auto-detection.
+//!
+//! This module is a compatibility hub. Upstream merges frequently touch
+//! top-level config exports, while BetterClaw keeps ledger continuity config
+//! (`compressor_loop`, `ledger_index`, `ledger_recall`) as first-class public
+//! surfaces. Prefer adapters over removing re-exports from here.
 
 mod agent;
 mod builder;
 mod channels;
-mod compressor;
 mod compressor_loop;
 mod database;
 mod embeddings;
@@ -18,58 +22,69 @@ mod hygiene;
 mod ledger_index;
 mod ledger_recall;
 pub(crate) mod llm;
+pub mod relay;
 mod routines;
 mod safety;
 mod sandbox;
 mod secrets;
 mod skills;
+mod transcription;
 mod tunnel;
 mod wasm;
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex};
 
 use crate::error::ConfigError;
 use crate::settings::Settings;
 
 // Re-export all public types so `crate::config::FooConfig` continues to work.
+// This broad surface is deliberate merge-compatibility glue.
 pub use self::agent::AgentConfig;
 pub use self::builder::BuilderModeConfig;
 pub use self::channels::{
     ChannelsConfig, CliConfig, DiscordConfig, GatewayConfig, HttpConfig, SignalConfig,
 };
-pub use self::compressor_loop::CompressorLoopConfig;
-pub use self::database::{DatabaseBackend, DatabaseConfig, default_libsql_path};
+pub use self::database::{DatabaseBackend, DatabaseConfig, SslMode, default_libsql_path};
 pub use self::embeddings::EmbeddingsConfig;
 pub use self::heartbeat::HeartbeatConfig;
 pub use self::hygiene::HygieneConfig;
+pub use self::compressor_loop::CompressorLoopConfig;
 pub use self::ledger_index::LedgerIndexConfig;
 pub use self::ledger_recall::LedgerRecallConfig;
-pub use self::llm::{
-    AnthropicDirectConfig, CopilotConfig, LlmBackend, LlmConfig, LlmTuningConfig, OllamaConfig,
-    OpenAiCodexConfig, OpenAiCompatibleConfig, OpenAiDirectConfig, TinfoilConfig,
-};
-pub use self::routines::{ObservationRoutineConfig, RoutineConfig};
+pub use self::llm::default_session_path;
+pub use self::relay::RelayConfig;
+pub use self::routines::RoutineConfig;
 pub use self::safety::SafetyConfig;
 pub use self::sandbox::{ClaudeCodeConfig, SandboxModeConfig};
 pub use self::secrets::SecretsConfig;
 pub use self::skills::SkillsConfig;
+pub use self::transcription::TranscriptionConfig;
 pub use self::tunnel::TunnelConfig;
 pub use self::wasm::WasmConfig;
+pub use crate::llm::config::{
+    BedrockConfig, CacheRetention, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
+    OpenAiCodexConfig, RegistryProviderConfig, default_openai_codex_auth_path,
+};
+pub use crate::llm::session::SessionConfig;
 
 /// Thread-safe overlay for injected env vars (secrets loaded from DB).
 ///
 /// Used by `inject_llm_keys_from_secrets()` to make API keys available to
 /// `optional_env()` without unsafe `set_var` calls. `optional_env()` checks
 /// real env vars first, then falls back to this overlay.
-static INJECTED_VARS: OnceLock<HashMap<String, String>> = OnceLock::new();
+///
+/// Uses `Mutex<HashMap>` instead of `OnceLock` so that both
+/// `inject_os_credentials()` and `inject_llm_keys_from_secrets()` can merge
+/// their data. Whichever runs first initialises the map; the second merges in.
+static INJECTED_VARS: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Main configuration for the agent.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database: DatabaseConfig,
     pub llm: LlmConfig,
-    /// Dedicated LLM config for the compressor role (defaults to `llm` if unset).
     pub compressor_llm: LlmConfig,
     pub compressor_loop: CompressorLoopConfig,
     pub ledger_index: LedgerIndexConfig,
@@ -88,10 +103,92 @@ pub struct Config {
     pub sandbox: SandboxModeConfig,
     pub claude_code: ClaudeCodeConfig,
     pub skills: SkillsConfig,
+    pub transcription: TranscriptionConfig,
     pub observability: crate::observability::ObservabilityConfig,
+    /// Channel-relay integration (Slack via external relay service).
+    /// Present only when both `CHANNEL_RELAY_URL` and `CHANNEL_RELAY_API_KEY` are set.
+    pub relay: Option<RelayConfig>,
 }
 
 impl Config {
+    /// Create a full Config for integration tests without reading env vars.
+    ///
+    /// Requires the `libsql` feature. Sets up:
+    /// - libSQL database at the given path
+    /// - WASM and embeddings disabled
+    /// - Skills enabled with the given directories
+    /// - Heartbeat, routines, sandbox, builder all disabled
+    /// - Safety with injection check off, 100k output limit
+    #[cfg(feature = "libsql")]
+    pub fn for_testing(
+        libsql_path: std::path::PathBuf,
+        skills_dir: std::path::PathBuf,
+        installed_skills_dir: std::path::PathBuf,
+    ) -> Self {
+        Self {
+            database: DatabaseConfig {
+                backend: DatabaseBackend::LibSql,
+                url: secrecy::SecretString::from("unused://test".to_string()),
+                pool_size: 1,
+                ssl_mode: SslMode::Disable,
+                libsql_path: Some(libsql_path),
+                libsql_url: None,
+                libsql_auth_token: None,
+            },
+            llm: LlmConfig::for_testing(),
+            compressor_llm: LlmConfig::for_testing(),
+            compressor_loop: CompressorLoopConfig::default(),
+            ledger_index: LedgerIndexConfig::default(),
+            ledger_recall: LedgerRecallConfig::default(),
+            embeddings: EmbeddingsConfig::default(),
+            tunnel: TunnelConfig::default(),
+            channels: ChannelsConfig {
+                cli: CliConfig { enabled: false },
+                http: None,
+                gateway: None,
+                signal: None,
+                discord: None,
+                wasm_channels_dir: std::env::temp_dir().join("betterclaw-test-channels"),
+                wasm_channels_enabled: false,
+                wasm_channel_owner_ids: HashMap::new(),
+            },
+            agent: AgentConfig::for_testing(),
+            safety: SafetyConfig {
+                max_output_length: 100_000,
+                injection_check_enabled: false,
+            },
+            wasm: WasmConfig {
+                enabled: false,
+                ..WasmConfig::default()
+            },
+            secrets: SecretsConfig::default(),
+            builder: BuilderModeConfig {
+                enabled: false,
+                ..BuilderModeConfig::default()
+            },
+            heartbeat: HeartbeatConfig::default(),
+            hygiene: HygieneConfig::default(),
+            routines: RoutineConfig {
+                enabled: false,
+                ..RoutineConfig::default()
+            },
+            sandbox: SandboxModeConfig {
+                enabled: false,
+                ..SandboxModeConfig::default()
+            },
+            claude_code: ClaudeCodeConfig::default(),
+            skills: SkillsConfig {
+                enabled: true,
+                local_dir: skills_dir,
+                installed_dir: installed_skills_dir,
+                ..SkillsConfig::default()
+            },
+            transcription: TranscriptionConfig::default(),
+            observability: crate::observability::ObservabilityConfig::default(),
+            relay: None,
+        }
+    }
+
     /// Load configuration from environment variables and the database.
     ///
     /// Priority: env var > TOML config file > DB settings > default.
@@ -193,17 +290,42 @@ impl Config {
         Ok(())
     }
 
+    /// Re-resolve only the LLM config after credential injection.
+    ///
+    /// Called by `AppBuilder::init_secrets()` after injecting API keys into
+    /// the env overlay. Only rebuilds `self.llm` — all other config fields
+    /// are unaffected, preserving values from the initial config load (or
+    /// from `Config::for_testing()` in test mode).
+    pub async fn re_resolve_llm(
+        &mut self,
+        store: Option<&(dyn crate::db::SettingsStore + Sync)>,
+        user_id: &str,
+        toml_path: Option<&std::path::Path>,
+    ) -> Result<(), ConfigError> {
+        let settings = if let Some(store) = store {
+            let mut s = match store.get_all_settings(user_id).await {
+                Ok(map) => Settings::from_db_map(&map),
+                Err(_) => Settings::default(),
+            };
+            Self::apply_toml_overlay(&mut s, toml_path)?;
+            s
+        } else {
+            Settings::default()
+        };
+        self.llm = LlmConfig::resolve(&settings)?;
+        Ok(())
+    }
+
     /// Build config from settings (shared by from_env and from_db).
     async fn build(settings: &Settings) -> Result<Self, ConfigError> {
         let llm = LlmConfig::resolve(settings)?;
-        let compressor_llm = self::compressor::resolve_compressor_llm(settings, &llm)?;
         Ok(Self {
             database: DatabaseConfig::resolve()?,
-            llm,
-            compressor_llm,
+            compressor_llm: llm.clone(),
             compressor_loop: CompressorLoopConfig::resolve()?,
             ledger_index: LedgerIndexConfig::resolve()?,
             ledger_recall: LedgerRecallConfig::resolve()?,
+            llm,
             embeddings: EmbeddingsConfig::resolve(settings)?,
             tunnel: TunnelConfig::resolve(settings)?,
             channels: ChannelsConfig::resolve(settings)?,
@@ -218,9 +340,11 @@ impl Config {
             sandbox: SandboxModeConfig::resolve()?,
             claude_code: ClaudeCodeConfig::resolve()?,
             skills: SkillsConfig::resolve()?,
+            transcription: TranscriptionConfig::resolve(settings)?,
             observability: crate::observability::ObservabilityConfig {
                 backend: std::env::var("OBSERVABILITY_BACKEND").unwrap_or_else(|_| "none".into()),
             },
+            relay: RelayConfig::from_env(),
         })
     }
 }
@@ -231,17 +355,39 @@ impl Config {
 /// env-var-first resolution in `LlmConfig::resolve()`. Keys in the overlay
 /// are read by `optional_env()` before falling back to `std::env::var()`,
 /// so explicit env vars always win.
+///
+/// Also loads tokens from OS credential stores (macOS Keychain, Linux
+/// credentials files) which don't require the secrets DB.
 pub async fn inject_llm_keys_from_secrets(
     secrets: &dyn crate::secrets::SecretsStore,
     user_id: &str,
 ) {
-    let mappings = [
-        ("llm_openai_api_key", "OPENAI_API_KEY"),
-        ("llm_anthropic_api_key", "ANTHROPIC_API_KEY"),
-        ("llm_compatible_api_key", "LLM_API_KEY"),
-        ("llm_copilot_token", "COPILOT_TOKEN"),
-        ("llm_copilot_integration_id", "COPILOT_INTEGRATION_ID"),
+    // Static mappings for well-known providers.
+    // The registry's setup hints define secret_name -> env_var mappings,
+    // so new providers added to providers.json get injection automatically.
+    let mut mappings: Vec<(&str, &str)> = vec![
+        ("llm_nearai_api_key", "NEARAI_API_KEY"),
+        ("llm_anthropic_oauth_token", "ANTHROPIC_OAUTH_TOKEN"),
     ];
+
+    // Dynamically discover secret->env mappings from the provider registry.
+    // Uses selectable() which deduplicates user overrides correctly.
+    let registry = crate::llm::ProviderRegistry::load();
+    let dynamic_mappings: Vec<(String, String)> = registry
+        .selectable()
+        .iter()
+        .filter_map(|def| {
+            def.api_key_env.as_ref().and_then(|env_var| {
+                def.setup
+                    .as_ref()
+                    .and_then(|s| s.secret_name())
+                    .map(|secret_name| (secret_name.to_string(), env_var.clone()))
+            })
+        })
+        .collect();
+    for (secret, env_var) in &dynamic_mappings {
+        mappings.push((secret, env_var));
+    }
 
     let mut injected = HashMap::new();
 
@@ -261,5 +407,62 @@ pub async fn inject_llm_keys_from_secrets(
         }
     }
 
-    let _ = INJECTED_VARS.set(injected);
+    inject_os_credential_store_tokens(&mut injected);
+
+    merge_injected_vars(injected);
+}
+
+/// Load tokens from OS credential stores (no DB required).
+///
+/// Called unconditionally during startup — even when the encrypted secrets DB
+/// is unavailable (no master key, no DB connection). This ensures OAuth tokens
+/// from `claude login` (macOS Keychain / Linux credentials.json)
+/// are available for config resolution.
+pub fn inject_os_credentials() {
+    let mut injected = HashMap::new();
+    inject_os_credential_store_tokens(&mut injected);
+    merge_injected_vars(injected);
+}
+
+/// Merge new entries into the global injected-vars overlay.
+///
+/// New keys are inserted; existing keys are overwritten (later callers win,
+/// e.g. fresh OS credential store tokens override stale DB copies).
+fn merge_injected_vars(new_entries: HashMap<String, String>) {
+    if new_entries.is_empty() {
+        return;
+    }
+    match INJECTED_VARS.lock() {
+        Ok(mut map) => map.extend(new_entries),
+        Err(poisoned) => poisoned.into_inner().extend(new_entries),
+    }
+}
+
+/// Inject a single key-value pair into the overlay.
+///
+/// Used by the setup wizard to make credentials available to `optional_env()`
+/// without calling `unsafe { std::env::set_var }`.
+pub fn inject_single_var(key: &str, value: &str) {
+    match INJECTED_VARS.lock() {
+        Ok(mut map) => {
+            map.insert(key.to_string(), value.to_string());
+        }
+        Err(poisoned) => {
+            poisoned
+                .into_inner()
+                .insert(key.to_string(), value.to_string());
+        }
+    }
+}
+
+/// Shared helper: extract tokens from OS credential stores into the overlay map.
+fn inject_os_credential_store_tokens(injected: &mut HashMap<String, String>) {
+    // Try the OS credential store for a fresh Anthropic OAuth token.
+    // Tokens from `claude login` expire in 8-12h, so the DB copy may be stale.
+    // A fresh extraction from macOS Keychain / Linux credentials.json wins
+    // over the (possibly expired) copy stored in the encrypted secrets DB.
+    if let Some(fresh) = crate::config::ClaudeCodeConfig::extract_oauth_token() {
+        injected.insert("ANTHROPIC_OAUTH_TOKEN".to_string(), fresh);
+        tracing::debug!("Refreshed ANTHROPIC_OAUTH_TOKEN from OS credential store");
+    }
 }

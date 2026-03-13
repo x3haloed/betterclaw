@@ -1071,7 +1071,9 @@ impl DiscordChannel {
                         && self.ack_reaction_enabled_for_chat_type(is_group_message)
                     {
                         let mut rng = rand::thread_rng();
-                        if let Some(emoji) = self.state.config.ack_reactions.choose(&mut rng).cloned() {
+                        let emoji: Option<String> =
+                            self.state.config.ack_reactions.choose(&mut rng).cloned();
+                        if let Some(emoji) = emoji {
                             let ch = channel_id.to_string();
                             let mid = message_id.to_string();
                             let this = self.clone_for_task();

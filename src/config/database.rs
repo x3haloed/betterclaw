@@ -6,6 +6,28 @@ use crate::bootstrap::betterclaw_base_dir;
 use crate::config::helpers::optional_env;
 use crate::error::ConfigError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SslMode {
+    Disable,
+    #[default]
+    Prefer,
+    Require,
+}
+
+impl SslMode {
+    pub fn from_env() -> Self {
+        match std::env::var("DATABASE_SSL_MODE")
+            .unwrap_or_else(|_| "prefer".to_string())
+            .to_lowercase()
+            .as_str()
+        {
+            "disable" => Self::Disable,
+            "require" => Self::Require,
+            _ => Self::Prefer,
+        }
+    }
+}
+
 /// Which database backend to use.
 ///
 /// BetterClaw is currently libsql-only.
@@ -43,6 +65,12 @@ impl std::str::FromStr for DatabaseBackend {
 pub struct DatabaseConfig {
     /// Which backend to use (default: libsql).
     pub backend: DatabaseBackend,
+    /// Legacy compatibility field for callers that still expect a URL.
+    pub url: SecretString,
+    /// Legacy compatibility field for callers that still expect pool sizing.
+    pub pool_size: usize,
+    /// Legacy compatibility field for callers that still expect SSL mode.
+    pub ssl_mode: SslMode,
 
     /// Path to local libSQL database file (default: ~/.betterclaw/betterclaw.db).
     pub libsql_path: Option<PathBuf>,
@@ -79,6 +107,9 @@ impl DatabaseConfig {
 
         Ok(Self {
             backend,
+            url: SecretString::from("unused://libsql".to_string()),
+            pool_size: 1,
+            ssl_mode: SslMode::from_env(),
             libsql_path,
             libsql_url,
             libsql_auth_token,

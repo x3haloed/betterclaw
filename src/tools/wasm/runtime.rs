@@ -4,82 +4,69 @@
 //! This matches NEAR blockchain patterns for deterministic, isolated execution.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::RwLock;
-use wasmtime::Store;
-use wasmtime::component::Linker;
 use wasmtime::{Config, Engine, OptLevel};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiView};
 
 use crate::tools::wasm::error::WasmError;
 use crate::tools::wasm::limits::{FuelConfig, ResourceLimits};
-
-wasmtime::component::bindgen!({
-    path: "wit/tool.wit",
-    world: "sandboxed-tool",
-    async: false,
-    with: {},
-});
 
 /// Default epoch tick interval. Each tick increments the engine's epoch counter,
 /// which causes any store with an expired epoch deadline to trap.
 pub const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(500);
 
-struct MetadataStore {
-    wasi: WasiCtx,
-    table: ResourceTable,
-}
-
-impl MetadataStore {
-    fn new() -> Self {
-        Self {
-            wasi: WasiCtxBuilder::new().build(),
-            table: ResourceTable::new(),
+/// Enable wasmtime's persistent compilation cache for a [`Config`].
+///
+/// On Unix, this delegates to `cache_config_load_default()` which uses a
+/// shared cache directory. On Windows, each engine gets its own subdirectory
+/// (keyed by `label`) to avoid OS error 33 (`ERROR_LOCK_VIOLATION`) when
+/// multiple engines memory-map files in the same cache directory. See #448.
+///
+/// If `explicit_dir` is `Some`, it is used as the cache directory on all
+/// platforms, bypassing the default.
+pub fn enable_compilation_cache(
+    wasmtime_config: &mut Config,
+    label: &str,
+    explicit_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    // If the caller provided an explicit directory, or we're on Windows and
+    // need per-engine isolation, write a TOML config with a custom directory.
+    let custom_dir = match explicit_dir {
+        Some(dir) => Some(dir.to_path_buf()),
+        #[cfg(windows)]
+        None => {
+            let base = dirs::cache_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("betterclaw");
+            Some(base.join(format!("wasmtime-{}", label)))
         }
-    }
-}
+        #[cfg(not(windows))]
+        None => {
+            let _ = label;
+            None
+        }
+    };
 
-impl WasiView for MetadataStore {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.wasi
-    }
-
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-}
-
-impl near::agent::host::Host for MetadataStore {
-    fn log(&mut self, _level: near::agent::host::LogLevel, _message: String) {}
-
-    fn now_millis(&mut self) -> u64 {
-        0
-    }
-
-    fn workspace_read(&mut self, _path: String) -> Option<String> {
-        None
-    }
-
-    fn http_request(
-        &mut self,
-        _method: String,
-        _url: String,
-        _headers_json: String,
-        _body: Option<Vec<u8>>,
-        _timeout_ms: Option<u32>,
-    ) -> Result<near::agent::host::HttpResponse, String> {
-        Err("HTTP unavailable during metadata extraction".to_string())
-    }
-
-    fn tool_invoke(&mut self, _alias: String, _params_json: String) -> Result<String, String> {
-        Err("Tool invocation unavailable during metadata extraction".to_string())
-    }
-
-    fn secret_exists(&mut self, _name: String) -> bool {
-        false
+    match custom_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(&dir)?;
+            let toml_path = dir.join("wasmtime-cache.toml");
+            let escaped = dir
+                .to_string_lossy()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            let toml_content = format!("[cache]\nenabled = true\ndirectory = \"{}\"\n", escaped);
+            std::fs::write(&toml_path, toml_content)?;
+            wasmtime_config.cache_config_load(&toml_path)?;
+            Ok(())
+        }
+        None => {
+            wasmtime_config.cache_config_load_default()?;
+            Ok(())
+        }
     }
 }
 
@@ -201,7 +188,14 @@ impl WasmToolRuntime {
         // Enable persistent compilation cache. Wasmtime serializes compiled native
         // code to disk (~/.cache/wasmtime by default), so subsequent startups
         // deserialize instead of recompiling — typically 10-50x faster.
-        if let Err(e) = wasmtime_config.cache_config_load_default() {
+        //
+        // On Windows, each Engine gets its own cache subdirectory to avoid
+        // OS error 33 (ERROR_LOCK_VIOLATION) when multiple engines share the
+        // default cache and Windows holds exclusive locks on memory-mapped
+        // files. See #448.
+        if let Err(e) =
+            enable_compilation_cache(&mut wasmtime_config, "tools", config.cache_dir.as_deref())
+        {
             tracing::warn!("Failed to enable wasmtime compilation cache: {}", e);
         }
 
@@ -274,7 +268,8 @@ impl WasmToolRuntime {
             // We need to instantiate briefly to extract metadata.
             // In a full implementation, we'd use WIT bindgen to get typed access.
             // For now, we extract what we can from the component.
-            let (description, schema) = extract_tool_metadata(&engine, &component)?;
+            let description = extract_tool_description(&engine, &component)?;
+            let schema = extract_tool_schema(&engine, &component)?;
 
             Ok::<_, WasmError>(PreparedModule {
                 name: name.clone(),
@@ -326,44 +321,34 @@ impl WasmToolRuntime {
     }
 }
 
-fn extract_tool_metadata(
-    engine: &Engine,
-    component: &wasmtime::component::Component,
-) -> Result<(String, serde_json::Value), WasmError> {
-    let mut store = Store::new(engine, MetadataStore::new());
-    let mut linker = Linker::new(engine);
-    wasmtime_wasi::add_to_linker_sync(&mut linker)
-        .map_err(|e| WasmError::ConfigError(format!("Failed to add WASI functions: {}", e)))?;
-    near::agent::host::add_to_linker(&mut linker, |state: &mut MetadataStore| state)
-        .map_err(|e| WasmError::ConfigError(format!("Failed to add host functions: {}", e)))?;
+/// Extract tool description from a compiled component.
+///
+/// In a full implementation, this would use WIT bindgen to call the description() export.
+/// For now, we return a placeholder since we can't easily introspect without more setup.
+fn extract_tool_description(
+    _engine: &Engine,
+    _component: &wasmtime::component::Component,
+) -> Result<String, WasmError> {
+    // TODO: Use WIT bindgen to properly extract description
+    // This requires instantiating with a linker, which needs host functions.
+    // For now, tools should have their description set externally.
+    Ok("WASM sandboxed tool".to_string())
+}
 
-    let instance = SandboxedTool::instantiate(&mut store, component, &linker)
-        .map_err(|e| WasmError::InstantiationFailed(e.to_string()))?;
-
-    let tool_iface = instance.near_agent_tool();
-    let description = match tool_iface.call_description(&mut store) {
-        Ok(description) => description,
-        Err(error) => {
-            tracing::warn!(error = %error, "Failed to extract WASM tool description; using fallback");
-            "WASM sandboxed tool".to_string()
-        }
-    };
-
-    let schema = match tool_iface.call_schema(&mut store) {
-        Ok(schema_json) => serde_json::from_str(&schema_json).map_err(|e| {
-            WasmError::InvalidResponseJson(format!("Invalid tool schema JSON: {}", e))
-        })?,
-        Err(error) => {
-            tracing::warn!(error = %error, "Failed to extract WASM tool schema; using permissive fallback");
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": true
-            })
-        }
-    };
-
-    Ok((description, schema))
+/// Extract tool schema from a compiled component.
+///
+/// In a full implementation, this would use WIT bindgen to call the schema() export.
+fn extract_tool_schema(
+    _engine: &Engine,
+    _component: &wasmtime::component::Component,
+) -> Result<serde_json::Value, WasmError> {
+    // TODO: Use WIT bindgen to properly extract schema
+    // For now, return a minimal schema that accepts any object.
+    Ok(serde_json::json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+    }))
 }
 
 impl std::fmt::Debug for WasmToolRuntime {
@@ -420,6 +405,63 @@ mod tests {
 
         assert_eq!(limits.memory_bytes, 5 * 1024 * 1024);
         assert_eq!(limits.fuel, 500_000);
+    }
+
+    /// Per-engine cache directories must work correctly to avoid file lock
+    /// conflicts on Windows where multiple engines sharing a single cache
+    /// directory triggers OS error 33 (ERROR_LOCK_VIOLATION). Regression test
+    /// for #448: `enable_compilation_cache` must create a subdirectory and
+    /// produce a valid TOML config that wasmtime can load.
+    #[test]
+    fn test_enable_compilation_cache_with_explicit_dir() {
+        use crate::tools::wasm::runtime::enable_compilation_cache;
+
+        let tmp = tempfile::tempdir().expect("failed to create temp dir");
+        let cache_dir = tmp.path().join("custom-cache");
+
+        let mut config = wasmtime::Config::new();
+        enable_compilation_cache(&mut config, "test-engine", Some(cache_dir.as_path()))
+            .expect("enable_compilation_cache should succeed with explicit dir");
+
+        // The cache directory should have been created.
+        assert!(cache_dir.exists(), "cache directory should be created");
+
+        // A TOML config file should have been written inside.
+        let toml_path = cache_dir.join("wasmtime-cache.toml");
+        assert!(toml_path.exists(), "TOML config should be written");
+
+        let content = std::fs::read_to_string(&toml_path).unwrap();
+        assert!(
+            content.contains("[cache]"),
+            "TOML must contain [cache] section"
+        );
+        assert!(content.contains("enabled = true"), "cache must be enabled");
+    }
+
+    /// Two engines with different labels must get independent cache directories
+    /// so that their file locks do not conflict. Regression test for #448.
+    #[test]
+    fn test_enable_compilation_cache_label_isolation() {
+        use crate::tools::wasm::runtime::enable_compilation_cache;
+
+        let tmp = tempfile::tempdir().expect("failed to create temp dir");
+        let base = tmp.path().join("isolation");
+
+        let dir_a = base.join("engine-a");
+        let dir_b = base.join("engine-b");
+
+        let mut config_a = wasmtime::Config::new();
+        enable_compilation_cache(&mut config_a, "a", Some(dir_a.as_path()))
+            .expect("cache A should succeed");
+
+        let mut config_b = wasmtime::Config::new();
+        enable_compilation_cache(&mut config_b, "b", Some(dir_b.as_path()))
+            .expect("cache B should succeed");
+
+        // Both directories must exist and be distinct.
+        assert!(dir_a.exists());
+        assert!(dir_b.exists());
+        assert_ne!(dir_a, dir_b);
     }
 
     /// The WASM runtime (Wasmtime engine) must initialise successfully even

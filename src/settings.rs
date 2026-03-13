@@ -17,11 +17,11 @@ pub struct Settings {
     pub onboard_completed: bool,
 
     // === Step 1: Database ===
-    /// Database backend: "libsql".
+    /// Database backend: "postgres" or "libsql".
     #[serde(default)]
     pub database_backend: Option<String>,
 
-    /// Database connection URL (legacy; ignored in libsql-only builds).
+    /// Database connection URL (postgres://...).
     #[serde(default)]
     pub database_url: Option<String>,
 
@@ -42,8 +42,12 @@ pub struct Settings {
     #[serde(default)]
     pub secrets_master_key_source: KeySource,
 
+    /// Generated master key hex (env var mode only, written to .env by wizard).
+    #[serde(default, skip_serializing)]
+    pub secrets_master_key_hex: Option<String>,
+
     // === Step 3: Inference Provider ===
-    /// LLM backend: "anthropic", "openai", "copilot", "openai_codex", "ollama", "openai_compatible", "tinfoil".
+    /// LLM backend: "nearai", "anthropic", "openai", "ollama", "openai_compatible", "tinfoil", "bedrock".
     #[serde(default)]
     pub llm_backend: Option<String>,
 
@@ -54,6 +58,18 @@ pub struct Settings {
     /// OpenAI-compatible endpoint base URL (when llm_backend = "openai_compatible").
     #[serde(default)]
     pub openai_compatible_base_url: Option<String>,
+
+    /// Bedrock region (when llm_backend = "bedrock").
+    #[serde(default)]
+    pub bedrock_region: Option<String>,
+
+    /// Bedrock cross-region inference prefix (when llm_backend = "bedrock").
+    #[serde(default)]
+    pub bedrock_cross_region: Option<String>,
+
+    /// AWS profile name for Bedrock (when llm_backend = "bedrock").
+    #[serde(default)]
+    pub bedrock_profile: Option<String>,
 
     // === Step 4: Model Selection ===
     /// Currently selected model.
@@ -99,6 +115,10 @@ pub struct Settings {
     /// Builder configuration.
     #[serde(default)]
     pub builder: BuilderSettings,
+
+    /// Transcription configuration.
+    #[serde(default)]
+    pub transcription: Option<TranscriptionSettings>,
 }
 
 /// Source for the secrets master key.
@@ -121,7 +141,7 @@ pub struct EmbeddingsSettings {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Provider to use: "openai" or "ollama".
+    /// Provider to use: "openai" or "nearai".
     #[serde(default = "default_embeddings_provider")]
     pub provider: String,
 
@@ -131,7 +151,7 @@ pub struct EmbeddingsSettings {
 }
 
 fn default_embeddings_provider() -> String {
-    "openai".to_string()
+    "nearai".to_string()
 }
 
 fn default_embeddings_model() -> String {
@@ -287,6 +307,18 @@ pub struct HeartbeatSettings {
     /// User ID to notify on heartbeat findings.
     #[serde(default)]
     pub notify_user: Option<String>,
+
+    /// Hour (0-23) when quiet hours start (heartbeat skipped).
+    #[serde(default)]
+    pub quiet_hours_start: Option<u32>,
+
+    /// Hour (0-23) when quiet hours end (heartbeat resumes).
+    #[serde(default)]
+    pub quiet_hours_end: Option<u32>,
+
+    /// Timezone for quiet hours evaluation (IANA name, e.g. "America/New_York").
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 fn default_heartbeat_interval() -> u64 {
@@ -300,6 +332,9 @@ impl Default for HeartbeatSettings {
             interval_secs: default_heartbeat_interval(),
             notify_channel: None,
             notify_user: None,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            timezone: None,
         }
     }
 }
@@ -347,6 +382,14 @@ pub struct AgentSettings {
     /// When true, skip tool approval checks entirely. For benchmarks/CI.
     #[serde(default)]
     pub auto_approve_tools: bool,
+
+    /// Default timezone for new sessions (IANA name, e.g. "America/New_York").
+    #[serde(default = "default_timezone")]
+    pub default_timezone: String,
+
+    /// Maximum tokens per job (0 = unlimited).
+    #[serde(default)]
+    pub max_tokens_per_job: u64,
 }
 
 fn default_agent_name() -> String {
@@ -381,6 +424,10 @@ fn default_max_tool_iterations() -> usize {
     50
 }
 
+fn default_timezone() -> String {
+    "UTC".to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -398,6 +445,8 @@ impl Default for AgentSettings {
             session_idle_timeout_secs: default_session_idle_timeout(),
             max_tool_iterations: default_max_tool_iterations(),
             auto_approve_tools: false,
+            default_timezone: default_timezone(),
+            max_tokens_per_job: 0,
         }
     }
 }
@@ -494,6 +543,10 @@ pub struct SandboxSettings {
     /// Additional domains to allow through the network proxy.
     #[serde(default)]
     pub extra_allowed_domains: Vec<String>,
+
+    /// Whether Claude Code sandbox mode is enabled.
+    #[serde(default)]
+    pub claude_code_enabled: bool,
 }
 
 fn default_sandbox_policy() -> String {
@@ -527,6 +580,7 @@ impl Default for SandboxSettings {
             image: default_sandbox_image(),
             auto_pull_image: true,
             extra_allowed_domains: Vec::new(),
+            claude_code_enabled: false,
         }
     }
 }
@@ -600,6 +654,14 @@ impl Default for BuilderSettings {
     }
 }
 
+/// Transcription pipeline settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionSettings {
+    /// Whether audio transcription is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 impl Settings {
     /// Reconstruct Settings from a flat key-value map (as stored in the DB).
     ///
@@ -609,7 +671,8 @@ impl Settings {
         // Start with defaults, then overlay each DB setting.
         //
         // The settings table stores both Settings struct fields and app-specific
-        // data. Skip keys that don't correspond to a known Settings path.
+        // data (e.g. nearai.session_token). Skip keys that don't correspond to
+        // a known Settings path.
         let mut settings = Self::default();
 
         for (key, value) in map {
@@ -625,7 +688,7 @@ impl Settings {
             match settings.set(key, &value_str) {
                 Ok(()) => {}
                 // The settings table stores both Settings fields and app-specific
-                // data. Silently skip unknown paths.
+                // data (e.g. nearai.session_token). Silently skip unknown paths.
                 Err(e) if e.starts_with("Path not found") => {}
                 Err(e) => {
                     tracing::warn!(
@@ -706,7 +769,7 @@ impl Settings {
              # Uncomment and edit values to override defaults.\n\
              # Run `betterclaw config init` to regenerate this file.\n\
              #\n\
-             # Documentation: see README.md\n\
+             # Documentation: https://github.com/nearai/betterclaw\n\
              \n\
              {raw}"
         );
@@ -1043,7 +1106,7 @@ mod tests {
     fn test_embeddings_defaults() {
         let settings = Settings::default();
         assert!(!settings.embeddings.enabled);
-        assert_eq!(settings.embeddings.provider, "openai");
+        assert_eq!(settings.embeddings.provider, "nearai");
         assert_eq!(settings.embeddings.model, "text-embedding-3-small");
     }
 
@@ -1154,6 +1217,31 @@ mod tests {
         assert_eq!(loaded.agent.name, "toml-bot");
         assert!(loaded.heartbeat.enabled);
         assert_eq!(loaded.heartbeat.interval_secs, 900);
+    }
+
+    /// Regression test: /model command must persist selected_model to TOML config.
+    /// Prior to the fix, `set_model()` only changed the in-memory provider and the
+    /// choice was lost on restart.
+    #[test]
+    fn toml_selected_model_update_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        // Start with a config that has a different model.
+        let settings = Settings {
+            selected_model: Some("old-model".to_string()),
+            ..Default::default()
+        };
+        settings.save_toml(&path).unwrap();
+
+        // Simulate what persist_selected_model does: load, update, save.
+        let mut loaded = Settings::load_toml(&path).unwrap().unwrap();
+        loaded.selected_model = Some("new-model".to_string());
+        loaded.save_toml(&path).unwrap();
+
+        // Verify the change survived a reload.
+        let reloaded = Settings::load_toml(&path).unwrap().unwrap();
+        assert_eq!(reloaded.selected_model, Some("new-model".to_string()));
     }
 
     #[test]
@@ -1403,7 +1491,7 @@ mod tests {
             secrets_master_key_source: KeySource::Keychain,
             embeddings: EmbeddingsSettings {
                 enabled: true,
-                provider: "openai".to_string(),
+                provider: "nearai".to_string(),
                 model: "text-embedding-3-large".to_string(),
             },
             tunnel: TunnelSettings {
@@ -1470,7 +1558,7 @@ mod tests {
         );
         assert!(restored.embeddings.enabled, "embeddings.enabled lost");
         assert_eq!(
-            restored.embeddings.provider, "openai",
+            restored.embeddings.provider, "nearai",
             "embeddings.provider lost"
         );
         assert_eq!(

@@ -22,6 +22,13 @@ pub mod types;
 pub(crate) mod util;
 pub mod ws;
 
+/// Test helpers for gateway integration tests.
+///
+/// Always compiled (not behind `#[cfg(test)]`) so that integration tests in
+/// `tests/` -- which import this crate as a regular dependency -- can use
+/// [`TestGatewayBuilder`](test_helpers::TestGatewayBuilder).
+pub mod test_helpers;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -60,13 +67,11 @@ impl GatewayChannel {
     /// If no auth token is configured, generates a random one and prints it.
     pub fn new(config: GatewayConfig) -> Self {
         let auth_token = config.auth_token.clone().unwrap_or_else(|| {
-            use rand::Rng;
-            let token: String = rand::thread_rng()
-                .sample_iter(&rand::distributions::Alphanumeric)
-                .take(32)
-                .map(char::from)
-                .collect();
-            token
+            use rand::RngCore;
+            use rand::rngs::OsRng;
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
         });
 
         let state = Arc::new(GatewayState {
@@ -89,8 +94,10 @@ impl GatewayChannel {
             skill_registry: None,
             skill_catalog: None,
             chat_rate_limiter: server::RateLimiter::new(30, 60),
+            oauth_rate_limiter: server::RateLimiter::new(10, 60),
             registry_entries: Vec::new(),
             cost_guard: None,
+            routine_engine: Arc::new(tokio::sync::RwLock::new(None)),
             startup_time: std::time::Instant::now(),
         });
 
@@ -124,8 +131,10 @@ impl GatewayChannel {
             skill_registry: self.state.skill_registry.clone(),
             skill_catalog: self.state.skill_catalog.clone(),
             chat_rate_limiter: server::RateLimiter::new(30, 60),
+            oauth_rate_limiter: server::RateLimiter::new(10, 60),
             registry_entries: self.state.registry_entries.clone(),
             cost_guard: self.state.cost_guard.clone(),
+            routine_engine: Arc::clone(&self.state.routine_engine),
             startup_time: self.state.startup_time,
         };
         mutate(&mut new_state);
@@ -273,7 +282,15 @@ impl Channel for GatewayChannel {
         msg: &IncomingMessage,
         response: OutgoingResponse,
     ) -> Result<(), ChannelError> {
-        let thread_id = msg.thread_id.clone().unwrap_or_default();
+        let thread_id = match &msg.thread_id {
+            Some(tid) => tid.clone(),
+            None => {
+                tracing::warn!(
+                    "Gateway respond with no thread_id — skipping (clients would drop it)"
+                );
+                return Ok(());
+            }
+        };
 
         self.state.sse.broadcast(SseEvent::Response {
             content: response.content,
@@ -368,6 +385,11 @@ impl Channel for GatewayChannel {
                 success,
                 message,
             },
+            StatusUpdate::ImageGenerated { data_url, path } => SseEvent::ImageGenerated {
+                data_url,
+                path,
+                thread_id,
+            },
         };
 
         self.state.sse.broadcast(event);
@@ -379,9 +401,18 @@ impl Channel for GatewayChannel {
         _user_id: &str,
         response: OutgoingResponse,
     ) -> Result<(), ChannelError> {
+        let thread_id = match response.thread_id {
+            Some(tid) => tid,
+            None => {
+                tracing::warn!(
+                    "Gateway broadcast with no thread_id — skipping (clients would drop it)"
+                );
+                return Ok(());
+            }
+        };
         self.state.sse.broadcast(SseEvent::Response {
             content: response.content,
-            thread_id: String::new(),
+            thread_id,
         });
         Ok(())
     }

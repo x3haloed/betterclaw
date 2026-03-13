@@ -20,8 +20,8 @@ use crate::agent::submission::{Submission, SubmissionParser, SubmissionResult};
 use crate::agent::{HeartbeatConfig as AgentHeartbeatConfig, Router, Scheduler};
 use crate::channels::{ChannelManager, IncomingMessage, OutgoingResponse, StatusUpdate};
 use crate::config::{
-    AgentConfig, CompressorLoopConfig, HeartbeatConfig, LedgerIndexConfig, LedgerRecallConfig,
-    RoutineConfig, SkillsConfig,
+    AgentConfig, HeartbeatConfig, LedgerIndexConfig, LedgerRecallConfig, RoutineConfig,
+    SkillsConfig,
 };
 use crate::context::ContextManager;
 use crate::db::Database;
@@ -32,7 +32,7 @@ use crate::llm::LlmProvider;
 use crate::safety::SafetyLayer;
 use crate::skills::SkillRegistry;
 use crate::tools::ToolRegistry;
-use crate::workspace::FsWorkspace;
+use crate::workspace::{EmbeddingProvider, Workspace};
 
 /// Collapse a tool output string into a single-line preview for display.
 pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
@@ -57,32 +57,19 @@ pub(crate) fn truncate_for_preview(output: &str, max_chars: usize) -> String {
     }
 }
 
-fn visible_response_or_suppressed_empty(content: String) -> Option<String> {
-    if crate::llm::is_silent_reply(&content) {
-        tracing::debug!("Suppressing silent reply token");
-        Some(String::new())
-    } else {
-        Some(content)
-    }
-}
-
 /// Core dependencies for the agent.
 ///
 /// Bundles the shared components to reduce argument count.
 pub struct AgentDeps {
     pub store: Option<Arc<dyn Database>>,
     pub llm: Arc<dyn LlmProvider>,
+    pub embeddings: Option<Arc<dyn EmbeddingProvider>>,
     /// Cheap/fast LLM for lightweight tasks (heartbeat, routing, evaluation).
     /// Falls back to the main `llm` if None.
     pub cheap_llm: Option<Arc<dyn LlmProvider>>,
-    /// Dedicated LLM for the compressor role.
-    pub compressor_llm: Arc<dyn LlmProvider>,
     pub safety: Arc<SafetyLayer>,
     pub tools: Arc<ToolRegistry>,
-    /// Embeddings provider for semantic candidate generation (optional).
-    pub embeddings: Option<Arc<dyn crate::workspace::EmbeddingProvider>>,
-    /// Filesystem-backed workspace for identity files and heartbeat.
-    pub fs_workspace: Arc<FsWorkspace>,
+    pub workspace: Option<Arc<Workspace>>,
     pub extension_manager: Option<Arc<ExtensionManager>>,
     pub skill_registry: Option<Arc<std::sync::RwLock<SkillRegistry>>>,
     pub skill_catalog: Option<Arc<crate::skills::catalog::SkillCatalog>>,
@@ -92,6 +79,14 @@ pub struct AgentDeps {
     pub cost_guard: Arc<crate::agent::cost_guard::CostGuard>,
     /// SSE broadcast sender for live job event streaming to the web gateway.
     pub sse_tx: Option<tokio::sync::broadcast::Sender<crate::channels::web::types::SseEvent>>,
+    /// HTTP interceptor for trace recording/replay.
+    pub http_interceptor: Option<Arc<dyn crate::llm::recording::HttpInterceptor>>,
+    /// Audio transcription middleware for voice messages.
+    pub transcription: Option<Arc<crate::transcription::TranscriptionMiddleware>>,
+    /// Document text extraction middleware for PDF, DOCX, PPTX, etc.
+    pub document_extraction: Option<Arc<crate::document_extraction::DocumentExtractionMiddleware>>,
+    pub ledger_index_config: LedgerIndexConfig,
+    pub ledger_recall_config: LedgerRecallConfig,
 }
 
 /// The main agent that coordinates all components.
@@ -105,10 +100,11 @@ pub struct Agent {
     pub(super) session_manager: Arc<SessionManager>,
     pub(super) context_monitor: ContextMonitor,
     pub(super) heartbeat_config: Option<HeartbeatConfig>,
+    pub(super) hygiene_config: Option<crate::config::HygieneConfig>,
     pub(super) routine_config: Option<RoutineConfig>,
-    pub(super) compressor_loop_config: Option<CompressorLoopConfig>,
-    pub(super) ledger_index_config: Option<LedgerIndexConfig>,
-    pub(super) ledger_recall_config: Option<LedgerRecallConfig>,
+    /// Optional slot to expose the routine engine to the gateway for manual triggering.
+    pub(super) routine_engine_slot:
+        Option<Arc<tokio::sync::RwLock<Option<Arc<crate::agent::routine_engine::RoutineEngine>>>>>,
 }
 
 impl Agent {
@@ -122,10 +118,8 @@ impl Agent {
         deps: AgentDeps,
         channels: Arc<ChannelManager>,
         heartbeat_config: Option<HeartbeatConfig>,
+        hygiene_config: Option<crate::config::HygieneConfig>,
         routine_config: Option<RoutineConfig>,
-        compressor_loop_config: Option<CompressorLoopConfig>,
-        ledger_index_config: Option<LedgerIndexConfig>,
-        ledger_recall_config: Option<LedgerRecallConfig>,
         context_manager: Option<Arc<ContextManager>>,
         session_manager: Option<Arc<SessionManager>>,
     ) -> Self {
@@ -146,6 +140,9 @@ impl Agent {
         if let Some(ref tx) = deps.sse_tx {
             scheduler.set_sse_sender(tx.clone());
         }
+        if let Some(ref interceptor) = deps.http_interceptor {
+            scheduler.set_http_interceptor(Arc::clone(interceptor));
+        }
         let scheduler = Arc::new(scheduler);
 
         Self {
@@ -158,11 +155,18 @@ impl Agent {
             session_manager,
             context_monitor: ContextMonitor::new(),
             heartbeat_config,
+            hygiene_config,
             routine_config,
-            compressor_loop_config,
-            ledger_index_config,
-            ledger_recall_config,
+            routine_engine_slot: None,
         }
+    }
+
+    /// Set the routine engine slot for exposing the engine to the gateway.
+    pub fn set_routine_engine_slot(
+        &mut self,
+        slot: Arc<tokio::sync::RwLock<Option<Arc<crate::agent::routine_engine::RoutineEngine>>>>,
+    ) {
+        self.routine_engine_slot = Some(slot);
     }
 
     // Convenience accessors
@@ -180,13 +184,13 @@ impl Agent {
         &self.deps.llm
     }
 
+    pub(super) fn embeddings(&self) -> Option<&Arc<dyn EmbeddingProvider>> {
+        self.deps.embeddings.as_ref()
+    }
+
     /// Get the cheap/fast LLM provider, falling back to the main one.
     pub(super) fn cheap_llm(&self) -> &Arc<dyn LlmProvider> {
         self.deps.cheap_llm.as_ref().unwrap_or(&self.deps.llm)
-    }
-
-    pub(super) fn compressor_llm(&self) -> &Arc<dyn LlmProvider> {
-        &self.deps.compressor_llm
     }
 
     pub(super) fn safety(&self) -> &Arc<SafetyLayer> {
@@ -197,16 +201,12 @@ impl Agent {
         &self.deps.tools
     }
 
-    pub(super) fn embeddings(&self) -> Option<&Arc<dyn crate::workspace::EmbeddingProvider>> {
-        self.deps.embeddings.as_ref()
+    pub(super) fn workspace(&self) -> Option<&Arc<Workspace>> {
+        self.deps.workspace.as_ref()
     }
 
-    pub(super) fn ledger_recall_config(&self) -> Option<&LedgerRecallConfig> {
-        self.ledger_recall_config.as_ref()
-    }
-
-    pub(super) fn fs_workspace(&self) -> &Arc<FsWorkspace> {
-        &self.deps.fs_workspace
+    pub(super) fn ledger_recall_config(&self) -> &LedgerRecallConfig {
+        &self.deps.ledger_recall_config
     }
 
     pub(super) fn hooks(&self) -> &Arc<HookRegistry> {
@@ -223,6 +223,27 @@ impl Agent {
 
     pub(super) fn skill_catalog(&self) -> Option<&Arc<crate::skills::catalog::SkillCatalog>> {
         self.deps.skill_catalog.as_ref()
+    }
+
+    pub(super) async fn append_ledger_event(
+        &self,
+        user_id: &str,
+        episode_id: Option<uuid::Uuid>,
+        kind: &str,
+        source: &str,
+        content: Option<String>,
+        payload: serde_json::Value,
+    ) -> Option<uuid::Uuid> {
+        crate::agent::ledger_capture::append_event_best_effort(
+            self.store().cloned(),
+            user_id.to_string(),
+            episode_id,
+            kind.to_string(),
+            source.to_string(),
+            content,
+            payload,
+        )
+        .await
     }
 
     /// Select active skills for a message using deterministic prefiltering.
@@ -367,52 +388,77 @@ impl Agent {
         // Spawn heartbeat if enabled
         let heartbeat_handle = if let Some(ref hb_config) = self.heartbeat_config {
             if hb_config.enabled {
-                let config = AgentHeartbeatConfig::default()
-                    .with_interval(std::time::Duration::from_secs(hb_config.interval_secs));
+                if let Some(workspace) = self.workspace() {
+                    let mut config = AgentHeartbeatConfig::default()
+                        .with_interval(std::time::Duration::from_secs(hb_config.interval_secs));
+                    config.quiet_hours_start = hb_config.quiet_hours_start;
+                    config.quiet_hours_end = hb_config.quiet_hours_end;
+                    config.timezone = hb_config
+                        .timezone
+                        .clone()
+                        .or_else(|| Some(self.config.default_timezone.clone()));
+                    if let (Some(user), Some(channel)) =
+                        (&hb_config.notify_user, &hb_config.notify_channel)
+                    {
+                        config = config.with_notify(user, channel);
+                    }
 
-                // Set up notification channel
-                let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<OutgoingResponse>(16);
+                    // Set up notification channel
+                    let (notify_tx, mut notify_rx) =
+                        tokio::sync::mpsc::channel::<OutgoingResponse>(16);
 
-                // Spawn notification forwarder that routes through channel manager
-                let notify_channel = hb_config.notify_channel.clone();
-                let notify_user = hb_config.notify_user.clone();
-                let channels = self.channels.clone();
-                tokio::spawn(async move {
-                    while let Some(response) = notify_rx.recv().await {
-                        let user = notify_user.as_deref().unwrap_or("default");
+                    // Spawn notification forwarder that routes through channel manager
+                    let notify_channel = hb_config.notify_channel.clone();
+                    let notify_user = hb_config.notify_user.clone();
+                    let channels = self.channels.clone();
+                    tokio::spawn(async move {
+                        while let Some(response) = notify_rx.recv().await {
+                            let user = notify_user.as_deref().unwrap_or("default");
 
-                        // Try the configured channel first, fall back to broadcasting on all channels.
-                        let targeted_ok = if let Some(ref channel) = notify_channel {
-                            channels
-                                .broadcast(channel, user, response.clone())
-                                .await
-                                .is_ok()
-                        } else {
-                            false
-                        };
+                            // Try the configured channel first, fall back to
+                            // broadcasting on all channels.
+                            let targeted_ok = if let Some(ref channel) = notify_channel {
+                                channels
+                                    .broadcast(channel, user, response.clone())
+                                    .await
+                                    .is_ok()
+                            } else {
+                                false
+                            };
 
-                        if !targeted_ok {
-                            let results = channels.broadcast_all(user, response).await;
-                            for (ch, result) in results {
-                                if let Err(e) = result {
-                                    tracing::warn!(
-                                        "Failed to broadcast heartbeat to {}: {}",
-                                        ch,
-                                        e
-                                    );
+                            if !targeted_ok {
+                                let results = channels.broadcast_all(user, response).await;
+                                for (ch, result) in results {
+                                    if let Err(e) = result {
+                                        tracing::warn!(
+                                            "Failed to broadcast heartbeat to {}: {}",
+                                            ch,
+                                            e
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
-                });
+                    });
 
-                Some(spawn_heartbeat(
-                    config,
-                    Arc::clone(self.fs_workspace()),
-                    self.cheap_llm().clone(),
-                    self.safety().clone(),
-                    Some(notify_tx),
-                ))
+                    let hygiene = self
+                        .hygiene_config
+                        .as_ref()
+                        .map(|h| h.to_workspace_config())
+                        .unwrap_or_default();
+
+                    Some(spawn_heartbeat(
+                        config,
+                        hygiene,
+                        workspace.clone(),
+                        self.cheap_llm().clone(),
+                        Some(notify_tx),
+                        self.store().map(Arc::clone),
+                    ))
+                } else {
+                    tracing::warn!("Heartbeat enabled but no workspace available");
+                    None
+                }
             } else {
                 None
             }
@@ -423,7 +469,7 @@ impl Agent {
         // Spawn routine engine if enabled
         let routine_handle = if let Some(ref rt_config) = self.routine_config {
             if rt_config.enabled {
-                if let Some(store) = self.store() {
+                if let (Some(store), Some(workspace)) = (self.store(), self.workspace()) {
                     // Set up notification channel (same pattern as heartbeat)
                     let (notify_tx, mut notify_rx) =
                         tokio::sync::mpsc::channel::<OutgoingResponse>(32);
@@ -432,9 +478,11 @@ impl Agent {
                         rt_config.clone(),
                         Arc::clone(store),
                         self.llm().clone(),
-                        Arc::clone(self.fs_workspace()),
+                        Arc::clone(workspace),
                         notify_tx,
                         Some(self.scheduler.clone()),
+                        self.tools().clone(),
+                        self.safety().clone(),
                     ));
 
                     // Register routine tools
@@ -444,7 +492,6 @@ impl Agent {
 
                     // Load initial event cache
                     engine.refresh_event_cache().await;
-                    engine.ensure_builtin_observation_routines().await;
 
                     // Spawn notification forwarder (mirrors heartbeat pattern)
                     let channels = self.channels.clone();
@@ -499,7 +546,12 @@ impl Agent {
                     // SAFETY: self is consumed by run(), we can smuggle the engine in
                     // via a local to use in the message loop below.
 
-                    tracing::info!(
+                    // Expose engine to gateway for manual triggering
+                    if let Some(ref slot) = self.routine_engine_slot {
+                        *slot.write().await = Some(Arc::clone(&engine));
+                    }
+
+                    tracing::debug!(
                         "Routines enabled: cron ticker every {}s, max {} concurrent",
                         rt_config.cron_check_interval_secs,
                         rt_config.max_concurrent_routines
@@ -520,221 +572,40 @@ impl Agent {
         // Extract engine ref for use in message loop
         let routine_engine_for_loop = routine_handle.as_ref().map(|(_, e)| Arc::clone(e));
 
-        // Spawn compressor loop if enabled
-        let compressor_loop_handle = if let Some(ref cl_cfg) = self.compressor_loop_config {
-            if cl_cfg.enabled {
-                if let Some(store) = self.store() {
-                    let store = Arc::clone(store);
-                    let llm = self.compressor_llm().clone();
-                    let cfg = cl_cfg.clone();
-                    let cursor_key = "compressor.loop.micro_cursor.v0".to_string();
-                    tracing::info!(
-                        "Compressor loop enabled: interval={}s commit={} user_id={}",
-                        cfg.interval_secs,
-                        cfg.commit,
-                        cfg.user_id
-                    );
-                    Some(tokio::spawn(async move {
-                        if cfg.startup_delay_secs > 0 {
-                            tokio::time::sleep(std::time::Duration::from_secs(
-                                cfg.startup_delay_secs,
-                            ))
-                            .await;
-                        }
-                        loop {
-                            // Load cursor (persisted in settings) for sweep mode.
-                            let cursor_val =
-                                match store.get_setting(&cfg.user_id, &cursor_key).await {
-                                    Ok(v) => v,
-                                    Err(e) => {
-                                        tracing::warn!("Failed to load compressor cursor: {}", e);
-                                        None
-                                    }
-                                };
-                            let cursor: Option<crate::compressor::LedgerCursorV0> =
-                                cursor_val.and_then(|v| serde_json::from_value(v).ok());
-
-                            let params = crate::compressor::MicroDistillParams {
-                                window_events: cfg.window_events,
-                                anchor_invariants: cfg.anchor_invariants,
-                                drift_candidates: cfg.drift_candidates,
-                                max_tokens: cfg.max_tokens,
-                            };
-
-                            // Sweep forward through evidence windows (excluding derived events).
-                            // If there's no backlog beyond the cursor, skip the pass entirely.
-                            let (local, sweep_advanced) = match store
-                                .list_ledger_events_after_for_compression(
-                                    &cfg.user_id,
-                                    cursor.as_ref().map(|c| c.created_at.as_str()),
-                                    cursor.as_ref().map(|c| c.id.as_str()),
-                                    cfg.window_events,
-                                )
-                                .await
-                            {
-                                Ok(v) if !v.is_empty() => (v, true), // already oldest-first
-                                Ok(_) => {
-                                    tracing::debug!(
-                                        user_id = %cfg.user_id,
-                                        "Compressor loop: caught up (no evidence beyond cursor); skipping pass"
-                                    );
-                                    tokio::time::sleep(std::time::Duration::from_secs(
-                                        cfg.interval_secs,
-                                    ))
-                                    .await;
-                                    continue;
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to load compressor sweep window; falling back to recent: {}",
-                                        e
-                                    );
-                                    // In error cases, fall back to recent window so the system can continue
-                                    // operating (and potentially recover) instead of halting compression forever.
-                                    let mut recent = store
-                                        .list_recent_ledger_events_for_compression(
-                                            &cfg.user_id,
-                                            cfg.window_events,
-                                        )
-                                        .await
-                                        .unwrap_or_default();
-                                    recent.reverse();
-                                    (recent, false)
-                                }
-                            };
-
-                            if local.is_empty() {
-                                tracing::debug!("Compressor loop: no evidence events available");
-                                tokio::time::sleep(std::time::Duration::from_secs(
-                                    cfg.interval_secs,
-                                ))
-                                .await;
-                                continue;
-                            }
-
-                            let last = local.last().cloned();
-
-                            let result =
-                                crate::compressor::run_micro_distill_pass_with_local_window(
-                                    store.as_ref(),
-                                    llm.as_ref(),
-                                    &cfg.user_id,
-                                    params,
-                                    cfg.commit,
-                                    &local,
-                                )
-                                .await;
-
-                            match result {
-                                Ok(res) => {
-                                    // Advance cursor only when:
-                                    // - commit is enabled (so the distill output is durable)
-                                    // - we actually processed a sweep window (not just "recent")
-                                    if cfg.commit && sweep_advanced {
-                                        if let Some(last) = last {
-                                            let cursor = crate::compressor::LedgerCursorV0 {
-                                                created_at: last.created_at.to_rfc3339_opts(
-                                                    chrono::SecondsFormat::Millis,
-                                                    true,
-                                                ),
-                                                id: last.id.to_string(),
-                                            };
-                                            if let Err(e) = store
-                                                .set_setting(
-                                                    &cfg.user_id,
-                                                    &cursor_key,
-                                                    &serde_json::to_value(cursor)
-                                                        .unwrap_or_else(|_| serde_json::json!({})),
-                                                )
-                                                .await
-                                            {
-                                                tracing::warn!(
-                                                    "Failed to persist compressor cursor: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    tracing::info!(
-                                        wake_pack_event_id = ?res.wake_pack_event_id,
-                                        distill_event_id = ?res.distill_event_id,
-                                        actions = res.delta.actions.len(),
-                                        "Compressor micro distill pass completed"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Compressor micro distill pass failed: {}", e);
-                                }
-                            }
-
-                            tokio::time::sleep(std::time::Duration::from_secs(cfg.interval_secs))
-                                .await;
-                        }
-                    }))
-                } else {
-                    tracing::warn!("Compressor loop enabled but store not available");
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Spawn ledger embedding indexer loop if enabled.
-        let ledger_indexer_handle = if let Some(ref idx_cfg) = self.ledger_index_config {
-            if idx_cfg.enabled {
-                match (self.store(), self.embeddings()) {
-                    (Some(store), Some(emb)) => {
-                        let store = Arc::clone(store);
-                        let emb = Arc::clone(emb);
-                        let cfg = idx_cfg.clone();
-                        tracing::info!(
-                            "Ledger indexer enabled: interval={}s batch_events={} user_id={}",
-                            cfg.interval_secs,
-                            cfg.batch_events,
-                            cfg.user_id
-                        );
-                        Some(crate::agent::ledger_indexer::spawn_ledger_indexer(
-                            store, emb, cfg,
-                        ))
-                    }
-                    _ => {
-                        tracing::warn!(
-                            "Ledger indexer enabled but store/embeddings not available (is embeddings enabled?)"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
         // Main message loop
-        tracing::info!("Agent {} ready and listening", self.config.name);
+        tracing::debug!("Agent {} ready and listening", self.config.name);
 
         loop {
             let message = tokio::select! {
                 biased;
                 _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("Ctrl+C received, shutting down...");
+                    tracing::debug!("Ctrl+C received, shutting down...");
                     break;
                 }
                 msg = message_stream.next() => {
                     match msg {
                         Some(m) => m,
                         None => {
-                            tracing::info!("All channel streams ended, shutting down...");
+                            tracing::debug!("All channel streams ended, shutting down...");
                             break;
                         }
                     }
                 }
             };
+
+            // Apply transcription middleware to audio attachments
+            let mut message = message;
+            if let Some(ref transcription) = self.deps.transcription {
+                transcription.process(&mut message).await;
+            }
+
+            // Apply document extraction middleware to document attachments
+            if let Some(ref doc_extraction) = self.deps.document_extraction {
+                doc_extraction.process(&mut message).await;
+            }
+
+            // Store successfully extracted document text in workspace for indexing
+            self.store_extracted_documents(&message).await;
 
             match self.handle_message(&message).await {
                 Ok(Some(response)) if !response.is_empty() => {
@@ -790,7 +661,7 @@ impl Agent {
                 }
                 Ok(None) => {
                     // Shutdown signal received (/quit, /exit, /shutdown)
-                    tracing::info!("Shutdown command received, exiting...");
+                    tracing::debug!("Shutdown command received, exiting...");
                     break;
                 }
                 Err(e) => {
@@ -809,18 +680,17 @@ impl Agent {
                 }
             }
 
-            // Check routine triggers that depend on inbound messages.
+            // Check event triggers (cheap in-memory regex, fires async if matched)
             if let Some(ref engine) = routine_engine_for_loop {
-                let fired = engine.check_event_triggers(&message).await
-                    + engine.check_message_count_triggers(&message).await;
+                let fired = engine.check_event_triggers(&message).await;
                 if fired > 0 {
-                    tracing::debug!("Fired {} message-triggered routines", fired);
+                    tracing::debug!("Fired {} event-triggered routines", fired);
                 }
             }
         }
 
         // Cleanup
-        tracing::info!("Agent shutting down...");
+        tracing::debug!("Agent shutting down...");
         repair_handle.abort();
         pruning_handle.abort();
         if let Some(handle) = heartbeat_handle {
@@ -829,19 +699,92 @@ impl Agent {
         if let Some((cron_handle, _)) = routine_handle {
             cron_handle.abort();
         }
-        if let Some(handle) = compressor_loop_handle {
-            handle.abort();
-        }
-        if let Some(handle) = ledger_indexer_handle {
-            handle.abort();
-        }
         self.scheduler.stop_all().await;
         self.channels.shutdown_all().await?;
 
         Ok(())
     }
 
+    /// Store extracted document text in workspace memory for future search/recall.
+    async fn store_extracted_documents(&self, message: &IncomingMessage) {
+        let workspace = match self.workspace() {
+            Some(ws) => ws,
+            None => return,
+        };
+
+        for attachment in &message.attachments {
+            if attachment.kind != crate::channels::AttachmentKind::Document {
+                continue;
+            }
+            let text = match &attachment.extracted_text {
+                Some(t) if !t.starts_with('[') => t, // skip error messages like "[Failed to..."
+                _ => continue,
+            };
+
+            // Sanitize filename: strip path separators to prevent directory traversal
+            let raw_name = attachment.filename.as_deref().unwrap_or("unnamed_document");
+            let filename: String = raw_name
+                .chars()
+                .map(|c| {
+                    if c == '/' || c == '\\' || c == '\0' {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            let filename = filename.trim_start_matches('.');
+            let filename = if filename.is_empty() {
+                "unnamed_document"
+            } else {
+                filename
+            };
+            let date = chrono::Utc::now().format("%Y-%m-%d");
+            let path = format!("documents/{date}/{filename}");
+
+            let header = format!(
+                "# {filename}\n\n\
+                 > Uploaded by **{}** via **{}** on {date}\n\
+                 > MIME: {} | Size: {} bytes\n\n---\n\n",
+                message.user_id,
+                message.channel,
+                attachment.mime_type,
+                attachment.size_bytes.unwrap_or(0),
+            );
+            let content = format!("{header}{text}");
+
+            match workspace.write(&path, &content).await {
+                Ok(_) => {
+                    tracing::info!(
+                        path = %path,
+                        text_len = text.len(),
+                        "Stored extracted document in workspace memory"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path,
+                        error = %e,
+                        "Failed to store extracted document in workspace"
+                    );
+                }
+            }
+        }
+    }
+
     async fn handle_message(&self, message: &IncomingMessage) -> Result<Option<String>, Error> {
+        // Log at info level only for tracking without exposing PII (user_id can be a phone number)
+        tracing::info!(message_id = %message.id, "Processing message");
+
+        // Log sensitive details at debug level for troubleshooting
+        tracing::debug!(
+            message_id = %message.id,
+            user_id = %message.user_id,
+            channel = %message.channel,
+            thread_id = ?message.thread_id,
+            "Message details"
+        );
+
         // Set message tool context for this turn (current channel and target)
         // For Signal, use signal_target from metadata (group:ID or phone number),
         // otherwise fall back to user_id
@@ -857,6 +800,10 @@ impl Agent {
 
         // Parse submission type first
         let mut submission = SubmissionParser::parse(&message.content);
+        tracing::trace!(
+            "[agent_loop] Parsed submission: {:?}",
+            std::any::type_name_of_val(&submission)
+        );
 
         // Hook: BeforeInbound — allow hooks to modify or reject user input
         if let Submission::UserInput { ref content } = submission {
@@ -886,10 +833,19 @@ impl Agent {
 
         // Hydrate thread from DB if it's a historical thread not in memory
         if let Some(ref external_thread_id) = message.thread_id {
+            tracing::trace!(
+                message_id = %message.id,
+                thread_id = %external_thread_id,
+                "Hydrating thread from DB"
+            );
             self.maybe_hydrate_thread(message, external_thread_id).await;
         }
 
         // Resolve session and thread
+        tracing::debug!(
+            message_id = %message.id,
+            "Resolving session and thread"
+        );
         let (session, thread_id) = self
             .session_manager
             .resolve_thread(
@@ -898,6 +854,11 @@ impl Agent {
                 message.thread_id.as_deref(),
             )
             .await;
+        tracing::debug!(
+            message_id = %message.id,
+            thread_id = %thread_id,
+            "Resolved session and thread"
+        );
 
         // Auth mode interception: if the thread is awaiting a token, route
         // the message directly to the credential store. Nothing touches
@@ -927,7 +888,7 @@ impl Agent {
             }
         }
 
-        tracing::debug!(
+        tracing::trace!(
             "Received message from {} on {} ({} chars)",
             message.user_id,
             message.channel,
@@ -941,7 +902,14 @@ impl Agent {
                     .await
             }
             Submission::SystemCommand { command, args } => {
-                self.handle_system_command(&command, &args).await
+                tracing::debug!(
+                    "[agent_loop] SystemCommand: command={}, channel={}",
+                    command,
+                    message.channel
+                );
+                // Authorization checks (including restart channel check) are enforced in handle_system_command
+                self.handle_system_command(&command, &args, &message.channel)
+                    .await
             }
             Submission::Undo => self.process_undo(session, thread_id).await,
             Submission::Redo => self.process_redo(session, thread_id).await,
@@ -989,7 +957,15 @@ impl Agent {
 
         // Convert SubmissionResult to response string
         match result? {
-            SubmissionResult::Response { content } => Ok(visible_response_or_suppressed_empty(content)),
+            SubmissionResult::Response { content } => {
+                // Suppress silent replies (e.g. from group chat "nothing to say" responses)
+                if crate::llm::is_silent_reply(&content) {
+                    tracing::debug!("Suppressing silent reply token");
+                    Ok(None)
+                } else {
+                    Ok(Some(content))
+                }
+            }
             SubmissionResult::Ok { message } => Ok(message),
             SubmissionResult::Error { message } => Ok(Some(format!("Error: {}", message))),
             SubmissionResult::Interrupted => Ok(Some("Interrupted.".into())),
@@ -1024,8 +1000,7 @@ impl Agent {
 
 #[cfg(test)]
 mod tests {
-    use super::{truncate_for_preview, visible_response_or_suppressed_empty};
-    use crate::llm::SILENT_REPLY_TOKEN;
+    use super::truncate_for_preview;
 
     #[test]
     fn test_truncate_short_input() {
@@ -1087,21 +1062,5 @@ mod tests {
         let result = truncate_for_preview(input, 8);
         // 'h','e','l','l','o',' ','世','界' = 8 chars
         assert_eq!(result, "hello 世界...");
-    }
-
-    #[test]
-    fn test_silent_reply_is_suppressed_without_shutdown_sentinel() {
-        assert_eq!(
-            visible_response_or_suppressed_empty(SILENT_REPLY_TOKEN.to_string()),
-            Some(String::new())
-        );
-    }
-
-    #[test]
-    fn test_normal_reply_stays_visible() {
-        assert_eq!(
-            visible_response_or_suppressed_empty("hello".to_string()),
-            Some("hello".to_string())
-        );
     }
 }

@@ -5,6 +5,7 @@ let eventSource = null;
 let logEventSource = null;
 let currentTab = 'chat';
 let currentThreadId = null;
+let currentThreadIsReadOnly = false;
 let assistantThreadId = null;
 let hasMore = false;
 let oldestTimestamp = null;
@@ -13,8 +14,11 @@ let sseHasConnectedBefore = false;
 let jobEvents = new Map(); // job_id -> Array of events
 let jobListRefreshTimer = null;
 let pairingPollInterval = null;
+let unreadThreads = new Map(); // thread_id -> unread count
+let _loadThreadsTimer = null;
 const JOB_EVENTS_CAP = 500;
 const MEMORY_SEARCH_QUERY_MAX_LENGTH = 100;
+let stagedImages = [];
 
 // --- Slash Commands ---
 
@@ -133,6 +137,94 @@ function apiFetch(path, options) {
   });
 }
 
+// --- Restart Feature ---
+
+let isRestarting = false; // Track if we're currently restarting
+let restartEnabled = false; // Track if restart is available in this deployment
+
+function triggerRestart() {
+  if (!currentThreadId) {
+    alert('Please start a conversation first');
+    return;
+  }
+
+  // Show the confirmation modal
+  const confirmModal = document.getElementById('restart-confirm-modal');
+  confirmModal.style.display = 'flex';
+}
+
+function confirmRestart() {
+  if (!currentThreadId) {
+    alert('Please start a conversation first');
+    return;
+  }
+
+  // Hide confirmation modal
+  const confirmModal = document.getElementById('restart-confirm-modal');
+  confirmModal.style.display = 'none';
+
+  const restartBtn = document.getElementById('restart-btn');
+  const restartIcon = document.getElementById('restart-icon');
+
+  // Mark as restarting
+  isRestarting = true;
+  restartBtn.disabled = true;
+  if (restartIcon) restartIcon.classList.add('spinning');
+
+  // Show progress modal
+  const loaderEl = document.getElementById('restart-loader');
+  loaderEl.style.display = 'flex';
+
+  // Send restart command via chat
+  console.log('[confirmRestart] Sending /restart command to server');
+  apiFetch('/api/chat/send', {
+    method: 'POST',
+    body: {
+      content: '/restart',
+      thread_id: currentThreadId,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    },
+  })
+    .then((response) => {
+      console.log('[confirmRestart] API call succeeded, response:', response);
+    })
+    .catch((err) => {
+      console.error('[confirmRestart] Restart request failed:', err);
+      addMessage('system', 'Restart failed: ' + err.message);
+      isRestarting = false;
+      restartBtn.disabled = false;
+      if (restartIcon) restartIcon.classList.remove('spinning');
+      loaderEl.style.display = 'none';
+    });
+}
+
+function cancelRestart() {
+  const confirmModal = document.getElementById('restart-confirm-modal');
+  confirmModal.style.display = 'none';
+}
+
+function tryShowRestartModal() {
+  // Defensive callback for when restart is detected in messages.
+  if (!isRestarting) {
+    isRestarting = true;
+    const restartBtn = document.getElementById('restart-btn');
+    const restartIcon = document.getElementById('restart-icon');
+    restartBtn.disabled = true;
+    if (restartIcon) restartIcon.classList.add('spinning');
+
+    // Show progress modal
+    const loaderEl = document.getElementById('restart-loader');
+    loaderEl.style.display = 'flex';
+  }
+}
+
+function updateRestartButtonVisibility() {
+  const restartBtn = document.getElementById('restart-btn');
+  if (restartBtn) {
+    restartBtn.style.display = restartEnabled ? 'block' : 'none';
+  }
+}
+
 // --- SSE ---
 
 function connectSSE() {
@@ -143,6 +235,18 @@ function connectSSE() {
   eventSource.onopen = () => {
     document.getElementById('sse-dot').classList.remove('disconnected');
     document.getElementById('sse-status').textContent = 'Connected';
+
+    // If we were restarting, close the modal and reset button now that server is back
+    if (isRestarting) {
+      const loaderEl = document.getElementById('restart-loader');
+      if (loaderEl) loaderEl.style.display = 'none';
+      const restartBtn = document.getElementById('restart-btn');
+      const restartIcon = document.getElementById('restart-icon');
+      if (restartBtn) restartBtn.disabled = false;
+      if (restartIcon) restartIcon.classList.remove('spinning');
+      isRestarting = false;
+    }
+
     if (sseHasConnectedBefore && currentThreadId) {
       finalizeActivityGroup();
       loadHistory();
@@ -157,17 +261,31 @@ function connectSSE() {
 
   eventSource.addEventListener('response', (e) => {
     const data = JSON.parse(e.data);
-    if (!isCurrentThread(data.thread_id)) return;
+    if (!isCurrentThread(data.thread_id)) {
+      if (data.thread_id) {
+        unreadThreads.set(data.thread_id, (unreadThreads.get(data.thread_id) || 0) + 1);
+        debouncedLoadThreads();
+      }
+      return;
+    }
     finalizeActivityGroup();
     addMessage('assistant', data.content);
     enableChatInput();
     // Refresh thread list so new titles appear after first message
     loadThreads();
+
+    // Show restart modal if the response indicates restart was initiated
+    if (data.content && data.content.toLowerCase().includes('restart initiated')) {
+      setTimeout(() => tryShowRestartModal(), 500);
+    }
   });
 
   eventSource.addEventListener('thinking', (e) => {
     const data = JSON.parse(e.data);
-    if (!isCurrentThread(data.thread_id)) return;
+    if (!isCurrentThread(data.thread_id)) {
+      if (data.thread_id) debouncedLoadThreads();
+      return;
+    }
     showActivityThinking(data.message);
   });
 
@@ -181,6 +299,11 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     if (!isCurrentThread(data.thread_id)) return;
     completeToolCard(data.name, data.success, data.error, data.parameters);
+
+    // Show restart modal only when the restart tool succeeds
+    if (data.name.toLowerCase() === 'restart' && data.success) {
+      setTimeout(() => tryShowRestartModal(), 500);
+    }
   });
 
   eventSource.addEventListener('tool_result', (e) => {
@@ -198,7 +321,10 @@ function connectSSE() {
 
   eventSource.addEventListener('status', (e) => {
     const data = JSON.parse(e.data);
-    if (!isCurrentThread(data.thread_id)) return;
+    if (!isCurrentThread(data.thread_id)) {
+      if (data.thread_id) debouncedLoadThreads();
+      return;
+    }
     // "Done" and "Awaiting approval" are terminal signals from the agent:
     // the agentic loop finished, so re-enable input as a safety net in case
     // the response SSE event is empty or lost.
@@ -247,6 +373,12 @@ function connectSSE() {
     if (currentTab === 'extensions') loadExtensions();
   });
 
+  eventSource.addEventListener('image_generated', (e) => {
+    const data = JSON.parse(e.data);
+    if (!isCurrentThread(data.thread_id)) return;
+    addGeneratedImage(data.data_url, data.path);
+  });
+
   eventSource.addEventListener('error', (e) => {
     if (e.data) {
       const data = JSON.parse(e.data);
@@ -288,9 +420,9 @@ function connectSSE() {
 }
 
 // Check if an SSE event belongs to the currently viewed thread.
-// Events without a thread_id (legacy) are always shown.
+// Events without a thread_id are dropped (prevents notification leaking).
 function isCurrentThread(threadId) {
-  if (!threadId) return true;
+  if (!threadId) return false;
   if (!currentThreadId) return true;
   return threadId === currentThreadId;
 }
@@ -304,23 +436,135 @@ function sendMessage() {
     return;
   }
   const content = input.value.trim();
-  if (!content) return;
+  if (!content && stagedImages.length === 0) return;
 
-  addMessage('user', content);
+  addMessage('user', content || '(images attached)');
   input.value = '';
   autoResizeTextarea(input);
   input.focus();
 
+  const body = { content, thread_id: currentThreadId || undefined, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  if (stagedImages.length > 0) {
+    body.images = stagedImages.map(img => ({ media_type: img.media_type, data: img.data }));
+    stagedImages = [];
+    renderImagePreviews();
+  }
+
   apiFetch('/api/chat/send', {
     method: 'POST',
-    body: { content, thread_id: currentThreadId || undefined },
+    body: body,
   }).catch((err) => {
     addMessage('system', 'Failed to send: ' + err.message);
   });
 }
 
 function enableChatInput() {
-  // no-op: input and send button are always enabled
+  if (currentThreadIsReadOnly) return;
+  const input = document.getElementById('chat-input');
+  const btn = document.getElementById('send-btn');
+  if (input) {
+    input.disabled = false;
+    input.placeholder = 'Message or / for commands...';
+  }
+  if (btn) btn.disabled = false;
+}
+
+// --- Image Upload ---
+
+function renderImagePreviews() {
+  const strip = document.getElementById('image-preview-strip');
+  strip.innerHTML = '';
+  stagedImages.forEach((img, idx) => {
+    const container = document.createElement('div');
+    container.className = 'image-preview-container';
+
+    const preview = document.createElement('img');
+    preview.className = 'image-preview';
+    preview.src = img.dataUrl;
+    preview.alt = 'Attached image';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'image-preview-remove';
+    removeBtn.textContent = '\u00d7';
+    removeBtn.addEventListener('click', () => {
+      stagedImages.splice(idx, 1);
+      renderImagePreviews();
+    });
+
+    container.appendChild(preview);
+    container.appendChild(removeBtn);
+    strip.appendChild(container);
+  });
+}
+
+const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB per image
+const MAX_STAGED_IMAGES = 5;
+
+function handleImageFiles(files) {
+  Array.from(files).forEach(file => {
+    if (!file.type.startsWith('image/')) return;
+    if (file.size > MAX_IMAGE_SIZE_BYTES) {
+      alert(`Image "${file.name}" exceeds 5 MB limit (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
+      return;
+    }
+    if (stagedImages.length >= MAX_STAGED_IMAGES) {
+      alert(`Maximum ${MAX_STAGED_IMAGES} images allowed per message`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const dataUrl = e.target.result;
+      const commaIdx = dataUrl.indexOf(',');
+      const meta = dataUrl.substring(0, commaIdx); // e.g. "data:image/png;base64"
+      const base64 = dataUrl.substring(commaIdx + 1);
+      const mediaType = meta.replace('data:', '').replace(';base64', '');
+      stagedImages.push({ media_type: mediaType, data: base64, dataUrl: dataUrl });
+      renderImagePreviews();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+document.getElementById('attach-btn').addEventListener('click', () => {
+  document.getElementById('image-file-input').click();
+});
+
+document.getElementById('image-file-input').addEventListener('change', (e) => {
+  handleImageFiles(e.target.files);
+  e.target.value = '';
+});
+
+document.getElementById('chat-input').addEventListener('paste', (e) => {
+  const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].kind === 'file' && items[i].type.startsWith('image/')) {
+      const file = items[i].getAsFile();
+      if (file) handleImageFiles([file]);
+    }
+  }
+});
+
+function addGeneratedImage(dataUrl, path) {
+  const container = document.getElementById('chat-messages');
+  const card = document.createElement('div');
+  card.className = 'generated-image-card';
+
+  const img = document.createElement('img');
+  img.className = 'generated-image';
+  img.src = dataUrl;
+  img.alt = 'Generated image';
+
+  card.appendChild(img);
+
+  if (path) {
+    const pathLabel = document.createElement('div');
+    pathLabel.className = 'generated-image-path';
+    pathLabel.textContent = path;
+    card.appendChild(pathLabel);
+  }
+
+  container.appendChild(card);
+  container.scrollTop = container.scrollHeight;
 }
 
 // --- Slash Autocomplete ---
@@ -415,6 +659,13 @@ function sendApprovalAction(requestId, action) {
 
 function renderMarkdown(text) {
   if (typeof marked !== 'undefined') {
+    // Escape raw HTML error pages instead of rendering them as markup.
+    // Only triggers when the text *starts with* a doctype or <html> tag
+    // (after optional whitespace), so normal messages that mention HTML
+    // tags in prose or code fences are not affected.  See #263.
+    if (/^\s*<!doctype\s/i.test(text) || /^\s*<html[\s>]/i.test(text)) {
+      return escapeHtml(text);
+    }
     let html = marked.parse(text);
     // Sanitize HTML output to prevent XSS from tool output or LLM responses.
     html = sanitizeRenderedHtml(html);
@@ -877,7 +1128,7 @@ function showAuthCard(data) {
     oauthBtn.className = 'auth-oauth';
     oauthBtn.textContent = 'Authenticate with ' + data.extension_name;
     oauthBtn.addEventListener('click', () => {
-      window.open(data.auth_url, '_blank', 'width=600,height=700');
+      openOAuthUrl(data.auth_url);
     });
     links.appendChild(oauthBtn);
   }
@@ -1008,7 +1259,9 @@ function loadHistory(before) {
       // Fresh load: clear and render
       container.innerHTML = '';
       for (const turn of data.turns) {
-        addMessage('user', turn.user_input);
+        if (turn.user_input) {
+          addMessage('user', turn.user_input);
+        }
         if (turn.tool_calls && turn.tool_calls.length > 0) {
           addToolCallsSummary(turn.tool_calls);
         }
@@ -1030,8 +1283,10 @@ function loadHistory(before) {
       const savedHeight = container.scrollHeight;
       const fragment = document.createDocumentFragment();
       for (const turn of data.turns) {
-        const userDiv = createMessageElement('user', turn.user_input);
-        fragment.appendChild(userDiv);
+        if (turn.user_input) {
+          const userDiv = createMessageElement('user', turn.user_input);
+          fragment.appendChild(userDiv);
+        }
         if (turn.tool_calls && turn.tool_calls.length > 0) {
           fragment.appendChild(createToolCallsSummaryElement(turn.tool_calls));
         }
@@ -1130,6 +1385,37 @@ function removeScrollSpinner() {
 
 // --- Threads ---
 
+function threadTitle(thread) {
+  if (thread.title) return thread.title;
+  const ch = thread.channel || 'gateway';
+  if (thread.thread_type === 'heartbeat') return 'Heartbeat Alerts';
+  if (thread.thread_type === 'routine') return 'Routine';
+  if (ch !== 'gateway') return ch.charAt(0).toUpperCase() + ch.slice(1);
+  if (thread.turn_count === 0) return 'New chat';
+  return thread.id.substring(0, 8);
+}
+
+function relativeTime(isoStr) {
+  if (!isoStr) return '';
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  return days + 'd ago';
+}
+
+function isReadOnlyChannel(channel) {
+  return channel && channel !== 'gateway' && channel !== 'routine' && channel !== 'heartbeat';
+}
+
+function debouncedLoadThreads() {
+  if (_loadThreadsTimer) clearTimeout(_loadThreadsTimer);
+  _loadThreadsTimer = setTimeout(() => { _loadThreadsTimer = null; loadThreads(); }, 500);
+}
+
 function loadThreads() {
   apiFetch('/api/chat/threads').then((data) => {
     // Pinned assistant thread
@@ -1138,9 +1424,13 @@ function loadThreads() {
       const el = document.getElementById('assistant-thread');
       const isActive = currentThreadId === assistantThreadId;
       el.className = 'assistant-item' + (isActive ? ' active' : '');
+      const labelEl = document.getElementById('assistant-label');
+      if (labelEl) {
+        const at = data.assistant_thread;
+        labelEl.textContent = 'Assistant';
+      }
       const meta = document.getElementById('assistant-meta');
-      const count = data.assistant_thread.turn_count || 0;
-      meta.textContent = count > 0 ? count + ' turns' : '';
+      meta.textContent = relativeTime(data.assistant_thread.updated_at);
     }
 
     // Regular threads
@@ -1149,16 +1439,38 @@ function loadThreads() {
     const threads = data.threads || [];
     for (const thread of threads) {
       const item = document.createElement('div');
-      item.className = 'thread-item' + (thread.id === currentThreadId ? ' active' : '');
+      const isActive = thread.id === currentThreadId;
+      item.className = 'thread-item' + (isActive ? ' active' : '');
+
+      // Channel badge for non-gateway threads
+      const ch = thread.channel || 'gateway';
+      if (ch !== 'gateway') {
+        const badge = document.createElement('span');
+        badge.className = 'thread-badge thread-badge-' + ch;
+        badge.textContent = ch;
+        item.appendChild(badge);
+      }
+
       const label = document.createElement('span');
       label.className = 'thread-label';
-      label.textContent = thread.title || thread.id.substring(0, 8);
-      label.title = thread.title ? thread.title + ' (' + thread.id + ')' : thread.id;
+      label.textContent = threadTitle(thread);
+      label.title = (thread.title || '') + ' (' + thread.id + ')';
       item.appendChild(label);
+
       const meta = document.createElement('span');
       meta.className = 'thread-meta';
-      meta.textContent = (thread.turn_count || 0) + ' turns';
+      meta.textContent = relativeTime(thread.updated_at);
       item.appendChild(meta);
+
+      // Unread dot
+      const unread = unreadThreads.get(thread.id) || 0;
+      if (unread > 0 && !isActive) {
+        const dot = document.createElement('span');
+        dot.className = 'thread-unread';
+        dot.textContent = unread > 9 ? '9+' : String(unread);
+        item.appendChild(dot);
+      }
+
       item.addEventListener('click', () => switchThread(thread.id));
       list.appendChild(item);
     }
@@ -1168,17 +1480,36 @@ function loadThreads() {
       switchToAssistant();
     }
 
-    // Enable chat input once a thread is available
+    // Enable/disable chat input based on channel type
     if (currentThreadId) {
-      enableChatInput();
+      const currentThread = threads.find(t => t.id === currentThreadId);
+      const ch = currentThread ? currentThread.channel : 'gateway';
+      currentThreadIsReadOnly = isReadOnlyChannel(ch);
+      if (currentThreadIsReadOnly) {
+        disableChatInputReadOnly();
+      } else {
+        enableChatInput();
+      }
     }
   }).catch(() => {});
+}
+
+function disableChatInputReadOnly() {
+  const input = document.getElementById('chat-input');
+  const btn = document.getElementById('send-btn');
+  if (input) {
+    input.disabled = true;
+    input.placeholder = 'Read-only thread (external channel)';
+  }
+  if (btn) btn.disabled = true;
 }
 
 function switchToAssistant() {
   if (!assistantThreadId) return;
   finalizeActivityGroup();
   currentThreadId = assistantThreadId;
+  currentThreadIsReadOnly = false;
+  unreadThreads.delete(assistantThreadId);
   hasMore = false;
   oldestTimestamp = null;
   loadHistory();
@@ -1188,6 +1519,7 @@ function switchToAssistant() {
 function switchThread(threadId) {
   finalizeActivityGroup();
   currentThreadId = threadId;
+  unreadThreads.delete(threadId);
   hasMore = false;
   oldestTimestamp = null;
   loadHistory();
@@ -1244,7 +1576,7 @@ chatInput.addEventListener('keydown', (e) => {
     }
   }
 
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     hideSlashAutocomplete();
     sendMessage();
@@ -1763,6 +2095,13 @@ function renderAvailableExtensionCard(entry) {
   kind.textContent = kindLabels[entry.kind] || entry.kind;
   header.appendChild(kind);
 
+  if (entry.version) {
+    const ver = document.createElement('span');
+    ver.className = 'ext-version';
+    ver.textContent = 'v' + entry.version;
+    header.appendChild(ver);
+  }
+
   card.appendChild(header);
 
   const desc = document.createElement('div');
@@ -1795,7 +2134,7 @@ function renderAvailableExtensionCard(entry) {
         // OAuth popup if auth started during install (builtin creds)
         if (res.auth_url) {
           showToast('Opening authentication for ' + entry.display_name, 'info');
-          window.open(res.auth_url, '_blank', 'width=600,height=700');
+          openOAuthUrl(res.auth_url);
         }
         loadExtensions();
         // Auto-open configure for WASM channels
@@ -1923,6 +2262,13 @@ function renderExtensionCard(ext) {
   kind.textContent = kindLabels[ext.kind] || ext.kind;
   header.appendChild(kind);
 
+  if (ext.version) {
+    const ver = document.createElement('span');
+    ver.className = 'ext-version';
+    ver.textContent = 'v' + ext.version;
+    header.appendChild(ver);
+  }
+
   // Auth dot only for non-WASM-channel extensions (channels use the stepper instead)
   if (ext.kind !== 'wasm_channel') {
     const authDot = document.createElement('span');
@@ -1953,7 +2299,7 @@ function renderExtensionCard(ext) {
     card.appendChild(url);
   }
 
-  if (ext.tools.length > 0) {
+  if (ext.tools && ext.tools.length > 0) {
     const tools = document.createElement('div');
     tools.className = 'ext-tools';
     tools.textContent = 'Tools: ' + ext.tools.join(', ');
@@ -2004,8 +2350,8 @@ function renderExtensionCard(ext) {
     activeLabel.textContent = ext.active ? 'Active' : 'Installed';
     actions.appendChild(activeLabel);
 
-    // MCP servers may be installed but inactive — show Activate button
-    if (ext.kind === 'mcp_server' && !ext.active) {
+    // MCP servers and channel-relay extensions may be installed but inactive — show Activate button
+    if ((ext.kind === 'mcp_server' || ext.kind === 'channel_relay') && !ext.active) {
       const activateBtn = document.createElement('button');
       activateBtn.className = 'btn-ext activate';
       activateBtn.textContent = 'Activate';
@@ -2053,7 +2399,7 @@ function activateExtension(name) {
         // Even on success, the tool may need OAuth (e.g., WASM loaded but no token yet)
         if (res.auth_url) {
           showToast('Opening authentication for ' + name, 'info');
-          window.open(res.auth_url, '_blank', 'width=600,height=700');
+          openOAuthUrl(res.auth_url);
         }
         loadExtensions();
         return;
@@ -2061,7 +2407,7 @@ function activateExtension(name) {
 
       if (res.auth_url) {
         showToast('Opening authentication for ' + name, 'info');
-        window.open(res.auth_url, '_blank');
+        openOAuthUrl(res.auth_url);
       } else if (res.awaiting_token) {
         showConfigureModal(name);
       } else {
@@ -2203,20 +2549,21 @@ function submitConfigureModal(name, fields) {
     body: { secrets },
   })
     .then((res) => {
-      closeConfigureModal();
       if (res.success) {
+        closeConfigureModal();
         if (res.auth_url) {
           // OAuth flow started — open consent popup. The auth_completed SSE will
           // not arrive immediately (it fires after OAuth callback), so show a toast now.
           showToast('Opening OAuth authorization for ' + name, 'info');
-          window.open(res.auth_url, '_blank', 'width=600,height=700');
+          openOAuthUrl(res.auth_url);
           loadExtensions();
         }
         // For non-OAuth success: the server always broadcasts auth_completed SSE,
         // which will show the toast and refresh extensions — no need to do it here too.
       } else {
+        // Keep modal open so the user can correct their input and retry.
+        btns.forEach(function(b) { b.disabled = false; });
         showToast(res.message || 'Configuration failed', 'error');
-        loadExtensions();
       }
     })
     .catch((err) => {
@@ -2228,6 +2575,25 @@ function submitConfigureModal(name, fields) {
 function closeConfigureModal() {
   const existing = document.querySelector('.configure-overlay');
   if (existing) existing.remove();
+}
+
+// Validate that a server-supplied OAuth URL is HTTPS before opening a popup.
+// Rejects javascript:, data:, and other non-HTTPS schemes to prevent URL-injection.
+// Uses the URL constructor to safely parse and validate the scheme, which also
+// handles non-string values (objects, null, etc.) that would throw on .startsWith().
+function openOAuthUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+    if (parsed.protocol !== 'https:') {
+      throw new Error('non-HTTPS protocol: ' + parsed.protocol);
+    }
+  } catch (e) {
+    console.warn('Blocked invalid/non-HTTPS OAuth URL:', url, e.message);
+    showToast('Invalid OAuth URL returned by server', 'error');
+    return;
+  }
+  window.open(parsed.href, '_blank', 'width=600,height=700');
 }
 
 // --- Pairing ---
@@ -3145,8 +3511,18 @@ function shortModelName(model) {
 
 function fetchGatewayStatus() {
   apiFetch('/api/gateway/status').then(function(data) {
+    // Update restart button visibility
+    restartEnabled = data.restart_enabled || false;
+    updateRestartButtonVisibility();
+
     var popover = document.getElementById('gateway-popover');
     var html = '';
+
+    // Version
+    if (data.version) {
+      html += '<div class="gw-section-label">BetterClaw v' + escapeHtml(data.version) + '</div>';
+      html += '<div class="gw-divider"></div>';
+    }
 
     // Connection info
     html += '<div class="gw-section-label">Connections</div>';
@@ -3204,10 +3580,15 @@ let teeReportCache = null;
 let teeReportLoading = false;
 
 function teeApiBase() {
-  var parts = window.location.hostname.split('.');
-  if (parts.length < 2) return null;
-  var domain = parts.slice(1).join('.');
-  return window.location.protocol + '//api.' + domain;
+    var hostname = window.location.hostname;
+    // Skip IP addresses (IPv4 and IPv6) and localhost
+    if (hostname === "localhost" || /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(hostname) || hostname.indexOf(":") !== -1) {
+        return null;
+    }
+    var parts = hostname.split(".");
+    if (parts.length < 2) return null;
+    var domain = parts.slice(1).join(".");
+    return window.location.protocol + "//api." + domain;
 }
 
 function teeInstanceName() {
@@ -3218,13 +3599,19 @@ function checkTeeStatus() {
   var base = teeApiBase();
   if (!base) return;
   var name = teeInstanceName();
-  fetch(base + '/instances/' + encodeURIComponent(name) + '/attestation').then(function(res) {
-    if (!res.ok) throw new Error(res.status);
-    return res.json();
-  }).then(function(data) {
-    teeInfo = data;
-    document.getElementById('tee-shield').style.display = 'flex';
-  }).catch(function() {});
+  try {
+    fetch(base + '/instances/' + encodeURIComponent(name) + '/attestation').then(function(res) {
+      if (!res.ok) throw new Error(res.status);
+      return res.json();
+    }).then(function(data) {
+      teeInfo = data;
+      document.getElementById('tee-shield').style.display = 'flex';
+    }).catch(function(err) {
+      console.warn('Failed to fetch TEE attestation:', err);
+    });
+  } catch (e) {
+    console.warn("Failed to check TEE status:", e);
+  }
 }
 
 function fetchTeeReport() {

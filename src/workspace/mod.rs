@@ -1,8 +1,13 @@
-//! Workspace and memory system (OpenClaw-inspired).
+//! Workspace/document memory system (OpenClaw-inspired).
 //!
 //! The workspace provides persistent memory for agents with a flexible
 //! filesystem-like structure. Agents can create arbitrary markdown file
 //! hierarchies that get indexed for full-text and semantic search.
+//!
+//! In BetterClaw's architecture the workspace is one memory layer, not the
+//! canonical continuity plane. The ledger remains the cited source of truth
+//! for recall and distillation; the workspace is the editable, document-style,
+//! human-legible layer.
 //!
 //! # Filesystem-like API
 //!
@@ -35,10 +40,13 @@
 //!
 //! # Key Patterns
 //!
-//! 1. **Memory is persistence**: If you want to remember something, write it
+//! 1. **Document memory is persistence**: If you want an editable note or file, write it here
 //! 2. **Flexible structure**: Create any directory/file hierarchy you need
 //! 3. **Self-documenting**: Use README.md files to describe directory structure
 //! 4. **Hybrid search**: Vector similarity + BM25 full-text via RRF
+//!
+//! This module is also a compatibility hub for upstream merges. Keep its
+//! public exports stable unless an adapter lands in the same change.
 
 mod chunker;
 mod document;
@@ -65,6 +73,7 @@ use std::sync::Arc;
 use chrono::{NaiveDate, Utc};
 #[cfg(feature = "postgres")]
 use deadpool_postgres::Pool;
+use tokio::fs;
 use uuid::Uuid;
 
 use crate::error::WorkspaceError;
@@ -338,6 +347,35 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    fn prompt_overlay_path(&self, rel_path: &str) -> std::path::PathBuf {
+        crate::bootstrap::betterclaw_base_dir()
+            .join("workspaces")
+            .join(&self.user_id)
+            .join("files")
+            .join(rel_path)
+    }
+
+    async fn read_prompt_source(&self, path: &str) -> Result<Option<String>, WorkspaceError> {
+        let overlay_path = self.prompt_overlay_path(path);
+        match fs::read_to_string(&overlay_path).await {
+            Ok(content) => return Ok(Some(content)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::debug!(
+                    "Failed to read workspace prompt overlay {}: {}",
+                    overlay_path.display(),
+                    e
+                );
+            }
+        }
+
+        match self.read(path).await {
+            Ok(doc) => Ok(Some(doc.content)),
+            Err(WorkspaceError::DocumentNotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Create a new workspace backed by a PostgreSQL connection pool.
     #[cfg(feature = "postgres")]
     pub fn new(user_id: impl Into<String>, pool: Pool) -> Self {
@@ -568,11 +606,26 @@ impl Workspace {
     ///
     /// Daily logs are raw, append-only notes for the current day.
     pub async fn append_daily_log(&self, entry: &str) -> Result<(), WorkspaceError> {
-        let today = Utc::now().date_naive();
+        self.append_daily_log_tz(entry, chrono_tz::Tz::UTC)
+            .await
+            .map(|_| ())
+    }
+
+    /// Append an entry to today's daily log using the given timezone.
+    ///
+    /// Returns the path that was written to (e.g. `daily/2024-01-15.md`).
+    pub async fn append_daily_log_tz(
+        &self,
+        entry: &str,
+        tz: chrono_tz::Tz,
+    ) -> Result<String, WorkspaceError> {
+        let now = crate::timezone::now_in_tz(tz);
+        let today = now.date_naive();
         let path = format!("daily/{}.md", today.format("%Y-%m-%d"));
-        let timestamp = Utc::now().format("%H:%M:%S");
+        let timestamp = now.format("%H:%M:%S");
         let timestamped_entry = format!("[{}] {}", timestamp, entry);
-        self.append(&path, &timestamped_entry).await
+        self.append(&path, &timestamped_entry).await?;
+        Ok(path)
     }
 
     // ==================== System Prompt ====================
@@ -587,6 +640,18 @@ impl Workspace {
         self.system_prompt_for_context(false).await
     }
 
+    /// Build the system prompt with timezone-aware daily log dates.
+    ///
+    /// Uses the given timezone to determine "today" and "yesterday" for daily log injection.
+    pub async fn system_prompt_for_context_tz(
+        &self,
+        is_group_chat: bool,
+        tz: chrono_tz::Tz,
+    ) -> Result<String, WorkspaceError> {
+        self.system_prompt_for_context_inner(is_group_chat, Some(tz))
+            .await
+    }
+
     /// Build the system prompt, optionally excluding personal memory.
     ///
     /// When `is_group_chat` is true, MEMORY.md is excluded to prevent
@@ -594,6 +659,16 @@ impl Workspace {
     pub async fn system_prompt_for_context(
         &self,
         is_group_chat: bool,
+    ) -> Result<String, WorkspaceError> {
+        self.system_prompt_for_context_inner(is_group_chat, None)
+            .await
+    }
+
+    /// Inner implementation for system prompt building.
+    async fn system_prompt_for_context_inner(
+        &self,
+        is_group_chat: bool,
+        tz: Option<chrono_tz::Tz>,
     ) -> Result<String, WorkspaceError> {
         let mut parts = Vec::new();
 
@@ -604,14 +679,14 @@ impl Workspace {
         // can delete it after onboarding. This means a prompt injection attack
         // could write to it, but the file is only injected on the next session
         // (not the current one), limiting the blast radius.
-        if let Ok(doc) = self.read(paths::BOOTSTRAP).await
-            && !doc.content.is_empty()
+        if let Some(content) = self.read_prompt_source(paths::BOOTSTRAP).await?
+            && !content.is_empty()
         {
             parts.push(format!(
                 "## First-Run Bootstrap\n\n\
                  A BOOTSTRAP.md file exists in the workspace. Read and follow it, \
                  then delete it when done.\n\n{}",
-                doc.content
+                content
             ));
         }
 
@@ -624,43 +699,47 @@ impl Workspace {
         ];
 
         for (path, header) in identity_files {
-            if let Ok(doc) = self.read(path).await
-                && !doc.content.is_empty()
+            if let Some(content) = self.read_prompt_source(path).await?
+                && !content.is_empty()
             {
-                parts.push(format!("{}\n\n{}", header, doc.content));
+                parts.push(format!("{}\n\n{}", header, content));
             }
         }
 
         // Tool notes: environment-specific guidance the agent or user has written.
         // TOOLS.md does not control tool availability; it is guidance only.
-        if let Ok(doc) = self.read(paths::TOOLS).await
-            && !doc.content.is_empty()
+        if let Some(content) = self.read_prompt_source(paths::TOOLS).await?
+            && !content.is_empty()
         {
-            parts.push(format!("## Tool Notes\n\n{}", doc.content));
+            parts.push(format!("## Tool Notes\n\n{}", content));
         }
 
         // Load MEMORY.md only in direct/main sessions (never group chats)
         if !is_group_chat
-            && let Ok(doc) = self.read(paths::MEMORY).await
-            && !doc.content.is_empty()
+            && let Some(content) = self.read_prompt_source(paths::MEMORY).await?
+            && !content.is_empty()
         {
-            parts.push(format!("## Long-Term Memory\n\n{}", doc.content));
+            parts.push(format!("## Long-Term Memory\n\n{}", content));
         }
 
         // Add today's memory context (last 2 days of daily logs)
-        let today = Utc::now().date_naive();
+        let today = match tz {
+            Some(t) => crate::timezone::today_in_tz(t),
+            None => Utc::now().date_naive(),
+        };
         let yesterday = today.pred_opt().unwrap_or(today);
 
         for date in [today, yesterday] {
-            if let Ok(doc) = self.daily_log(date).await
-                && !doc.content.is_empty()
+            let daily_path = format!("{}{}.md", paths::DAILY_DIR, date.format("%Y-%m-%d"));
+            if let Some(content) = self.read_prompt_source(&daily_path).await?
+                && !content.is_empty()
             {
                 let header = if date == today {
                     "## Today's Notes"
                 } else {
                     "## Yesterday's Notes"
                 };
-                parts.push(format!("{}\n\n{}", header, doc.content));
+                parts.push(format!("{}\n\n{}", header, content));
             }
         }
 
@@ -850,13 +929,13 @@ impl Workspace {
                 Ok(_) => continue,
                 Err(WorkspaceError::DocumentNotFound { .. }) => {}
                 Err(e) => {
-                    tracing::warn!("Failed to check {}: {}", path, e);
+                    tracing::debug!("Failed to check {}: {}", path, e);
                     continue;
                 }
             }
 
             if let Err(e) = self.write(path, content).await {
-                tracing::warn!("Failed to seed {}: {}", path, e);
+                tracing::debug!("Failed to seed {}: {}", path, e);
             } else {
                 count += 1;
             }
@@ -940,7 +1019,7 @@ impl Workspace {
                 Ok(_) => continue,
                 Err(WorkspaceError::DocumentNotFound { .. }) => {}
                 Err(e) => {
-                    tracing::warn!("Failed to check {}: {}", file_name, e);
+                    tracing::trace!("Failed to check {}: {}", file_name, e);
                     continue;
                 }
             }

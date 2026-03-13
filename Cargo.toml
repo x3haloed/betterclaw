@@ -13,11 +13,12 @@ exclude = [
     "tools-src/google-slides",
     "tools-src/slack",
     "tools-src/telegram",
+    "fuzz",
 ]
 
 [package]
 name = "betterclaw"
-version = "0.15.0"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Personal AI assistant that learns over time."
@@ -44,7 +45,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Database - libSQL/Turso (optional embedded database)
-libsql = { version = "0.6", optional = true, default-features = false, features = ["core", "replication"] }
+libsql = { version = "0.6", optional = true, default-features = false, features = ["core", "replication", "remote", "tls"] }
 
 # Error handling
 thiserror = "2"
@@ -61,6 +62,8 @@ toml = "0.8"
 # Core types
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
 rust_decimal = { version = "1", features = ["serde", "serde-with-str", "maths"] }
 rust_decimal_macros = "1"
 
@@ -96,6 +99,9 @@ serde_yml = "0.0.12"
 dirs = "6"
 fs4 = "0.6"
 
+# Semantic versioning
+semver = "1"
+
 # Secrecy for sensitive values
 secrecy = { version = "0.10", features = ["serde"] }
 
@@ -114,6 +120,7 @@ wasmparser = "0.220"  # WASM binary parsing for validation
 # Cryptography for secrets management
 aes-gcm = "0.10"
 hkdf = "0.12"
+hmac = "0.12"
 sha2 = "0.10"
 blake3 = "1"
 rand = "0.8"
@@ -122,12 +129,21 @@ subtle = "2"  # Constant-time comparisons for token validation
 # Multi-provider LLM support
 rig-core = "0.30"
 
+# AWS Bedrock (native Converse API, opt-in via --features bedrock)
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
+aws-sdk-bedrockruntime = { version = "1", optional = true }
+aws-smithy-types = { version = "1", optional = true }
+
 # Docker sandbox
 bollard = "0.18"
 
 # Archive extraction for WASM extension bundles
 flate2 = "1"
 tar = "0.4"
+
+# Document text extraction
+pdf-extract = "0.7"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # HTTP proxy for sandboxed network access
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
@@ -159,6 +175,9 @@ zbus = "4"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tracing-test = "0.2"
+tokio-tungstenite = "0.26"
+testcontainers-modules = { version = "0.11", features = ["postgres"] }
 pretty_assertions = "1"
 tempfile = "3"
 insta = "1.46.3"
@@ -169,15 +188,20 @@ libsql = ["dep:libsql"]
 integration = []
 html-to-markdown = ["dep:html-to-markdown-rs", "dep:readabilityrs"]
 postgres = []
+bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime", "dep:aws-smithy-types"]
 
 [[test]]
 name = "html_to_markdown"
 required-features = ["html-to-markdown"]
 
+[profile.release]
+strip = true          # Remove debug symbols from release binaries
+
 # The profile that 'cargo dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto = "fat"           # Full cross-crate LTO (slow build, better codegen)
+codegen-units = 1     # Single codegen unit for maximum optimization
 
 # Config for 'dist'
 [workspace.metadata.dist]

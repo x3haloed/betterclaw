@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use crate::error::LlmError;
+use crate::llm::error::LlmError;
 
 /// Role in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,16 +16,38 @@ pub enum Role {
     Tool,
 }
 
+/// A part of multimodal message content (OpenAI Chat Completions format).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContentPart {
+    /// Text content part.
+    #[serde(rename = "text")]
+    Text { text: String },
+    /// Image URL content part (supports data: URLs for inline base64 images).
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ImageUrl },
+}
+
+/// Image URL reference for multimodal content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    /// URL or data: URI (e.g., "data:image/jpeg;base64,...").
+    pub url: String,
+    /// Detail level hint: "auto", "low", or "high".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// A message in a conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
-    /// Image URLs associated with this message (user role only currently used).
-    /// Providers without image support will ignore these; callers should also
-    /// include a readable fallback when possible.
-    #[serde(default)]
-    pub images: Vec<String>,
+    /// Multimodal content parts (images, etc.).
+    /// When non-empty, providers serialize content as an array of parts
+    /// (with `content` included as a text part) instead of a plain string.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_parts: Vec<ContentPart>,
     /// Tool call ID if this is a tool result message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -44,7 +66,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             content: content.into(),
-            images: Vec::new(),
+            content_parts: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -56,7 +78,21 @@ impl ChatMessage {
         Self {
             role: Role::User,
             content: content.into(),
-            images: Vec::new(),
+            content_parts: Vec::new(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
+        }
+    }
+
+    /// Create a user message with multimodal content parts (e.g., images).
+    ///
+    /// The text `content` is included as the primary text alongside the parts.
+    pub fn user_with_parts(content: impl Into<String>, parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            content_parts: parts,
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -68,7 +104,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.into(),
-            images: Vec::new(),
+            content_parts: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: None,
@@ -83,7 +119,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.unwrap_or_default(),
-            images: Vec::new(),
+            content_parts: Vec::new(),
             tool_call_id: None,
             name: None,
             tool_calls: if tool_calls.is_empty() {
@@ -103,7 +139,7 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: content.into(),
-            images: Vec::new(),
+            content_parts: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: Some(name.into()),
             tool_calls: None,
@@ -163,6 +199,12 @@ pub struct CompletionResponse {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub finish_reason: FinishReason,
+    /// Tokens read from the provider's server-side prompt cache (Anthropic).
+    /// Zero when caching is not supported or on a cache miss.
+    pub cache_read_input_tokens: u32,
+    /// Tokens written to the provider's server-side prompt cache (Anthropic).
+    /// Zero when caching is not supported or no new prefix was cached.
+    pub cache_creation_input_tokens: u32,
 }
 
 /// Why the completion finished.
@@ -264,6 +306,10 @@ pub struct ToolCompletionResponse {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub finish_reason: FinishReason,
+    /// Tokens read from the provider's server-side prompt cache (Anthropic).
+    pub cache_read_input_tokens: u32,
+    /// Tokens written to the provider's server-side prompt cache (Anthropic).
+    pub cache_creation_input_tokens: u32,
 }
 
 /// Metadata about a model returned by the provider's API.
@@ -338,24 +384,39 @@ pub trait LlmProvider: Send + Sync {
         let (input_cost, output_cost) = self.cost_per_token();
         input_cost * Decimal::from(input_tokens) + output_cost * Decimal::from(output_tokens)
     }
+
+    /// Cost multiplier for cache-creation tokens (Anthropic prompt caching).
+    ///
+    /// Returns `1.0` by default (no surcharge). Anthropic providers return
+    /// `1.25` for 5-minute TTL or `2.0` for 1-hour TTL.
+    fn cache_write_multiplier(&self) -> Decimal {
+        Decimal::ONE
+    }
+
+    /// Discount divisor for cache-read tokens.
+    ///
+    /// Cached-read cost = `input_rate / cache_read_discount()`.
+    /// Returns `1` by default (no discount). Anthropic returns `10` (90% off),
+    /// OpenAI would return `2` (50% off).
+    fn cache_read_discount(&self) -> Decimal {
+        Decimal::ONE
+    }
 }
 
 /// Sanitize a message list to ensure tool_use / tool_result integrity.
 ///
-/// LLM APIs require every tool_result to reference a tool_call_id emitted by
-/// an assistant message. Orphaned tool_results cause protocol errors.
+/// LLM APIs (especially Anthropic) require every tool_result to reference a
+/// tool_call_id that exists in an immediately preceding assistant message's
+/// tool_calls. Orphaned tool_results cause HTTP 400 errors.
 ///
 /// This function:
 /// 1. Tracks all tool_call_ids emitted by assistant messages.
-/// 2. Repairs orphaned tool_result messages by synthesizing the missing
-///    assistant tool_calls immediately before the tool result.
-///
-/// This mirrors the Copilot SDK's orphaned tool-call completion behavior and
-/// preserves the assistant/tool exchange structure expected by OpenAI-style
-/// providers.
+/// 2. Rewrites orphaned tool_result messages (whose tool_call_id has no
+///    matching assistant tool_call) as user messages so the content is
+///    preserved without violating the protocol.
 ///
 /// Call this before sending messages to any LLM provider.
-pub fn sanitize_tool_messages(messages: &mut Vec<ChatMessage>) {
+pub fn sanitize_tool_messages(messages: &mut [ChatMessage]) {
     use std::collections::HashSet;
 
     // Collect all tool_call_ids from assistant messages with tool_calls.
@@ -370,42 +431,95 @@ pub fn sanitize_tool_messages(messages: &mut Vec<ChatMessage>) {
         }
     }
 
-    let mut repaired_messages = Vec::with_capacity(messages.len());
-    for msg in messages.iter() {
-        if msg.role == Role::Tool {
-            let is_orphaned = match &msg.tool_call_id {
-                Some(id) => !known_ids.contains(id),
-                None => true,
-            };
-
-            if is_orphaned {
-                let tool_name = msg.name.clone().unwrap_or_else(|| "unknown".to_string());
-                let tool_call_id = msg
-                    .tool_call_id
-                    .clone()
-                    .unwrap_or_else(|| format!("orphaned_{}", repaired_messages.len()));
-
-                tracing::debug!(
-                    tool_call_id = %tool_call_id,
-                    tool_name,
-                    "Synthesizing missing assistant tool_call for orphaned tool_result",
-                );
-
-                repaired_messages.push(ChatMessage::assistant_with_tool_calls(
-                    None,
-                    vec![ToolCall {
-                        id: tool_call_id.clone(),
-                        name: tool_name.clone(),
-                        arguments: serde_json::json!({}),
-                    }],
-                ));
-                known_ids.insert(tool_call_id);
-            }
+    // Rewrite orphaned tool_result messages as user messages.
+    for msg in messages.iter_mut() {
+        if msg.role != Role::Tool {
+            continue;
         }
-
-        repaired_messages.push(msg.clone());
+        let is_orphaned = match &msg.tool_call_id {
+            Some(id) => !known_ids.contains(id),
+            None => true,
+        };
+        if is_orphaned {
+            let tool_name = msg.name.as_deref().unwrap_or("unknown");
+            tracing::debug!(
+                tool_call_id = ?msg.tool_call_id,
+                tool_name,
+                "Rewriting orphaned tool_result as user message",
+            );
+            msg.role = Role::User;
+            msg.content = format!("[Tool `{}` returned: {}]", tool_name, msg.content);
+            msg.tool_call_id = None;
+            msg.name = None;
+        }
     }
-    *messages = repaired_messages;
+}
+
+/// Represents a request parameter that may not be supported by all LLM providers.
+///
+/// This typed enum replaces stringly-typed parameter names across the codebase,
+/// providing type safety and single-point-of-maintenance for parameter handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnsupportedParam {
+    Temperature,
+    MaxTokens,
+    StopSequences,
+}
+
+impl UnsupportedParam {
+    /// Get the string name of this parameter for config/error messages.
+    pub fn name(&self) -> &'static str {
+        match self {
+            UnsupportedParam::Temperature => "temperature",
+            UnsupportedParam::MaxTokens => "max_tokens",
+            UnsupportedParam::StopSequences => "stop_sequences",
+        }
+    }
+}
+
+/// Strip unsupported parameters from a `CompletionRequest` in place.
+///
+/// This is the single helper function used by all providers to remove
+/// parameters they don't support, replacing duplicate stringly-typed logic.
+pub fn strip_unsupported_completion_params(
+    unsupported: &std::collections::HashSet<String>,
+    req: &mut CompletionRequest,
+) {
+    if unsupported.is_empty() {
+        return;
+    }
+    if unsupported.contains(UnsupportedParam::Temperature.name()) {
+        req.temperature = None;
+    }
+    if unsupported.contains(UnsupportedParam::MaxTokens.name()) {
+        req.max_tokens = None;
+    }
+    if unsupported.contains(UnsupportedParam::StopSequences.name()) {
+        req.stop_sequences = None;
+    }
+}
+
+/// Strip unsupported parameters from a `ToolCompletionRequest` in place.
+///
+/// This is the single helper function used by all providers to remove
+/// parameters they don't support from tool calls, replacing duplicate stringly-typed logic.
+///
+/// Note: Only `Temperature` and `MaxTokens` are supported in `ToolCompletionRequest`.
+/// `StopSequences` is only available in `CompletionRequest` and is not applicable to tool calls.
+pub fn strip_unsupported_tool_params(
+    unsupported: &std::collections::HashSet<String>,
+    req: &mut ToolCompletionRequest,
+) {
+    if unsupported.is_empty() {
+        return;
+    }
+    if unsupported.contains(UnsupportedParam::Temperature.name()) {
+        req.temperature = None;
+    }
+    if unsupported.contains(UnsupportedParam::MaxTokens.name()) {
+        req.max_tokens = None;
+    }
+    // Note: StopSequences is not a field in ToolCompletionRequest, so no action needed
 }
 
 #[cfg(test)]
@@ -430,24 +544,17 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_repairs_orphaned_tool_result() {
+    fn test_sanitize_rewrites_orphaned_tool_result() {
         let mut messages = vec![
             ChatMessage::user("hello"),
             ChatMessage::assistant("I'll use a tool"),
             ChatMessage::tool_result("call_missing", "search", "some result"),
         ];
         sanitize_tool_messages(&mut messages);
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[2].role, Role::Assistant);
-        assert_eq!(messages[2].content, "");
-        let synthesized = messages[2].tool_calls.as_ref().expect("tool_calls");
-        assert_eq!(synthesized.len(), 1);
-        assert_eq!(synthesized[0].id, "call_missing");
-        assert_eq!(synthesized[0].name, "search");
-        assert_eq!(synthesized[0].arguments, serde_json::json!({}));
-        assert_eq!(messages[3].role, Role::Tool);
-        assert_eq!(messages[3].tool_call_id, Some("call_missing".to_string()));
-        assert_eq!(messages[3].name, Some("search".to_string()));
+        assert_eq!(messages[2].role, Role::User);
+        assert!(messages[2].content.contains("[Tool `search` returned:"));
+        assert!(messages[2].tool_call_id.is_none());
+        assert!(messages[2].name.is_none());
     }
 
     #[test]
@@ -478,19 +585,70 @@ mod tests {
             ChatMessage::tool_result("call_3", "http", "orphan 2"),
         ];
         sanitize_tool_messages(&mut messages);
-        assert_eq!(messages.len(), 7);
         assert_eq!(messages[2].role, Role::Tool); // call_1 is valid
-        assert_eq!(messages[3].role, Role::Assistant); // synthesized call_2
-        assert_eq!(messages[4].role, Role::Tool); // call_2 preserved
-        assert_eq!(messages[5].role, Role::Assistant); // synthesized call_3
-        assert_eq!(messages[6].role, Role::Tool); // call_3 preserved
-        assert_eq!(
-            messages[3].tool_calls.as_ref().expect("tool_calls")[0].id,
-            "call_2"
-        );
-        assert_eq!(
-            messages[5].tool_calls.as_ref().expect("tool_calls")[0].id,
-            "call_3"
-        );
+        assert_eq!(messages[3].role, Role::User); // call_2 orphaned
+        assert_eq!(messages[4].role, Role::User); // call_3 orphaned
+    }
+
+    /// Regression: worker's select_tools/execute_plan now emit
+    /// assistant_with_tool_calls before tool_result messages.
+    /// Verify sanitize_tool_messages preserves all tool_results when
+    /// each has a matching assistant tool_call.
+    #[test]
+    fn test_sanitize_preserves_tool_results_with_matching_assistant() {
+        let tc1 = ToolCall {
+            id: "call_sel_1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"q": "test"}),
+        };
+        let tc2 = ToolCall {
+            id: "call_sel_2".to_string(),
+            name: "http".to_string(),
+            arguments: serde_json::json!({"url": "https://example.com"}),
+        };
+        let mut messages = vec![
+            ChatMessage::system("You are a helpful assistant."),
+            ChatMessage::assistant_with_tool_calls(None, vec![tc1, tc2]),
+            ChatMessage::tool_result("call_sel_1", "search", "found 3 results"),
+            ChatMessage::tool_result("call_sel_2", "http", "200 OK"),
+        ];
+        sanitize_tool_messages(&mut messages);
+
+        // All tool_results must keep Role::Tool -- none should be rewritten.
+        assert_eq!(messages[2].role, Role::Tool);
+        assert_eq!(messages[2].tool_call_id, Some("call_sel_1".to_string()));
+        assert_eq!(messages[2].content, "found 3 results");
+
+        assert_eq!(messages[3].role, Role::Tool);
+        assert_eq!(messages[3].tool_call_id, Some("call_sel_2".to_string()));
+        assert_eq!(messages[3].content, "200 OK");
+    }
+
+    /// Regression: the OLD buggy worker code pushed tool_result messages
+    /// without a preceding assistant_with_tool_calls, causing
+    /// sanitize_tool_messages to rewrite them as orphaned user messages.
+    /// This test reproduces that buggy sequence and confirms the rewrite.
+    #[test]
+    fn test_sanitize_rewrites_orphaned_tool_results() {
+        let mut messages = vec![
+            ChatMessage::system("You are a helpful assistant."),
+            // No assistant_with_tool_calls -- mimics the old bug.
+            ChatMessage::tool_result("call_bug_1", "search", "found 3 results"),
+            ChatMessage::tool_result("call_bug_2", "http", "200 OK"),
+        ];
+        sanitize_tool_messages(&mut messages);
+
+        // Both tool_results must be rewritten to Role::User.
+        assert_eq!(messages[1].role, Role::User);
+        assert!(messages[1].content.contains("[Tool `search` returned:"));
+        assert!(messages[1].content.contains("found 3 results"));
+        assert!(messages[1].tool_call_id.is_none());
+        assert!(messages[1].name.is_none());
+
+        assert_eq!(messages[2].role, Role::User);
+        assert!(messages[2].content.contains("[Tool `http` returned:"));
+        assert!(messages[2].content.contains("200 OK"));
+        assert!(messages[2].tool_call_id.is_none());
+        assert!(messages[2].name.is_none());
     }
 }

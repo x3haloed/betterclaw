@@ -6,15 +6,16 @@
 //! - Managing configuration (`config list`, `config get`, `config set`)
 //! - Managing WASM tools (`tool install`, `tool list`, `tool remove`)
 //! - Managing MCP servers (`mcp add`, `mcp auth`, `mcp list`, `mcp test`)
+//! - Querying workspace memory (`memory search`, `memory read`, `memory write`)
 //! - Managing OS service (`service install`, `service start`, `service stop`)
 //! - Active health diagnostics (`doctor`)
 //! - Checking system health (`status`)
 
 mod completion;
-mod compressor;
 mod config;
 mod doctor;
 mod mcp;
+pub mod memory;
 pub mod oauth_defaults;
 mod pairing;
 mod registry;
@@ -23,15 +24,18 @@ pub mod status;
 mod tool;
 
 pub use completion::Completion;
-pub use compressor::{CompressorCommand, run_compressor_command};
 pub use config::{ConfigCommand, run_config_command};
 pub use doctor::run_doctor_command;
 pub use mcp::{McpCommand, run_mcp_command};
+pub use memory::MemoryCommand;
+pub use memory::run_memory_command_with_db;
 pub use pairing::{PairingCommand, run_pairing_command, run_pairing_command_with_store};
 pub use registry::{RegistryCommand, run_registry_command};
 pub use service::{ServiceCommand, run_service_command};
 pub use status::run_status_command;
 pub use tool::{ToolCommand, run_tool_command};
+
+use std::sync::Arc;
 
 use clap::{ColorChoice, Parser, Subcommand};
 
@@ -82,7 +86,7 @@ pub enum Command {
     /// Interactive onboarding wizard
     #[command(
         about = "Run interactive setup wizard",
-        long_about = "Guides through initial configuration.\nExamples:\n  betterclaw onboard --skip-auth  # Skip auth step\n  betterclaw onboard --channels-only  # Reconfigure channels"
+        long_about = "Guides through initial configuration.\nExamples:\n  betterclaw onboard --skip-auth  # Skip auth step\n  betterclaw onboard --channels-only  # Reconfigure channels\n  betterclaw onboard --provider-only  # Change LLM provider and model"
     )]
     Onboard {
         /// Skip authentication (use existing session)
@@ -90,8 +94,16 @@ pub enum Command {
         skip_auth: bool,
 
         /// Reconfigure channels only
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["provider_only", "quick"])]
         channels_only: bool,
+
+        /// Reconfigure LLM provider and model only
+        #[arg(long, conflicts_with_all = ["channels_only", "quick"])]
+        provider_only: bool,
+
+        /// Quick setup: auto-defaults everything except LLM provider and model
+        #[arg(long, conflicts_with_all = ["channels_only", "provider_only"])]
+        quick: bool,
     },
 
     /// Manage configuration settings
@@ -124,7 +136,15 @@ pub enum Command {
         about = "Manage MCP servers",
         long_about = "Add, auth, list, or test MCP servers.\nExample: betterclaw mcp add notion https://mcp.notion.com"
     )]
-    Mcp(McpCommand),
+    Mcp(Box<McpCommand>),
+
+    /// Query and manage workspace memory
+    #[command(
+        subcommand,
+        about = "Manage workspace memory",
+        long_about = "Search, read, or write to memory.\nExample: betterclaw memory search 'query'"
+    )]
+    Memory(MemoryCommand),
 
     /// DM pairing (approve inbound requests from unknown senders)
     #[command(
@@ -162,10 +182,6 @@ pub enum Command {
         long_about = "Generates shell completion scripts.\nExample: betterclaw completion --shell bash > betterclaw.bash"
     )]
     Completion(Completion),
-
-    /// Compressor utilities (run-once distill, debugging)
-    #[command(subcommand)]
-    Compressor(CompressorCommand),
 
     /// Run as a sandboxed worker inside a Docker container (internal use).
     /// This is invoked automatically by the orchestrator, not by users directly.
@@ -211,6 +227,43 @@ impl Cli {
     pub fn should_run_agent(&self) -> bool {
         matches!(self.command, None | Some(Command::Run))
     }
+}
+
+/// Initialize a secrets store from environment config.
+///
+/// Shared helper for CLI subcommands (`mcp auth`, `tool auth`, etc.) that need
+/// access to encrypted secrets without spinning up the full AppBuilder.
+pub async fn init_secrets_store()
+-> anyhow::Result<Arc<dyn crate::secrets::SecretsStore + Send + Sync>> {
+    let config = crate::config::Config::from_env().await?;
+    let master_key = config.secrets.master_key().ok_or_else(|| {
+        anyhow::anyhow!(
+            "SECRETS_MASTER_KEY not set. Run 'betterclaw onboard' first or set it in .env"
+        )
+    })?;
+
+    let crypto = Arc::new(crate::secrets::SecretsCrypto::new(master_key.clone())?);
+
+    Ok(crate::db::create_secrets_store(&config.database, crypto).await?)
+}
+
+/// Run the Memory CLI subcommand.
+pub async fn run_memory_command(mem_cmd: &MemoryCommand) -> anyhow::Result<()> {
+    let config = crate::config::Config::from_env()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let session = crate::llm::create_session_manager(config.llm.session.clone()).await;
+
+    let embeddings = config
+        .embeddings
+        .create_provider(&config.llm.nearai.base_url, session);
+
+    let db: Arc<dyn crate::db::Database> = crate::db::connect_from_config(&config.database)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    run_memory_command_with_db(mem_cmd.clone(), db, embeddings).await
 }
 
 #[cfg(test)]

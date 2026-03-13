@@ -10,21 +10,6 @@ use uuid::Uuid;
 use crate::db::Database;
 use crate::ledger::NewLedgerEvent;
 
-/// Hard cap to prevent pathological tool outputs from ballooning the DB.
-pub const LEDGER_CONTENT_MAX_CHARS: usize = 50_000;
-
-pub fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let byte_offset = s
-        .char_indices()
-        .nth(max_chars)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
-    format!("{}...", &s[..byte_offset])
-}
-
 /// Append a ledger event without ever failing the caller.
 pub async fn append_event_best_effort(
     store: Option<Arc<dyn Database>>,

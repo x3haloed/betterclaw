@@ -2,15 +2,18 @@
 //!
 //! When the context window approaches its limit, compaction:
 //! 1. Summarizes old turns
-//! 2. Trims the context to keep only recent turns
+//! 2. Writes the summary to the workspace daily log
+//! 3. Trims the context to keep only recent turns
 
 use std::sync::Arc;
+
+use chrono::Utc;
 
 use crate::agent::context_monitor::{CompactionStrategy, ContextBreakdown};
 use crate::agent::session::Thread;
 use crate::error::Error;
 use crate::llm::{ChatMessage, CompletionRequest, LlmProvider, Reasoning};
-use crate::safety::SafetyLayer;
+use crate::workspace::Workspace;
 
 /// Result of a compaction operation.
 #[derive(Debug)]
@@ -30,13 +33,12 @@ pub struct CompactionResult {
 /// Compacts conversation context to stay within limits.
 pub struct ContextCompactor {
     llm: Arc<dyn LlmProvider>,
-    safety: Arc<SafetyLayer>,
 }
 
 impl ContextCompactor {
     /// Create a new context compactor.
-    pub fn new(llm: Arc<dyn LlmProvider>, safety: Arc<SafetyLayer>) -> Self {
-        Self { llm, safety }
+    pub fn new(llm: Arc<dyn LlmProvider>) -> Self {
+        Self { llm }
     }
 
     /// Compact a thread's context using the given strategy.
@@ -44,22 +46,21 @@ impl ContextCompactor {
         &self,
         thread: &mut Thread,
         strategy: CompactionStrategy,
+        workspace: Option<&Workspace>,
     ) -> Result<CompactionResult, Error> {
         let messages = thread.messages();
         let tokens_before = ContextBreakdown::analyze(&messages).total_tokens;
 
         let result = match strategy {
             CompactionStrategy::Summarize { keep_recent } => {
-                self.compact_with_summary(thread, keep_recent).await?
+                self.compact_with_summary(thread, keep_recent, workspace)
+                    .await?
             }
             CompactionStrategy::Truncate { keep_recent } => {
                 self.compact_truncate(thread, keep_recent)
             }
             CompactionStrategy::MoveToWorkspace => {
-                // Legacy behavior wrote context into the DB-backed workspace.
-                // In the new ledger-first architecture, compaction should not mutate "memory";
-                // it should either be purely in-memory or emit ledger events.
-                self.compact_truncate(thread, 10)
+                self.compact_to_workspace(thread, workspace).await?
             }
         };
 
@@ -80,6 +81,7 @@ impl ContextCompactor {
         &self,
         thread: &mut Thread,
         keep_recent: usize,
+        workspace: Option<&Workspace>,
     ) -> Result<CompactionPartial, Error> {
         if thread.turns.len() <= keep_recent {
             return Ok(CompactionPartial::empty());
@@ -101,12 +103,27 @@ impl ContextCompactor {
         // Generate summary
         let summary = self.generate_summary(&to_summarize).await?;
 
-        // Truncate thread
-        thread.truncate_turns(keep_recent);
+        // Write to workspace if available.
+        // If archival fails, preserve turns to avoid context loss.
+        let (summary_written, turns_removed) = if let Some(ws) = workspace {
+            match self.write_summary_to_workspace(ws, &summary).await {
+                Ok(()) => {
+                    thread.truncate_turns(keep_recent);
+                    (true, turns_to_remove)
+                }
+                Err(e) => {
+                    tracing::warn!("Compaction summary write failed (turns preserved): {}", e);
+                    (false, 0)
+                }
+            }
+        } else {
+            thread.truncate_turns(keep_recent);
+            (false, turns_to_remove)
+        };
 
         Ok(CompactionPartial {
-            turns_removed: turns_to_remove,
-            summary_written: false,
+            turns_removed,
+            summary_written,
             summary: Some(summary),
         })
     }
@@ -122,6 +139,48 @@ impl ContextCompactor {
             summary_written: false,
             summary: None,
         }
+    }
+
+    /// Move context to workspace without summarization.
+    async fn compact_to_workspace(
+        &self,
+        thread: &mut Thread,
+        workspace: Option<&Workspace>,
+    ) -> Result<CompactionPartial, Error> {
+        let Some(ws) = workspace else {
+            // Fall back to truncation if no workspace
+            return Ok(self.compact_truncate(thread, 5));
+        };
+
+        // Keep more turns when moving to workspace (we have a backup)
+        let keep_recent = 10;
+        if thread.turns.len() <= keep_recent {
+            return Ok(CompactionPartial::empty());
+        }
+
+        let turns_to_remove = thread.turns.len() - keep_recent;
+        let old_turns = &thread.turns[..turns_to_remove];
+
+        // Format turns for storage
+        let content = format_turns_for_storage(old_turns);
+
+        // Write to workspace. If archival fails, preserve turns.
+        let (written, turns_removed) = match self.write_context_to_workspace(ws, &content).await {
+            Ok(()) => {
+                thread.truncate_turns(keep_recent);
+                (true, turns_to_remove)
+            }
+            Err(e) => {
+                tracing::warn!("Compaction context write failed (turns preserved): {}", e);
+                (false, 0)
+            }
+        };
+
+        Ok(CompactionPartial {
+            turns_removed,
+            summary_written: written,
+            summary: None,
+        })
     }
 
     /// Generate a summary of messages using the LLM.
@@ -168,14 +227,49 @@ Be brief but capture all important details. Use bullet points."#,
             .with_max_tokens(1024)
             .with_temperature(0.3);
 
-        let reasoning = Reasoning::new(self.llm.clone(), self.safety.clone());
+        let reasoning =
+            Reasoning::new(self.llm.clone()).with_model_name(self.llm.active_model_name());
         let (text, _) = reasoning.complete(request).await?;
         Ok(text)
     }
 
-    // NOTE: Legacy BetterClaw wrote compaction summaries into the DB-backed workspace daily log.
-    // The new ledger-first architecture treats the ledger as the sole persistence substrate.
-    // We keep compaction purely in-memory for now; later we can emit a ledger event here.
+    /// Write a summary to the workspace daily log.
+    async fn write_summary_to_workspace(
+        &self,
+        workspace: &Workspace,
+        summary: &str,
+    ) -> Result<(), Error> {
+        let date = Utc::now().format("%Y-%m-%d");
+        let entry = format!(
+            "\n## Context Summary ({})\n\n{}\n",
+            Utc::now().format("%H:%M UTC"),
+            summary
+        );
+
+        workspace
+            .append(&format!("daily/{}.md", date), &entry)
+            .await?;
+        Ok(())
+    }
+
+    /// Write full context to workspace for archival.
+    async fn write_context_to_workspace(
+        &self,
+        workspace: &Workspace,
+        content: &str,
+    ) -> Result<(), Error> {
+        let date = Utc::now().format("%Y-%m-%d");
+        let entry = format!(
+            "\n## Archived Context ({})\n\n{}\n",
+            Utc::now().format("%H:%M UTC"),
+            content
+        );
+
+        workspace
+            .append(&format!("daily/{}.md", date), &entry)
+            .await?;
+        Ok(())
+    }
 }
 
 /// Partial result during compaction (internal).
@@ -196,7 +290,6 @@ impl CompactionPartial {
 }
 
 /// Format turns for storage in workspace.
-#[cfg(test)]
 fn format_turns_for_storage(turns: &[crate::agent::session::Turn]) -> String {
     turns
         .iter()
@@ -248,17 +341,11 @@ mod tests {
     // === QA Plan - Compaction strategy tests ===
 
     use crate::agent::context_monitor::CompactionStrategy;
-    use crate::config::SafetyConfig;
-    use crate::safety::SafetyLayer;
     use crate::testing::StubLlm;
 
     /// Helper: build a `ContextCompactor` with the given `StubLlm`.
     fn make_compactor(llm: Arc<StubLlm>) -> ContextCompactor {
-        let safety = Arc::new(SafetyLayer::new(&SafetyConfig {
-            max_output_length: 100_000,
-            injection_check_enabled: false,
-        }));
-        ContextCompactor::new(llm, safety)
+        ContextCompactor::new(llm)
     }
 
     /// Helper: build a thread with `n` completed turns.
@@ -270,6 +357,19 @@ mod tests {
             thread.complete_turn(format!("resp-{}", i));
         }
         thread
+    }
+
+    #[cfg(feature = "libsql")]
+    async fn make_unmigrated_workspace() -> crate::workspace::Workspace {
+        use crate::db::Database;
+        use crate::db::libsql::LibSqlBackend;
+
+        // Intentionally skip migrations so workspace append operations fail.
+        let backend = LibSqlBackend::new_memory()
+            .await
+            .expect("should create in-memory libsql backend");
+        let db: Arc<dyn Database> = Arc::new(backend);
+        crate::workspace::Workspace::new_with_db("compaction-test", db)
     }
 
     // ------------------------------------------------------------------
@@ -284,7 +384,11 @@ mod tests {
         assert_eq!(thread.turns.len(), 10);
 
         let result = compactor
-            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
+            .compact(
+                &mut thread,
+                CompactionStrategy::Truncate { keep_recent: 3 },
+                None,
+            )
             .await
             .expect("compact should succeed");
 
@@ -326,7 +430,11 @@ mod tests {
             thread.turns.iter().map(|t| t.user_input.clone()).collect();
 
         let result = compactor
-            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 5 })
+            .compact(
+                &mut thread,
+                CompactionStrategy::Truncate { keep_recent: 5 },
+                None,
+            )
             .await
             .expect("compact should succeed");
 
@@ -353,7 +461,11 @@ mod tests {
         assert!(thread.turns.is_empty());
 
         let result = compactor
-            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
+            .compact(
+                &mut thread,
+                CompactionStrategy::Truncate { keep_recent: 3 },
+                None,
+            )
             .await
             .expect("compact should succeed on empty turns");
 
@@ -379,6 +491,7 @@ mod tests {
             .compact(
                 &mut thread,
                 CompactionStrategy::Summarize { keep_recent: 2 },
+                None,
             )
             .await
             .expect("compact with summary should succeed");
@@ -419,6 +532,7 @@ mod tests {
             .compact(
                 &mut thread,
                 CompactionStrategy::Summarize { keep_recent: 3 },
+                None,
             )
             .await;
 
@@ -444,6 +558,7 @@ mod tests {
             .compact(
                 &mut thread,
                 CompactionStrategy::Summarize { keep_recent: 5 },
+                None,
             )
             .await
             .expect("compact should succeed");
@@ -455,28 +570,66 @@ mod tests {
         assert_eq!(llm.calls(), 0);
     }
 
+    #[cfg(feature = "libsql")]
+    #[tokio::test]
+    async fn test_compact_with_summary_preserves_turns_when_workspace_write_fails() {
+        let llm = Arc::new(StubLlm::new("summary"));
+        let compactor = make_compactor(llm.clone());
+        let mut thread = make_thread(8);
+        let original_inputs: Vec<String> =
+            thread.turns.iter().map(|t| t.user_input.clone()).collect();
+        let workspace = make_unmigrated_workspace().await;
+
+        let result = compactor
+            .compact(
+                &mut thread,
+                CompactionStrategy::Summarize { keep_recent: 3 },
+                Some(&workspace),
+            )
+            .await
+            .expect("compact should succeed even when workspace write fails");
+
+        // On archival failure, no turns should be removed.
+        assert_eq!(thread.turns.len(), 8);
+        assert_eq!(
+            thread
+                .turns
+                .iter()
+                .map(|t| t.user_input.as_str())
+                .collect::<Vec<_>>(),
+            original_inputs
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.turns_removed, 0);
+        assert!(!result.summary_written);
+        assert_eq!(llm.calls(), 1);
+    }
+
     // ------------------------------------------------------------------
-    // 7. compact_to_workspace (legacy) now truncates in-memory
+    // 7. compact_to_workspace without workspace falls back to truncation
     // ------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_compact_to_workspace_truncates_to_10() {
+    async fn test_compact_to_workspace_without_workspace_falls_back() {
         let llm = Arc::new(StubLlm::new("unused"));
         let compactor = make_compactor(llm);
         let mut thread = make_thread(20);
 
         let result = compactor
-            .compact(&mut thread, CompactionStrategy::MoveToWorkspace)
+            .compact(&mut thread, CompactionStrategy::MoveToWorkspace, None)
             .await
             .expect("compact should succeed");
 
-        // Legacy MoveToWorkspace no longer writes to workspace; it truncates to 10.
-        assert_eq!(thread.turns.len(), 10);
-        assert_eq!(result.turns_removed, 10);
+        // Without a workspace, compact_to_workspace falls back to truncation
+        // keeping 5 turns (the hardcoded fallback in the code)
+        assert_eq!(thread.turns.len(), 5);
+        assert_eq!(result.turns_removed, 15);
 
-        // The remaining turns should be the last 10
-        assert_eq!(thread.turns[0].user_input, "msg-10");
-        assert_eq!(thread.turns[9].user_input, "msg-19");
+        // The remaining turns should be the last 5
+        assert_eq!(thread.turns[0].user_input, "msg-15");
+        assert_eq!(thread.turns[4].user_input, "msg-19");
     }
 
     // ------------------------------------------------------------------
@@ -487,17 +640,56 @@ mod tests {
     async fn test_compact_to_workspace_fewer_turns_noop() {
         let llm = Arc::new(StubLlm::new("unused"));
         let compactor = make_compactor(llm);
-        // MoveToWorkspace keeps 10 turns.
+        // MoveToWorkspace keeps 10 turns when workspace is available.
+        // Without workspace it falls back to truncate(5).
+        // With fewer turns, test the no-workspace fallback path:
         let mut thread = make_thread(4);
 
         let result = compactor
-            .compact(&mut thread, CompactionStrategy::MoveToWorkspace)
+            .compact(&mut thread, CompactionStrategy::MoveToWorkspace, None)
             .await
             .expect("compact should succeed");
 
-        // 4 turns < 10, so no truncation
+        // 4 turns < 5 (fallback keep_recent), so no truncation
         assert_eq!(thread.turns.len(), 4);
         assert_eq!(result.turns_removed, 0);
+    }
+
+    #[cfg(feature = "libsql")]
+    #[tokio::test]
+    async fn test_compact_to_workspace_preserves_turns_when_workspace_write_fails() {
+        let llm = Arc::new(StubLlm::new("unused"));
+        let compactor = make_compactor(llm.clone());
+        let mut thread = make_thread(20);
+        let original_inputs: Vec<String> =
+            thread.turns.iter().map(|t| t.user_input.clone()).collect();
+        let workspace = make_unmigrated_workspace().await;
+
+        let result = compactor
+            .compact(
+                &mut thread,
+                CompactionStrategy::MoveToWorkspace,
+                Some(&workspace),
+            )
+            .await
+            .expect("compact should succeed even when workspace write fails");
+
+        // On archival failure, no turns should be removed.
+        assert_eq!(thread.turns.len(), 20);
+        assert_eq!(
+            thread
+                .turns
+                .iter()
+                .map(|t| t.user_input.as_str())
+                .collect::<Vec<_>>(),
+            original_inputs
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(result.turns_removed, 0);
+        assert!(!result.summary_written);
+        assert_eq!(llm.calls(), 0);
     }
 
     // ------------------------------------------------------------------
@@ -510,11 +702,7 @@ mod tests {
         thread.start_turn("Search for X");
         // Record a tool call on the current turn
         if let Some(turn) = thread.turns.last_mut() {
-            turn.record_tool_call(
-                "search",
-                serde_json::json!({"query": "X"}),
-                Some("call_search".to_string()),
-            );
+            turn.record_tool_call("search", serde_json::json!({"query": "X"}));
         }
         thread.complete_turn("Found X");
 
@@ -563,7 +751,11 @@ mod tests {
         let mut thread = make_thread(20);
 
         let result = compactor
-            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 5 })
+            .compact(
+                &mut thread,
+                CompactionStrategy::Truncate { keep_recent: 5 },
+                None,
+            )
             .await
             .expect("compact should succeed");
 
@@ -586,7 +778,11 @@ mod tests {
         let mut thread = make_thread(5);
 
         let result = compactor
-            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 0 })
+            .compact(
+                &mut thread,
+                CompactionStrategy::Truncate { keep_recent: 0 },
+                None,
+            )
             .await
             .expect("compact should succeed");
 
@@ -609,6 +805,7 @@ mod tests {
             .compact(
                 &mut thread,
                 CompactionStrategy::Summarize { keep_recent: 0 },
+                None,
             )
             .await
             .expect("compact should succeed");
@@ -632,7 +829,11 @@ mod tests {
         let mut thread = make_thread(10);
 
         compactor
-            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
+            .compact(
+                &mut thread,
+                CompactionStrategy::Truncate { keep_recent: 3 },
+                None,
+            )
             .await
             .expect("compact should succeed");
 
@@ -671,6 +872,7 @@ mod tests {
             .compact(
                 &mut thread,
                 CompactionStrategy::Truncate { keep_recent: 10 },
+                None,
             )
             .await
             .expect("first compact");
@@ -679,7 +881,11 @@ mod tests {
 
         // Second compaction: 10 -> 3
         let r2 = compactor
-            .compact(&mut thread, CompactionStrategy::Truncate { keep_recent: 3 })
+            .compact(
+                &mut thread,
+                CompactionStrategy::Truncate { keep_recent: 3 },
+                None,
+            )
             .await
             .expect("second compact");
         assert_eq!(thread.turns.len(), 3);

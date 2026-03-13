@@ -1,11 +1,18 @@
 //! Database abstraction layer.
 //!
-//! Provides a backend-agnostic `Database` trait that unifies all persistence
-//! operations. BetterClaw currently uses libSQL (Turso's SQLite fork) for
-//! embedded/edge deployment.
+//! BetterClaw is libsql-first at runtime, but this module intentionally keeps
+//! a broader trait/config surface so upstream storage changes can be merged
+//! behind adapters instead of forcing another DB rewrite.
 //!
-//! The existing `Store`, `Repository`, `SecretsStore`, and `WasmToolStore`
-//! types become thin wrappers that delegate to `Arc<dyn Database>`.
+//! Treat this file as a compatibility hub: ledger traits and workspace traits
+//! are part of BetterClaw's public architecture even when upstream does not
+//! reference them directly.
+
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
+#[cfg(feature = "postgres")]
+pub mod tls;
 
 #[cfg(feature = "libsql")]
 pub mod libsql;
@@ -24,22 +31,22 @@ use uuid::Uuid;
 use crate::agent::BrokenTool;
 use crate::agent::routine::{Routine, RoutineRun, RunStatus};
 use crate::context::{ActionRecord, JobContext, JobState};
-use crate::error::{DatabaseError, WorkspaceError};
+use crate::error::DatabaseError;
+use crate::error::WorkspaceError;
 use crate::history::{
     AgentJobRecord, AgentJobSummary, ConversationMessage, ConversationSummary, JobEventRecord,
     LlmCallRecord, SandboxJobRecord, SandboxJobSummary, SettingRow,
 };
 use crate::ledger::{LedgerEvent, NewLedgerEvent};
-use crate::workspace::{MemoryChunk, MemoryDocument, SearchConfig, SearchResult, WorkspaceEntry};
+use crate::workspace::{MemoryChunk, MemoryDocument, WorkspaceEntry};
+use crate::workspace::{SearchConfig, SearchResult};
 
-/// A single ranked hit from ledger chunk search.
 #[derive(Debug, Clone)]
 pub struct LedgerChunkHit {
     pub chunk_id: String,
     pub event_id: Uuid,
     pub chunk_index: i64,
     pub content: String,
-    /// Smaller is better for vector distance; for FTS this may be bm25.
     pub score: f64,
 }
 
@@ -53,6 +60,30 @@ pub struct LedgerChunkHit {
 pub async fn connect_from_config(
     config: &crate::config::DatabaseConfig,
 ) -> Result<Arc<dyn Database>, DatabaseError> {
+    let (db, _handles) = connect_with_handles(config).await?;
+    Ok(db)
+}
+
+/// Backend-specific handles retained after database connection.
+///
+/// These are needed by satellite stores (e.g., `SecretsStore`) that require
+/// a backend-specific handle rather than the generic `Arc<dyn Database>`.
+#[derive(Default)]
+pub struct DatabaseHandles {
+    #[cfg(feature = "postgres")]
+    pub pg_pool: Option<deadpool_postgres::Pool>,
+    #[cfg(feature = "libsql")]
+    pub libsql_db: Option<Arc<::libsql::Database>>,
+}
+
+/// Connect to the database, run migrations, and return both the generic
+/// `Database` trait object and the backend-specific handles.
+pub async fn connect_with_handles(
+    config: &crate::config::DatabaseConfig,
+) -> Result<(Arc<dyn Database>, DatabaseHandles), DatabaseError> {
+    let mut handles = DatabaseHandles::default();
+
+    #[allow(unreachable_patterns)]
     match config.backend {
         #[cfg(feature = "libsql")]
         crate::config::DatabaseBackend::LibSql => {
@@ -76,8 +107,87 @@ pub async fn connect_from_config(
                     .map_err(|e| DatabaseError::Pool(e.to_string()))?
             };
             backend.run_migrations().await?;
-            Ok(Arc::new(backend))
+            tracing::info!("libSQL database connected and migrations applied");
+
+            handles.libsql_db = Some(backend.shared_db());
+
+            Ok((Arc::new(backend) as Arc<dyn Database>, handles))
         }
+        #[cfg(feature = "postgres")]
+        _ => {
+            let pg = postgres::PgBackend::new(config)
+                .await
+                .map_err(|e| DatabaseError::Pool(e.to_string()))?;
+            pg.run_migrations().await?;
+            tracing::info!("PostgreSQL database connected and migrations applied");
+
+            handles.pg_pool = Some(pg.pool());
+
+            Ok((Arc::new(pg) as Arc<dyn Database>, handles))
+        }
+        #[cfg(not(feature = "postgres"))]
+        _ => Err(DatabaseError::Pool(
+            "No database backend available. Enable 'postgres' or 'libsql' feature.".to_string(),
+        )),
+    }
+}
+
+/// Create a secrets store from database and secrets configuration.
+///
+/// This is the shared factory for CLI commands and other call sites that need
+/// a `SecretsStore` without going through the full `AppBuilder`. Mirrors the
+/// pattern of [`connect_from_config`] but returns a secrets-specific store.
+pub async fn create_secrets_store(
+    config: &crate::config::DatabaseConfig,
+    crypto: Arc<crate::secrets::SecretsCrypto>,
+) -> Result<Arc<dyn crate::secrets::SecretsStore + Send + Sync>, DatabaseError> {
+    #[allow(unreachable_patterns)]
+    match config.backend {
+        #[cfg(feature = "libsql")]
+        crate::config::DatabaseBackend::LibSql => {
+            use secrecy::ExposeSecret as _;
+
+            let default_path = crate::config::default_libsql_path();
+            let db_path = config.libsql_path.as_deref().unwrap_or(&default_path);
+
+            let backend = if let Some(ref url) = config.libsql_url {
+                let token = config.libsql_auth_token.as_ref().ok_or_else(|| {
+                    DatabaseError::Pool(
+                        "LIBSQL_AUTH_TOKEN required when LIBSQL_URL is set".to_string(),
+                    )
+                })?;
+                libsql::LibSqlBackend::new_remote_replica(db_path, url, token.expose_secret())
+                    .await
+                    .map_err(|e| DatabaseError::Pool(e.to_string()))?
+            } else {
+                libsql::LibSqlBackend::new_local(db_path)
+                    .await
+                    .map_err(|e| DatabaseError::Pool(e.to_string()))?
+            };
+            backend.run_migrations().await?;
+
+            Ok(Arc::new(crate::secrets::LibSqlSecretsStore::new(
+                backend.shared_db(),
+                crypto,
+            )))
+        }
+        #[cfg(feature = "postgres")]
+        _ => {
+            let pg = postgres::PgBackend::new(config)
+                .await
+                .map_err(|e| DatabaseError::Pool(e.to_string()))?;
+            pg.run_migrations().await?;
+
+            Ok(Arc::new(crate::secrets::PostgresSecretsStore::new(
+                pg.pool(),
+                crypto,
+            )))
+        }
+        #[cfg(not(feature = "postgres"))]
+        _ => Err(DatabaseError::Pool(
+            "No database backend available for secrets. Enable 'postgres' or 'libsql' feature."
+                .to_string(),
+        )),
     }
 }
 
@@ -115,6 +225,21 @@ pub trait ConversationStore: Send + Sync {
         channel: &str,
         limit: i64,
     ) -> Result<Vec<ConversationSummary>, DatabaseError>;
+    async fn list_conversations_all_channels(
+        &self,
+        user_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ConversationSummary>, DatabaseError>;
+    async fn get_or_create_routine_conversation(
+        &self,
+        routine_id: Uuid,
+        routine_name: &str,
+        user_id: &str,
+    ) -> Result<Uuid, DatabaseError>;
+    async fn get_or_create_heartbeat_conversation(
+        &self,
+        user_id: &str,
+    ) -> Result<Uuid, DatabaseError>;
     async fn get_or_create_assistant_conversation(
         &self,
         user_id: &str,
@@ -157,21 +282,16 @@ pub trait ConversationStore: Send + Sync {
 pub trait LedgerStore: Send + Sync {
     async fn append_ledger_event(&self, event: &NewLedgerEvent<'_>) -> Result<Uuid, DatabaseError>;
     async fn get_ledger_event(&self, id: Uuid) -> Result<Option<LedgerEvent>, DatabaseError>;
-    /// Fetch a ledger event by id, scoped to a user_id.
     async fn get_ledger_event_for_user(
         &self,
         user_id: &str,
         id: Uuid,
     ) -> Result<Option<LedgerEvent>, DatabaseError>;
-    /// Count ledger events whose `kind` starts with the provided prefix.
     async fn count_ledger_events_by_kind_prefix(
         &self,
         user_id: &str,
         kind_prefix: &str,
     ) -> Result<i64, DatabaseError>;
-    /// Delete ledger events whose `kind` starts with the provided prefix.
-    ///
-    /// Returns number of deleted rows.
     async fn delete_ledger_events_by_kind_prefix(
         &self,
         user_id: &str,
@@ -182,19 +302,12 @@ pub trait LedgerStore: Send + Sync {
         user_id: &str,
         limit: i64,
     ) -> Result<Vec<LedgerEvent>, DatabaseError>;
-
-    /// List recent ledger events whose `kind` starts with the provided prefix (e.g. `invariant.`).
     async fn list_recent_ledger_events_by_kind_prefix(
         &self,
         user_id: &str,
         kind_prefix: &str,
         limit: i64,
     ) -> Result<Vec<LedgerEvent>, DatabaseError>;
-
-    /// List ledger events whose `kind` starts with the provided prefix, with pagination.
-    ///
-    /// Results are ordered newest-first (DESC) for browsing.
-    /// If `kind_prefix` is empty, no kind filter is applied.
     async fn list_ledger_events_by_kind_prefix_page(
         &self,
         user_id: &str,
@@ -202,20 +315,11 @@ pub trait LedgerStore: Send + Sync {
         limit: i64,
         skip: i64,
     ) -> Result<Vec<LedgerEvent>, DatabaseError>;
-
-    /// List recent ledger events suitable as compressor evidence.
-    ///
-    /// Excludes derived/compressor-authored kinds like `wake_pack.*` and `distill.*` to prevent
-    /// the compressor from chewing on (or citing) its own outputs.
     async fn list_recent_ledger_events_for_compression(
         &self,
         user_id: &str,
         limit: i64,
     ) -> Result<Vec<LedgerEvent>, DatabaseError>;
-
-    /// List ledger events after a cursor (created_at, id), suitable as compressor evidence.
-    ///
-    /// Results are ordered oldest-first (ASC) so callers can advance the cursor to the last item.
     async fn list_ledger_events_after_for_compression(
         &self,
         user_id: &str,
@@ -399,8 +503,6 @@ pub trait SettingsStore: Send + Sync {
 
 #[async_trait]
 pub trait LedgerChunkStore: Send + Sync {
-    /// Upsert a chunk row for an event. `embedding_json` should be a JSON array string
-    /// of floats and will be converted to the libSQL vector binary format via `vector32(...)`.
     async fn upsert_ledger_event_chunk(
         &self,
         user_id: &str,
@@ -409,25 +511,18 @@ pub trait LedgerChunkStore: Send + Sync {
         content: &str,
         embedding_json: Option<&str>,
     ) -> Result<(), DatabaseError>;
-
-    /// Delete all chunks for an event (used when re-indexing).
     async fn delete_ledger_event_chunks_for_event(
         &self,
         user_id: &str,
         event_id: Uuid,
     ) -> Result<u64, DatabaseError>;
-
-    /// Vector search over chunks (best-effort candidate generation).
     async fn vector_search_ledger_event_chunks(
         &self,
         user_id: &str,
         query_embedding_json: &str,
         limit: i64,
-        // Internal multiplier to over-fetch before applying `user_id` filter (vector index is global).
         prefilter_multiplier: i64,
     ) -> Result<Vec<LedgerChunkHit>, DatabaseError>;
-
-    /// Keyword search over chunks via FTS5.
     async fn fts_search_ledger_event_chunks(
         &self,
         user_id: &str,
@@ -435,8 +530,6 @@ pub trait LedgerChunkStore: Send + Sync {
         limit: i64,
     ) -> Result<Vec<LedgerChunkHit>, DatabaseError>;
 }
-
-// ==================== Workspace ====================
 
 #[async_trait]
 pub trait WorkspaceStore: Send + Sync {
@@ -446,46 +539,37 @@ pub trait WorkspaceStore: Send + Sync {
         agent_id: Option<Uuid>,
         path: &str,
     ) -> Result<MemoryDocument, WorkspaceError>;
-
     async fn get_document_by_id(&self, id: Uuid) -> Result<MemoryDocument, WorkspaceError>;
-
     async fn get_or_create_document_by_path(
         &self,
         user_id: &str,
         agent_id: Option<Uuid>,
         path: &str,
     ) -> Result<MemoryDocument, WorkspaceError>;
-
     async fn update_document(&self, id: Uuid, content: &str) -> Result<(), WorkspaceError>;
-
     async fn delete_document_by_path(
         &self,
         user_id: &str,
         agent_id: Option<Uuid>,
         path: &str,
     ) -> Result<(), WorkspaceError>;
-
     async fn list_directory(
         &self,
         user_id: &str,
         agent_id: Option<Uuid>,
         directory: &str,
     ) -> Result<Vec<WorkspaceEntry>, WorkspaceError>;
-
     async fn list_all_paths(
         &self,
         user_id: &str,
         agent_id: Option<Uuid>,
     ) -> Result<Vec<String>, WorkspaceError>;
-
     async fn list_documents(
         &self,
         user_id: &str,
         agent_id: Option<Uuid>,
     ) -> Result<Vec<MemoryDocument>, WorkspaceError>;
-
     async fn delete_chunks(&self, document_id: Uuid) -> Result<(), WorkspaceError>;
-
     async fn insert_chunk(
         &self,
         document_id: Uuid,
@@ -493,20 +577,17 @@ pub trait WorkspaceStore: Send + Sync {
         content: &str,
         embedding: Option<&[f32]>,
     ) -> Result<Uuid, WorkspaceError>;
-
     async fn update_chunk_embedding(
         &self,
         chunk_id: Uuid,
         embedding: &[f32],
     ) -> Result<(), WorkspaceError>;
-
     async fn get_chunks_without_embeddings(
         &self,
         user_id: &str,
         agent_id: Option<Uuid>,
         limit: usize,
     ) -> Result<Vec<MemoryChunk>, WorkspaceError>;
-
     async fn hybrid_search(
         &self,
         user_id: &str,
@@ -525,8 +606,8 @@ pub trait WorkspaceStore: Send + Sync {
 pub trait Database:
     ConversationStore
     + LedgerStore
-    + LedgerChunkStore
     + JobStore
+    + LedgerChunkStore
     + SandboxStore
     + RoutineStore
     + ToolFailureStore
@@ -537,4 +618,47 @@ pub trait Database:
 {
     /// Run schema migrations for this backend.
     async fn run_migrations(&self) -> Result<(), DatabaseError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test: `create_secrets_store` selects the correct backend at
+    /// runtime based on `DatabaseConfig`, not at compile time. Previously the
+    /// CLI duplicated this logic with compile-time `#[cfg]` gates that always
+    /// chose postgres when both features were enabled (PR #209).
+    #[cfg(feature = "libsql")]
+    #[tokio::test]
+    async fn test_create_secrets_store_libsql_backend() {
+        use secrecy::SecretString;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+
+        let config = crate::config::DatabaseConfig {
+            backend: crate::config::DatabaseBackend::LibSql,
+            libsql_path: Some(db_path),
+            libsql_url: None,
+            libsql_auth_token: None,
+            url: SecretString::from("unused://libsql".to_string()),
+            pool_size: 1,
+            ssl_mode: crate::config::SslMode::default(),
+        };
+
+        let master_key = SecretString::from("a]".repeat(16));
+        let crypto = Arc::new(crate::secrets::SecretsCrypto::new(master_key).unwrap());
+
+        let store = create_secrets_store(&config, crypto).await;
+        assert!(
+            store.is_ok(),
+            "create_secrets_store should succeed for libsql backend"
+        );
+
+        // Verify basic operation works
+        let store = store.unwrap();
+        let exists = store.exists("test_user", "nonexistent_secret").await;
+        assert!(exists.is_ok());
+        assert!(!exists.unwrap());
+    }
 }

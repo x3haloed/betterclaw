@@ -1,42 +1,62 @@
 //! LLM integration for the agent.
 //!
 //! Supports multiple backends:
+//! - **NEAR AI** (default): Session token or API key auth via Chat Completions API
 //! - **OpenAI**: Direct API access with your own key
 //! - **Anthropic**: Direct API access with your own key
 //! - **Ollama**: Local model inference
 //! - **OpenAI-compatible**: Any endpoint that speaks the OpenAI API
-//! - **GitHub Copilot**: GitHub Copilot chat endpoint via bearer token + integration ID
-//! - **OpenAI Codex**: OpenAI API using Codex auth from ~/.codex/auth.json
+//! - **AWS Bedrock**: Native Converse API via aws-sdk-bedrockruntime
 
+mod anthropic_oauth;
+#[cfg(feature = "bedrock")]
+mod bedrock;
 pub mod circuit_breaker;
-mod copilot;
+pub mod config;
 pub mod costs;
+pub mod error;
 pub mod failover;
+mod nearai_chat;
 mod openai_codex;
+pub mod oauth_helpers;
 mod provider;
 mod reasoning;
-mod request_id;
+pub mod recording;
+pub mod registry;
 pub mod response_cache;
 pub mod retry;
-mod backoff;
-pub use backoff::{BackoffGuardProvider, BackoffObserverProvider, ProviderBackoff, PreflightBackoffProvider};
 mod rig_adapter;
+pub mod session;
 pub mod smart_routing;
 
+pub mod image_models;
+pub mod reasoning_models;
+pub mod vision_models;
+
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerProvider};
+pub use config::{
+    BedrockConfig, CacheRetention, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
+    OpenAiCodexConfig, RegistryProviderConfig, default_openai_codex_auth_path,
+};
+pub use error::LlmError;
 pub use failover::{CooldownConfig, FailoverProvider};
+pub use nearai_chat::{ModelInfo, NearAiChatProvider};
+pub use openai_codex::OpenAiCodexProvider;
 pub use provider::{
-    ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ModelMetadata,
-    Role, ToolCall, ToolCompletionRequest, ToolCompletionResponse, ToolDefinition, ToolResult,
+    ChatMessage, CompletionRequest, CompletionResponse, ContentPart, FinishReason, ImageUrl,
+    LlmProvider, ModelMetadata, Role, ToolCall, ToolCompletionRequest, ToolCompletionResponse,
+    ToolDefinition, ToolResult,
 };
 pub use reasoning::{
     ActionPlan, Reasoning, ReasoningContext, RespondOutput, RespondResult, SILENT_REPLY_TOKEN,
-    TokenUsage, ToolSelection, is_silent_reply,
+    TOOL_INTENT_NUDGE, TokenUsage, ToolSelection, is_silent_reply, llm_signals_tool_intent,
 };
-pub use request_id::RequestIdProvider;
+pub use recording::RecordingLlm;
+pub use registry::{ProviderDefinition, ProviderProtocol, ProviderRegistry};
 pub use response_cache::{CachedProvider, ResponseCacheConfig};
 pub use retry::{RetryConfig, RetryProvider};
 pub use rig_adapter::RigAdapter;
+pub use session::{SessionConfig, SessionManager, create_session_manager};
 pub use smart_routing::{SmartRoutingConfig, SmartRoutingProvider, TaskComplexity};
 
 use std::sync::Arc;
@@ -44,409 +64,319 @@ use std::sync::Arc;
 use rig::client::CompletionClient;
 use secrecy::ExposeSecret;
 
-use crate::config::{LlmBackend, LlmConfig};
-use crate::error::LlmError;
+// LlmConfig, NearAiConfig, RegistryProviderConfig, and LlmError are
+// re-exported via `pub use` above from config and error submodules.
 
 /// Create an LLM provider based on configuration.
 ///
-/// - Other backends: Use rig-core adapter with provider-specific clients
-pub fn create_llm_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let provider = match config.backend {
-        LlmBackend::OpenAi => create_openai_provider(config),
-        LlmBackend::Anthropic => create_anthropic_provider(config),
-        LlmBackend::Ollama => create_ollama_provider(config),
-        LlmBackend::OpenAiCompatible => create_openai_compatible_provider(config),
-        LlmBackend::Copilot => create_copilot_provider(config),
-        LlmBackend::OpenAiCodex => create_openai_codex_provider(config),
-        LlmBackend::Tinfoil => create_tinfoil_provider(config),
-    }?;
-    Ok(Arc::new(RequestIdProvider::new(provider)))
-}
-
-fn create_llm_provider_with_model(
+/// - NearAI backend: Uses session manager for authentication
+/// - Registry providers: Looked up by protocol and constructed generically
+pub async fn create_llm_provider(
     config: &LlmConfig,
-    model_override: &str,
+    session: Arc<SessionManager>,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let provider = match config.backend {
-        LlmBackend::OpenAi => {
-            let mut c = config
-                .openai
-                .as_ref()
-                .ok_or_else(|| LlmError::AuthFailed {
-                    provider: "openai".to_string(),
-                })?
-                .clone();
-            c.model = model_override.to_string();
-            create_openai_provider_from(&c)
-        }
-        LlmBackend::Anthropic => {
-            let mut c = config
-                .anthropic
-                .as_ref()
-                .ok_or_else(|| LlmError::AuthFailed {
-                    provider: "anthropic".to_string(),
-                })?
-                .clone();
-            c.model = model_override.to_string();
-            create_anthropic_provider_from(&c)
-        }
-        LlmBackend::Ollama => {
-            let mut c = config
-                .ollama
-                .as_ref()
-                .ok_or_else(|| LlmError::AuthFailed {
-                    provider: "ollama".to_string(),
-                })?
-                .clone();
-            c.model = model_override.to_string();
-            create_ollama_provider_from(&c)
-        }
-        LlmBackend::OpenAiCompatible => {
-            let mut c = config
-                .openai_compatible
-                .as_ref()
-                .ok_or_else(|| LlmError::AuthFailed {
-                    provider: "openai_compatible".to_string(),
-                })?
-                .clone();
-            c.model = model_override.to_string();
-            create_openai_compatible_provider_from(&c)
-        }
-        LlmBackend::Copilot => {
-            let mut c = config
-                .copilot
-                .as_ref()
-                .ok_or_else(|| LlmError::AuthFailed {
-                    provider: "copilot".to_string(),
-                })?
-                .clone();
-            c.model = model_override.to_string();
-            create_copilot_provider_from(&c)
-        }
-        LlmBackend::OpenAiCodex => {
-            let mut c = config
-                .openai_codex
-                .as_ref()
-                .ok_or_else(|| LlmError::AuthFailed {
-                    provider: "openai_codex".to_string(),
-                })?
-                .clone();
-            c.model = model_override.to_string();
-            create_openai_codex_provider_from(&c)
-        }
-        LlmBackend::Tinfoil => {
-            let mut c = config
-                .tinfoil
-                .as_ref()
-                .ok_or_else(|| LlmError::AuthFailed {
-                    provider: "tinfoil".to_string(),
-                })?
-                .clone();
-            c.model = model_override.to_string();
-            create_tinfoil_provider_from(&c)
-        }
-    }?;
-    Ok(Arc::new(RequestIdProvider::new(provider)))
-}
+    let timeout = config.request_timeout_secs;
 
-fn create_openai_codex_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let codex = config
-        .openai_codex
+    if config.backend == "nearai" || config.backend == "near_ai" || config.backend == "near" {
+        return create_llm_provider_with_config(&config.nearai, session, timeout);
+    }
+
+    if config.backend == "openai_codex"
+        || config.backend == "openai-codex"
+        || config.backend == "codex"
+    {
+        let codex = config
+            .openai_codex
+            .as_ref()
+            .ok_or_else(|| LlmError::AuthFailed {
+                provider: config.backend.clone(),
+            })?;
+        return Ok(Arc::new(OpenAiCodexProvider::new(codex)?));
+    }
+
+    // Bedrock uses a native AWS SDK, not the rig-core registry
+    if config.backend == "bedrock" {
+        #[cfg(feature = "bedrock")]
+        {
+            return create_bedrock_provider(config).await;
+        }
+        #[cfg(not(feature = "bedrock"))]
+        {
+            return Err(LlmError::RequestFailed {
+                provider: "bedrock".to_string(),
+                reason: "Bedrock support not compiled. Rebuild with --features bedrock".to_string(),
+            });
+        }
+    }
+
+    let reg_config = config
+        .provider
         .as_ref()
         .ok_or_else(|| LlmError::AuthFailed {
-            provider: "openai_codex".to_string(),
+            provider: config.backend.clone(),
         })?;
-    create_openai_codex_provider_from(codex)
+
+    create_registry_provider(reg_config)
 }
 
-fn create_openai_codex_provider_from(
-    codex: &crate::config::OpenAiCodexConfig,
+/// Create an LLM provider from a `NearAiConfig` directly.
+///
+/// This is useful when constructing additional providers for failover,
+/// where only the model name differs from the primary config.
+pub fn create_llm_provider_with_config(
+    config: &NearAiConfig,
+    session: Arc<SessionManager>,
+    request_timeout_secs: u64,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    tracing::info!(
-        "Using OpenAI Codex mode (base_url: {}, model: {}, auth_file: {})",
-        codex.base_url,
-        codex.model,
-        codex.auth_file
+    let auth_mode = if config.api_key.is_some() {
+        "API key"
+    } else {
+        "session token"
+    };
+    tracing::debug!(
+        model = %config.model,
+        base_url = %config.base_url,
+        auth = auth_mode,
+        timeout_secs = request_timeout_secs,
+        "Using NEAR AI (Chat Completions API)"
     );
-    Ok(Arc::new(openai_codex::OpenAiCodexProvider::new(codex)?))
+    Ok(Arc::new(NearAiChatProvider::new_with_timeout(
+        config.clone(),
+        session,
+        request_timeout_secs,
+    )?))
 }
 
-fn create_openai_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let oai = config.openai.as_ref().ok_or_else(|| LlmError::AuthFailed {
-        provider: "openai".to_string(),
-    })?;
-    create_openai_provider_from(oai)
+/// Create a provider from a registry-resolved config.
+///
+/// Dispatches on `RegistryProviderConfig::protocol` to build the appropriate
+/// rig-core client. This single function replaces what used to be 5 separate
+/// `create_*_provider` functions.
+fn create_registry_provider(
+    config: &RegistryProviderConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    match config.protocol {
+        ProviderProtocol::OpenAiCompletions => create_openai_compat_from_registry(config),
+        ProviderProtocol::Anthropic => create_anthropic_from_registry(config),
+        ProviderProtocol::Ollama => create_ollama_from_registry(config),
+    }
 }
 
-fn create_openai_provider_from(
-    oai: &crate::config::OpenAiDirectConfig,
+#[cfg(feature = "bedrock")]
+async fn create_bedrock_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    let br = config
+        .bedrock
+        .as_ref()
+        .ok_or_else(|| LlmError::AuthFailed {
+            provider: "bedrock".to_string(),
+        })?;
+
+    let provider = bedrock::BedrockProvider::new(br).await?;
+    tracing::debug!(
+        "Using AWS Bedrock (Converse API, region: {}, model: {})",
+        br.region,
+        provider.active_model_name(),
+    );
+    Ok(Arc::new(provider))
+}
+
+fn create_openai_compat_from_registry(
+    config: &RegistryProviderConfig,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
     use rig::providers::openai;
-
-    // Use CompletionsClient (Chat Completions API) instead of the default Client
-    // (Responses API). The Responses API path in rig-core panics when tool results
-    // are sent back because betterclaw doesn't thread `call_id` through its ToolCall
-    // type. The Chat Completions API works correctly with the existing code.
-    let client: openai::CompletionsClient = if let Some(ref base_url) = oai.base_url {
-        tracing::info!(
-            "Using OpenAI direct API (chat completions, model: {}, base_url: {})",
-            oai.model,
-            base_url,
-        );
-        openai::Client::builder()
-            .base_url(base_url)
-            .api_key(oai.api_key.expose_secret())
-            .build()
-    } else {
-        tracing::info!(
-            "Using OpenAI direct API (chat completions, model: {}, base_url: default)",
-            oai.model,
-        );
-        openai::Client::new(oai.api_key.expose_secret())
-    }
-    .map_err(|e| LlmError::RequestFailed {
-        provider: "openai".to_string(),
-        reason: format!("Failed to create OpenAI client: {}", e),
-    })?
-    .completions_api();
-
-    let model = client.completion_model(&oai.model);
-    Ok(Arc::new(RigAdapter::new(model, &oai.model)))
-}
-
-fn create_anthropic_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let anth = config
-        .anthropic
-        .as_ref()
-        .ok_or_else(|| LlmError::AuthFailed {
-            provider: "anthropic".to_string(),
-        })?;
-
-    create_anthropic_provider_from(anth)
-}
-
-fn create_anthropic_provider_from(
-    anth: &crate::config::AnthropicDirectConfig,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    use rig::providers::anthropic;
-
-    let client: anthropic::Client = if let Some(ref base_url) = anth.base_url {
-        anthropic::Client::builder()
-            .api_key(anth.api_key.expose_secret())
-            .base_url(base_url)
-            .build()
-    } else {
-        anthropic::Client::new(anth.api_key.expose_secret())
-    }
-    .map_err(|e| LlmError::RequestFailed {
-        provider: "anthropic".to_string(),
-        reason: format!("Failed to create Anthropic client: {}", e),
-    })?;
-
-    let model = client.completion_model(&anth.model);
-    tracing::info!(
-        "Using Anthropic direct API (model: {}, base_url: {})",
-        anth.model,
-        anth.base_url.as_deref().unwrap_or("default"),
-    );
-    Ok(Arc::new(RigAdapter::new(model, &anth.model)))
-}
-
-fn create_ollama_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let oll = config.ollama.as_ref().ok_or_else(|| LlmError::AuthFailed {
-        provider: "ollama".to_string(),
-    })?;
-    create_ollama_provider_from(oll)
-}
-
-fn create_ollama_provider_from(
-    oll: &crate::config::OllamaConfig,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    use rig::client::Nothing;
-    use rig::providers::ollama;
-
-    let client: ollama::Client = ollama::Client::builder()
-        .base_url(&oll.base_url)
-        .api_key(Nothing)
-        .build()
-        .map_err(|e| LlmError::RequestFailed {
-            provider: "ollama".to_string(),
-            reason: format!("Failed to create Ollama client: {}", e),
-        })?;
-
-    let model = client.completion_model(&oll.model);
-    tracing::info!(
-        "Using Ollama (base_url: {}, model: {})",
-        oll.base_url,
-        oll.model
-    );
-    Ok(Arc::new(RigAdapter::new(model, &oll.model)))
-}
-
-const TINFOIL_BASE_URL: &str = "https://inference.tinfoil.sh/v1";
-
-fn create_tinfoil_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let tf = config
-        .tinfoil
-        .as_ref()
-        .ok_or_else(|| LlmError::AuthFailed {
-            provider: "tinfoil".to_string(),
-        })?;
-
-    create_tinfoil_provider_from(tf)
-}
-
-fn create_tinfoil_provider_from(
-    tf: &crate::config::TinfoilConfig,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    use rig::providers::openai;
-
-    let client: openai::Client = openai::Client::builder()
-        .base_url(TINFOIL_BASE_URL)
-        .api_key(tf.api_key.expose_secret())
-        .build()
-        .map_err(|e| LlmError::RequestFailed {
-            provider: "tinfoil".to_string(),
-            reason: format!("Failed to create Tinfoil client: {}", e),
-        })?;
-
-    // Tinfoil currently only supports the Chat Completions API and not the newer Responses API,
-    // so we must explicitly select the completions API here (unlike other OpenAI-compatible providers).
-    let client = client.completions_api();
-    let model = client.completion_model(&tf.model);
-    tracing::info!("Using Tinfoil private inference (model: {})", tf.model);
-    Ok(Arc::new(RigAdapter::new(model, &tf.model)))
-}
-
-fn create_openai_compatible_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let compat = config
-        .openai_compatible
-        .as_ref()
-        .ok_or_else(|| LlmError::AuthFailed {
-            provider: "openai_compatible".to_string(),
-        })?;
-
-    create_openai_compatible_provider_from(compat)
-}
-
-fn create_copilot_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let copilot = config
-        .copilot
-        .as_ref()
-        .ok_or_else(|| LlmError::AuthFailed {
-            provider: "copilot".to_string(),
-        })?;
-
-    create_copilot_provider_from(copilot)
-}
-
-fn create_copilot_provider_from(
-    copilot: &crate::config::CopilotConfig,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    tracing::info!(
-        "Using GitHub Copilot endpoint (base_url: {}, model: {}, integration_id: {})",
-        copilot.base_url,
-        copilot.model,
-        copilot.integration_id,
-    );
-
-    Ok(Arc::new(copilot::CopilotProvider::new(copilot)?))
-}
-
-fn create_openai_compatible_provider_from(
-    compat: &crate::config::OpenAiCompatibleConfig,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    create_openai_compatible_provider_from_impl(compat, "openai_compatible")
-}
-
-fn create_openai_compatible_provider_from_impl(
-    compat: &crate::config::OpenAiCompatibleConfig,
-    provider_name: &str,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    // Note: OpenRouter is "OpenAI-compatible" at the HTTP level, but its error
-    // responses and some edge cases differ enough that rig-core ships a dedicated
-    // OpenRouter provider. Using it avoids JSON decode failures for OpenRouter
-    // error shapes (e.g. `{ "message": "..." }`).
-    let base_url_lc = compat.base_url.to_lowercase();
-    let is_openrouter = base_url_lc.contains("openrouter.ai");
 
     let mut extra_headers = reqwest::header::HeaderMap::new();
-    for (key, value) in &compat.extra_headers {
+    for (key, value) in &config.extra_headers {
         let name = match reqwest::header::HeaderName::from_bytes(key.as_bytes()) {
             Ok(n) => n,
             Err(e) => {
-                tracing::warn!(header = %key, error = %e, "Skipping LLM_EXTRA_HEADERS entry: invalid header name");
+                tracing::warn!(header = %key, error = %e, "Skipping extra header: invalid name");
                 continue;
             }
         };
         let val = match reqwest::header::HeaderValue::from_str(value) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(header = %key, error = %e, "Skipping LLM_EXTRA_HEADERS entry: invalid header value");
+                tracing::warn!(header = %key, error = %e, "Skipping extra header: invalid value");
                 continue;
             }
         };
         extra_headers.insert(name, val);
     }
 
-    let api_key = compat
+    let api_key = config
         .api_key
         .as_ref()
         .map(|k| k.expose_secret().to_string())
-        .unwrap_or_else(|| "no-key".to_string());
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                provider = %config.provider_id,
+                "No API key configured for {}. Requests will likely fail with 401. \
+                 Check your .env or secrets store.",
+                config.provider_id,
+            );
+            "no-key".to_string()
+        });
 
-    if is_openrouter {
-        use rig::providers::openrouter;
-        let client: openrouter::Client = openrouter::Client::builder()
-            // Allow overrides (tests/local proxies), but default is OpenRouter's canonical base.
-            .base_url(&compat.base_url)
-            .api_key(&api_key)
-            .http_headers(extra_headers)
-            .build()
-            .map_err(|e| LlmError::RequestFailed {
-                provider: "openrouter".to_string(),
-                reason: format!("Failed to create OpenRouter client: {}", e),
-            })?;
-        let model = client.completion_model(&compat.model);
-        tracing::info!(
-            "Using OpenRouter endpoint (rig openrouter provider, base_url: {}, model: {})",
-            compat.base_url,
-            compat.model
-        );
-        Ok(Arc::new(RigAdapter::new(model, &compat.model)))
-    } else {
-        use rig::providers::openai;
-        let client: openai::CompletionsClient = openai::Client::builder()
-            .base_url(&compat.base_url)
-            .api_key(api_key)
-            .http_headers(extra_headers)
-            .build()
-            .map_err(|e| LlmError::RequestFailed {
-                provider: provider_name.to_string(),
-                reason: format!("Failed to create OpenAI-compatible client: {}", e),
-            })?
-            .completions_api();
-
-        let model = client.completion_model(&compat.model);
-        tracing::info!(
-            "Using OpenAI-compatible endpoint (chat completions, base_url: {}, model: {})",
-            compat.base_url,
-            compat.model
-        );
-        Ok(Arc::new(RigAdapter::new(model, &compat.model)))
+    let mut builder = openai::Client::builder().api_key(&api_key);
+    if !config.base_url.is_empty() {
+        builder = builder.base_url(&config.base_url);
     }
+    if !extra_headers.is_empty() {
+        builder = builder.http_headers(extra_headers);
+    }
+
+    let client: openai::Client = builder.build().map_err(|e| LlmError::RequestFailed {
+        provider: config.provider_id.clone(),
+        reason: format!("Failed to create OpenAI-compatible client: {e}"),
+    })?;
+
+    // Use CompletionsClient (Chat Completions API) instead of the default
+    // Client (Responses API). The Responses API path in rig-core handles
+    // tool results differently, which breaks BetterClaw's tool call flow.
+    let client = client.completions_api();
+    let model = client.completion_model(&config.model);
+
+    tracing::debug!(
+        provider = %config.provider_id,
+        model = %config.model,
+        base_url = %config.base_url,
+        "Using OpenAI-compatible provider"
+    );
+
+    let adapter = RigAdapter::new(model, &config.model)
+        .with_unsupported_params(config.unsupported_params.clone());
+    Ok(Arc::new(adapter))
+}
+
+fn create_anthropic_from_registry(
+    config: &RegistryProviderConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    // Route to OAuth provider when an OAuth token is present and no real API
+    // key was provided. When both are set, the API key takes priority (standard
+    // x-api-key auth via rig-core).
+    let api_key_is_placeholder = config
+        .api_key
+        .as_ref()
+        .is_some_and(|k| k.expose_secret() == crate::llm::config::OAUTH_PLACEHOLDER);
+    if config.oauth_token.is_some() && (config.api_key.is_none() || api_key_is_placeholder) {
+        tracing::debug!(
+            provider = %config.provider_id,
+            model = %config.model,
+            base_url = if config.base_url.is_empty() { "default" } else { &config.base_url },
+            "Using Anthropic OAuth API"
+        );
+        let provider = anthropic_oauth::AnthropicOAuthProvider::new(config)?;
+        return Ok(Arc::new(provider));
+    }
+
+    use crate::llm::config::CacheRetention;
+    use rig::providers::anthropic;
+
+    let api_key = config
+        .api_key
+        .as_ref()
+        .map(|k| k.expose_secret().to_string())
+        .ok_or_else(|| LlmError::AuthFailed {
+            provider: config.provider_id.clone(),
+        })?;
+
+    let client: anthropic::Client = if config.base_url.is_empty() {
+        anthropic::Client::new(&api_key)
+    } else {
+        anthropic::Client::builder()
+            .api_key(&api_key)
+            .base_url(&config.base_url)
+            .build()
+    }
+    .map_err(|e| LlmError::RequestFailed {
+        provider: config.provider_id.clone(),
+        reason: format!("Failed to create Anthropic client: {e}"),
+    })?;
+
+    let cache_retention = config.cache_retention;
+
+    let model = client.completion_model(&config.model);
+
+    if cache_retention != CacheRetention::None {
+        tracing::debug!(
+            model = %config.model,
+            retention = %cache_retention,
+            "Anthropic automatic prompt caching enabled"
+        );
+    }
+
+    tracing::debug!(
+        provider = %config.provider_id,
+        model = %config.model,
+        base_url = if config.base_url.is_empty() { "default" } else { &config.base_url },
+        "Using Anthropic provider"
+    );
+
+    Ok(Arc::new(
+        RigAdapter::new(model, &config.model)
+            .with_cache_retention(cache_retention)
+            .with_unsupported_params(config.unsupported_params.clone()),
+    ))
+}
+
+fn create_ollama_from_registry(
+    config: &RegistryProviderConfig,
+) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    use rig::client::Nothing;
+    use rig::providers::ollama;
+
+    let client: ollama::Client = ollama::Client::builder()
+        .base_url(&config.base_url)
+        .api_key(Nothing)
+        .build()
+        .map_err(|e| LlmError::RequestFailed {
+            provider: config.provider_id.clone(),
+            reason: format!("Failed to create Ollama client: {e}"),
+        })?;
+
+    let model = client.completion_model(&config.model);
+
+    tracing::debug!(
+        provider = %config.provider_id,
+        model = %config.model,
+        base_url = %config.base_url,
+        "Using Ollama provider"
+    );
+
+    let adapter = RigAdapter::new(model, &config.model)
+        .with_unsupported_params(config.unsupported_params.clone());
+    Ok(Arc::new(adapter))
 }
 
 /// Create a cheap/fast LLM provider for lightweight tasks (heartbeat, routing, evaluation).
 ///
-/// Uses `LLM_CHEAP_MODEL` (via config/env) when set, otherwise returns `None`.
+/// Uses `NEARAI_CHEAP_MODEL` if set, otherwise falls back to the main provider.
+/// Currently only supports NEAR AI backend.
 pub fn create_cheap_llm_provider(
     config: &LlmConfig,
+    session: Arc<SessionManager>,
 ) -> Result<Option<Arc<dyn LlmProvider>>, LlmError> {
-    let Some(ref cheap_model) = config.tuning.cheap_model else {
+    let Some(ref cheap_model) = config.nearai.cheap_model else {
         return Ok(None);
     };
-    Ok(Some(create_llm_provider_with_model(config, cheap_model)?))
+
+    if config.backend != "nearai" {
+        tracing::warn!(
+            "NEARAI_CHEAP_MODEL is set but LLM_BACKEND is '{}', not nearai. \
+             Cheap model setting will be ignored.",
+            config.backend
+        );
+        return Ok(None);
+    }
+
+    let mut cheap_config = config.nearai.clone();
+    cheap_config.model = cheap_model.clone();
+
+    Ok(Some(Arc::new(NearAiChatProvider::new(
+        cheap_config,
+        session,
+    )?)))
 }
 
 /// Build the full LLM provider chain with all configured wrappers.
@@ -465,19 +395,26 @@ pub fn create_cheap_llm_provider(
 /// This is the single source of truth for provider chain construction,
 /// called by both `main.rs` and `app.rs`.
 #[allow(clippy::type_complexity)]
-pub fn build_provider_chain(
+pub async fn build_provider_chain(
     config: &LlmConfig,
-    backoff: Option<std::sync::Arc<crate::llm::backoff::ProviderBackoff>>,
-) -> Result<(Arc<dyn LlmProvider>, Option<Arc<dyn LlmProvider>>), LlmError> {
-    let llm = create_llm_provider(config)?;
-    tracing::info!("LLM provider initialized: {}", llm.model_name());
+    session: Arc<SessionManager>,
+) -> Result<
+    (
+        Arc<dyn LlmProvider>,
+        Option<Arc<dyn LlmProvider>>,
+        Option<Arc<RecordingLlm>>,
+    ),
+    LlmError,
+> {
+    let llm = create_llm_provider(config, session.clone()).await?;
+    tracing::debug!("LLM provider initialized: {}", llm.model_name());
 
     // 1. Retry
     let retry_config = RetryConfig {
-        max_retries: config.tuning.max_retries,
+        max_retries: config.nearai.max_retries,
     };
     let llm: Arc<dyn LlmProvider> = if retry_config.max_retries > 0 {
-        tracing::info!(
+        tracing::debug!(
             max_retries = retry_config.max_retries,
             "LLM retry wrapper enabled"
         );
@@ -486,17 +423,21 @@ pub fn build_provider_chain(
         llm
     };
 
-    // (backoff observer wrapper applied at end of chain)
-
     // 2. Smart routing (cheap/primary split)
-    let llm: Arc<dyn LlmProvider> = if let Some(ref cheap_model) = config.tuning.cheap_model {
-        let cheap = create_llm_provider_with_model(config, cheap_model)?;
+    let llm: Arc<dyn LlmProvider> = if let Some(ref cheap_model) = config.nearai.cheap_model {
+        let mut cheap_config = config.nearai.clone();
+        cheap_config.model = cheap_model.clone();
+        let cheap = create_llm_provider_with_config(
+            &cheap_config,
+            session.clone(),
+            config.request_timeout_secs,
+        )?;
         let cheap: Arc<dyn LlmProvider> = if retry_config.max_retries > 0 {
             Arc::new(RetryProvider::new(cheap, retry_config.clone()))
         } else {
             cheap
         };
-        tracing::info!(
+        tracing::debug!(
             primary = %llm.model_name(),
             cheap = %cheap.model_name(),
             "Smart routing enabled"
@@ -505,7 +446,7 @@ pub fn build_provider_chain(
             llm,
             cheap,
             SmartRoutingConfig {
-                cascade_enabled: config.tuning.smart_routing_cascade,
+                cascade_enabled: config.nearai.smart_routing_cascade,
                 ..SmartRoutingConfig::default()
             },
         ))
@@ -514,9 +455,20 @@ pub fn build_provider_chain(
     };
 
     // 3. Failover
-    let llm: Arc<dyn LlmProvider> = if let Some(ref fallback_model) = config.tuning.fallback_model {
-        let fallback = create_llm_provider_with_model(config, fallback_model)?;
-        tracing::info!(
+    let llm: Arc<dyn LlmProvider> = if let Some(ref fallback_model) = config.nearai.fallback_model {
+        if fallback_model == &config.nearai.model {
+            tracing::warn!(
+                "fallback_model is the same as primary model, failover may not be effective"
+            );
+        }
+        let mut fallback_config = config.nearai.clone();
+        fallback_config.model = fallback_model.clone();
+        let fallback = create_llm_provider_with_config(
+            &fallback_config,
+            session.clone(),
+            config.request_timeout_secs,
+        )?;
+        tracing::debug!(
             primary = %llm.model_name(),
             fallback = %fallback.model_name(),
             "LLM failover enabled"
@@ -527,8 +479,8 @@ pub fn build_provider_chain(
             fallback
         };
         let cooldown_config = CooldownConfig {
-            cooldown_duration: std::time::Duration::from_secs(config.tuning.failover_cooldown_secs),
-            failure_threshold: config.tuning.failover_cooldown_threshold,
+            cooldown_duration: std::time::Duration::from_secs(config.nearai.failover_cooldown_secs),
+            failure_threshold: config.nearai.failover_cooldown_threshold,
         };
         Arc::new(FailoverProvider::with_cooldown(
             vec![llm, fallback],
@@ -539,18 +491,18 @@ pub fn build_provider_chain(
     };
 
     // 4. Circuit breaker
-    let llm: Arc<dyn LlmProvider> = if let Some(threshold) = config.tuning.circuit_breaker_threshold
+    let llm: Arc<dyn LlmProvider> = if let Some(threshold) = config.nearai.circuit_breaker_threshold
     {
         let cb_config = CircuitBreakerConfig {
             failure_threshold: threshold,
             recovery_timeout: std::time::Duration::from_secs(
-                config.tuning.circuit_breaker_recovery_secs,
+                config.nearai.circuit_breaker_recovery_secs,
             ),
             ..CircuitBreakerConfig::default()
         };
-        tracing::info!(
+        tracing::debug!(
             threshold,
-            recovery_secs = config.tuning.circuit_breaker_recovery_secs,
+            recovery_secs = config.nearai.circuit_breaker_recovery_secs,
             "LLM circuit breaker enabled"
         );
         Arc::new(CircuitBreakerProvider::new(llm, cb_config))
@@ -559,14 +511,14 @@ pub fn build_provider_chain(
     };
 
     // 5. Response cache
-    let llm: Arc<dyn LlmProvider> = if config.tuning.response_cache_enabled {
+    let llm: Arc<dyn LlmProvider> = if config.nearai.response_cache_enabled {
         let rc_config = ResponseCacheConfig {
-            ttl: std::time::Duration::from_secs(config.tuning.response_cache_ttl_secs),
-            max_entries: config.tuning.response_cache_max_entries,
+            ttl: std::time::Duration::from_secs(config.nearai.response_cache_ttl_secs),
+            max_entries: config.nearai.response_cache_max_entries,
         };
-        tracing::info!(
-            ttl_secs = config.tuning.response_cache_ttl_secs,
-            max_entries = config.tuning.response_cache_max_entries,
+        tracing::debug!(
+            ttl_secs = config.nearai.response_cache_ttl_secs,
+            max_entries = config.nearai.response_cache_max_entries,
             "LLM response cache enabled"
         );
         Arc::new(CachedProvider::new(llm, rc_config))
@@ -574,30 +526,93 @@ pub fn build_provider_chain(
         llm
     };
 
+    // 6. Recording (trace capture for replay testing)
+    let recording_handle = RecordingLlm::from_env(llm.clone());
+    let llm: Arc<dyn LlmProvider> = if let Some(ref recorder) = recording_handle {
+        Arc::clone(recorder) as Arc<dyn LlmProvider>
+    } else {
+        llm
+    };
+
     // Standalone cheap LLM for heartbeat/evaluation (not part of the chain)
-    let cheap_llm = create_cheap_llm_provider(config)?;
+    let cheap_llm = create_cheap_llm_provider(config, session)?;
     if let Some(ref cheap) = cheap_llm {
-        tracing::info!("Cheap LLM provider initialized: {}", cheap.model_name());
+        tracing::debug!("Cheap LLM provider initialized: {}", cheap.model_name());
     }
 
-    // If a shared backoff registry was provided, wrap the final chain with an
-    // observer that records provider-suggested `Retry-After` values.
-    // Optional preflight backoff: space requests before sending (configurable)
-    let llm: Arc<dyn LlmProvider> = if config.tuning.preflight_backoff_enabled {
-        let interval = std::time::Duration::from_secs(config.tuning.preflight_backoff_secs);
-        tracing::info!(secs=%config.tuning.preflight_backoff_secs, "Preflight backoff enabled: spacing requests by {}s", config.tuning.preflight_backoff_secs);
-        Arc::new(crate::llm::PreflightBackoffProvider::new(llm, interval)) as Arc<dyn LlmProvider>
-    } else {
-        llm
-    };
-
-    let llm = if let Some(b) = backoff {
-        Arc::new(crate::llm::backoff::BackoffObserverProvider::new(llm, b)) as Arc<dyn LlmProvider>
-    } else {
-        llm
-    };
-
-    Ok((llm, cheap_llm))
+    Ok((llm, cheap_llm, recording_handle))
 }
 
-// (No llm module unit tests yet; most logic is exercised by higher-level tests.)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::config::NearAiConfig;
+
+    fn test_nearai_config() -> NearAiConfig {
+        NearAiConfig {
+            model: "test-model".to_string(),
+            cheap_model: None,
+            base_url: "https://api.near.ai".to_string(),
+            api_key: None,
+            fallback_model: None,
+            max_retries: 3,
+            circuit_breaker_threshold: None,
+            circuit_breaker_recovery_secs: 30,
+            response_cache_enabled: false,
+            response_cache_ttl_secs: 3600,
+            response_cache_max_entries: 1000,
+            failover_cooldown_secs: 300,
+            failover_cooldown_threshold: 3,
+            smart_routing_cascade: true,
+        }
+    }
+
+    fn test_llm_config() -> LlmConfig {
+        LlmConfig {
+            backend: "nearai".to_string(),
+            session: SessionConfig::default(),
+            nearai: test_nearai_config(),
+            provider: None,
+            bedrock: None,
+            openai_codex: None,
+            request_timeout_secs: 120,
+        }
+    }
+
+    #[test]
+    fn test_create_cheap_llm_provider_returns_none_when_not_configured() {
+        let config = test_llm_config();
+        let session = Arc::new(SessionManager::new(SessionConfig::default()));
+
+        let result = create_cheap_llm_provider(&config, session);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_create_cheap_llm_provider_creates_provider_when_configured() {
+        let mut config = test_llm_config();
+        config.nearai.cheap_model = Some("cheap-test-model".to_string());
+
+        let session = Arc::new(SessionManager::new(SessionConfig::default()));
+        let result = create_cheap_llm_provider(&config, session);
+
+        assert!(result.is_ok());
+        let provider = result.unwrap();
+        assert!(provider.is_some());
+        assert_eq!(provider.unwrap().model_name(), "cheap-test-model");
+    }
+
+    #[test]
+    fn test_create_cheap_llm_provider_ignored_for_non_nearai_backend() {
+        let mut config = test_llm_config();
+        config.backend = "openai".to_string();
+        config.nearai.cheap_model = Some("cheap-test-model".to_string());
+
+        let session = Arc::new(SessionManager::new(SessionConfig::default()));
+        let result = create_cheap_llm_provider(&config, session);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+}

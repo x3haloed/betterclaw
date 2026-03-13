@@ -284,14 +284,10 @@ impl TestHarnessBuilder {
             store: Some(Arc::clone(&db)),
             llm,
             cheap_llm: None,
-            compressor_llm: Arc::new(StubLlm::default()),
             embeddings: None,
             safety,
             tools,
-            fs_workspace: Arc::new(crate::workspace::FsWorkspace::new_in_base(
-                "default",
-                temp_dir.path().to_path_buf(),
-            )),
+            workspace: None,
             extension_manager: None,
             skill_registry: None,
             skill_catalog: None,
@@ -299,6 +295,11 @@ impl TestHarnessBuilder {
             hooks,
             cost_guard,
             sse_tx: None,
+            http_interceptor: None,
+            transcription: None,
+            document_extraction: None,
+            ledger_index_config: crate::config::LedgerIndexConfig::default(),
+            ledger_recall_config: crate::config::LedgerRecallConfig::default(),
         };
 
         TestHarness {

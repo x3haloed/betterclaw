@@ -3988,6 +3988,7 @@ mod tests {
             id: "custom_no_setup".to_string(),
             aliases: vec![],
             protocol: crate::llm::registry::ProviderProtocol::OpenAiCompletions,
+            implementation: crate::llm::registry::ProviderImplementation::Registry,
             default_base_url: Some("http://localhost:9999/v1".to_string()),
             base_url_env: None,
             base_url_required: false,

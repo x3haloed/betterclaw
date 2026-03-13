@@ -619,6 +619,7 @@ mod tests {
             nearai: test_nearai_config(),
             provider: None,
             bedrock: None,
+            copilot: None,
             openai_codex: None,
             request_timeout_secs: 120,
         }

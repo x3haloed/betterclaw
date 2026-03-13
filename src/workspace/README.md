@@ -65,12 +65,21 @@ let prompt = workspace.system_prompt().await?;
 
 ## Memory Tools
 
-Four tools for LLM use:
+Four tools for database-backed memory:
 
-- **`memory_search`** - Hybrid search, MUST be called before answering questions about prior work
-- **`memory_write`** - Write to any path (memory, daily_log, or custom paths)
-- **`memory_read`** - Read any file by path
-- **`memory_tree`** - View workspace structure as a tree (depth parameter, default 1)
+- **`memory_search`** - Hybrid search across saved memory documents when recall would be useful
+- **`memory_write`** - Write to any memory path (`memory`, `daily_log`, or custom DB-backed paths)
+- **`memory_read`** - Read a database-backed memory document by path
+- **`memory_tree`** - View the database-backed memory structure as a tree (depth parameter, default 1)
+
+## Filesystem Workspace
+
+BetterClaw also maintains real workspace files on disk under
+`~/.betterclaw/workspaces/<user_id>/files/`.
+
+These filesystem files are the source of truth for prompt-injected workspace docs
+such as `AGENTS.md`, `SOUL.md`, `USER.md`, `IDENTITY.md`, and `TOOLS.md`.
+Those should be read as normal files, not through the `memory_*` tools.
 
 ## Hybrid Search (RRF)
 

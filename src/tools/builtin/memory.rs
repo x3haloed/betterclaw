@@ -6,8 +6,9 @@
 //!
 //! # Usage
 //!
-//! The agent should use `memory_search` before answering questions about
-//! prior work, decisions, dates, people, preferences, or todos.
+//! The agent can use `memory_search` to look up prior work, decisions,
+//! dates, people, preferences, or todos that were explicitly stored in
+//! the database-backed workspace memory.
 //!
 //! Use `memory_write` to persist editable notes and long-lived workspace
 //! documents. BetterClaw's canonical continuity/history plane remains the
@@ -29,9 +30,9 @@ const PROTECTED_IDENTITY_FILES: &[&str] =
 
 /// Tool for searching workspace memory.
 ///
-/// Performs hybrid search (FTS + semantic) across all memory documents.
-/// The agent should call this tool before answering questions about
-/// prior work, decisions, preferences, or any historical context.
+/// Performs hybrid search (FTS + semantic) across database-backed memory documents.
+/// Use this when you want to look up information that may have been saved into
+/// workspace memory for later recall.
 pub struct MemorySearchTool {
     workspace: Arc<Workspace>,
 }
@@ -50,9 +51,9 @@ impl Tool for MemorySearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search past memories, decisions, and context. MUST be called before answering \
-         questions about prior work, decisions, dates, people, preferences, or todos. \
-         Returns relevant snippets with relevance scores."
+        "Search database-backed workspace memory for past notes, decisions, and saved \
+         context. Useful when you want to recall information that may have been written \
+         into memory. Returns relevant snippets with relevance scores."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -333,8 +334,10 @@ impl Tool for MemoryReadTool {
     fn description(&self) -> &str {
         "Read a file from the workspace memory (database-backed storage). \
          Use this to read files shown by memory_tree. NOT for local filesystem files \
-         (use read_file for those). Works with identity files, heartbeat checklist, \
-         memory, daily logs, or any custom workspace path."
+         (use read_file for those). This is for database-backed memory documents such as \
+         MEMORY.md, daily logs, heartbeat state, or custom memory paths. Filesystem \
+         workspace prompt files under ~/.betterclaw/workspaces/<user_id>/files should be \
+         read with read_file."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -447,7 +450,8 @@ impl Tool for MemoryTreeTool {
     fn description(&self) -> &str {
         "View the workspace memory structure as a tree (database-backed storage). \
          Use memory_read to read files shown here, NOT read_file. \
-         The workspace is separate from the local filesystem."
+         This memory tree is separate from the filesystem workspace under \
+         ~/.betterclaw/workspaces/<user_id>/files."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

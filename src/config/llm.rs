@@ -38,6 +38,7 @@ impl LlmConfig {
                 smart_routing_cascade: false,
             },
             provider: None,
+            copilot: None,
             bedrock: None,
             openai_codex: None,
             request_timeout_secs: 120,
@@ -75,10 +76,15 @@ impl LlmConfig {
             backend_lower.as_str(),
             "openai_codex" | "openai-codex" | "codex"
         );
+        let is_copilot = matches!(
+            backend_lower.as_str(),
+            "copilot" | "github_copilot" | "github-copilot"
+        );
         let is_bedrock =
             backend_lower == "bedrock" || backend_lower == "aws_bedrock" || backend_lower == "aws";
 
         if !is_nearai
+            && !is_copilot
             && !is_openai_codex
             && !is_bedrock
             && registry.find(&backend_lower).is_none()
@@ -130,7 +136,7 @@ impl LlmConfig {
         };
 
         // Resolve registry provider config (for non-NearAI, non-Bedrock backends)
-        let provider = if is_nearai || is_openai_codex || is_bedrock {
+        let provider = if is_nearai || is_copilot || is_openai_codex || is_bedrock {
             None
         } else {
             Some(Self::resolve_registry_provider(
@@ -138,6 +144,44 @@ impl LlmConfig {
                 &registry,
                 settings,
             )?)
+        };
+
+        let copilot = if is_copilot {
+            let access_token = optional_env("COPILOT_TOKEN")?
+                .or(optional_env("GITHUB_COPILOT_TOKEN")?)
+                .map(SecretString::from)
+                .ok_or_else(|| ConfigError::MissingRequired {
+                    key: "COPILOT_TOKEN".to_string(),
+                    hint: "Set COPILOT_TOKEN (or GITHUB_COPILOT_TOKEN) when LLM_BACKEND=copilot"
+                        .to_string(),
+                })?;
+            let integration_id =
+                optional_env("COPILOT_INTEGRATION_ID")?.ok_or_else(|| ConfigError::MissingRequired {
+                    key: "COPILOT_INTEGRATION_ID".to_string(),
+                    hint: "Set COPILOT_INTEGRATION_ID when LLM_BACKEND=copilot".to_string(),
+                })?;
+            let base_url =
+                optional_env("COPILOT_API_URL")?.unwrap_or_else(default_copilot_api_url);
+            let model = optional_env("COPILOT_MODEL")?
+                .or_else(|| settings.selected_model.clone())
+                .unwrap_or_else(|| "gpt-4o".to_string());
+            let session_id = optional_env("COPILOT_SESSION_ID")?;
+            let trace_parent = optional_env("COPILOT_TRACE_PARENT")?;
+            let extra_headers = optional_env("COPILOT_EXTRA_HEADERS")?
+                .map(|val| parse_extra_headers(&val))
+                .transpose()?
+                .unwrap_or_default();
+            Some(CopilotConfig {
+                base_url,
+                access_token,
+                integration_id,
+                model,
+                session_id,
+                trace_parent,
+                extra_headers,
+            })
+        } else {
+            None
         };
 
         let openai_codex = if is_openai_codex {
@@ -204,6 +248,8 @@ impl LlmConfig {
         Ok(Self {
             backend: if is_nearai {
                 "nearai".to_string()
+            } else if is_copilot {
+                "copilot".to_string()
             } else if is_openai_codex {
                 "openai_codex".to_string()
             } else if is_bedrock {
@@ -216,6 +262,7 @@ impl LlmConfig {
             session,
             nearai,
             provider,
+            copilot,
             bedrock,
             openai_codex,
             request_timeout_secs,
@@ -422,11 +469,29 @@ pub fn load_openai_codex_credentials(
     Ok((SecretString::from(access_token.to_string()), account_id))
 }
 
+pub fn build_copilot_headers(config: &CopilotConfig) -> Vec<(String, String)> {
+    let mut headers = vec![(
+        "Copilot-Integration-Id".to_string(),
+        config.integration_id.clone(),
+    )];
+
+    if let Some(ref session_id) = config.session_id {
+        headers.push(("X-Copilot-Session-Id".to_string(), session_id.clone()));
+    }
+
+    if let Some(ref trace_parent) = config.trace_parent {
+        headers.push(("X-Copilot-Traceparent".to_string(), trace_parent.clone()));
+    }
+
+    headers.extend(config.extra_headers.clone());
+    headers
+}
+
 /// Parse `LLM_EXTRA_HEADERS` value into a list of (key, value) pairs.
 ///
 /// Format: `Key1:Value1,Key2:Value2` (colon-separated, not `=`, because
 /// header values often contain `=`).
-fn parse_extra_headers(val: &str) -> Result<Vec<(String, String)>, ConfigError> {
+pub fn parse_extra_headers(val: &str) -> Result<Vec<(String, String)>, ConfigError> {
     if val.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -489,6 +554,22 @@ mod tests {
         }
     }
 
+    fn clear_copilot_env() {
+        // SAFETY: Only called under ENV_MUTEX in tests.
+        unsafe {
+            std::env::remove_var("LLM_BACKEND");
+            std::env::remove_var("COPILOT_TOKEN");
+            std::env::remove_var("GITHUB_COPILOT_TOKEN");
+            std::env::remove_var("COPILOT_INTEGRATION_ID");
+            std::env::remove_var("COPILOT_API_URL");
+            std::env::remove_var("COPILOT_MODEL");
+            std::env::remove_var("COPILOT_SESSION_ID");
+            std::env::remove_var("COPILOT_TRACE_PARENT");
+            std::env::remove_var("COPILOT_EXTRA_HEADERS");
+            std::env::remove_var("LLM_BASE_URL");
+        }
+    }
+
     #[test]
     fn openai_compatible_uses_selected_model_when_llm_model_unset() {
         let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
@@ -505,6 +586,23 @@ mod tests {
         let provider = cfg.provider.expect("provider config should be present");
 
         assert_eq!(provider.model, "openai/gpt-5.1-codex");
+    }
+
+    #[test]
+    fn copilot_uses_default_base_url_without_llm_base_url() {
+        let _guard = ENV_MUTEX.lock().expect("env mutex poisoned");
+        clear_copilot_env();
+        unsafe {
+            std::env::set_var("LLM_BACKEND", "copilot");
+            std::env::set_var("COPILOT_TOKEN", "ghu_copilot_test_token");
+            std::env::set_var("COPILOT_INTEGRATION_ID", "vscode-chat");
+        }
+
+        let cfg = LlmConfig::resolve(&Settings::default()).expect("resolve should succeed");
+        let copilot = cfg.copilot.expect("copilot config should be present");
+
+        assert_eq!(cfg.backend, "copilot");
+        assert_eq!(copilot.base_url, "https://api.githubcopilot.com");
     }
 
     #[test]

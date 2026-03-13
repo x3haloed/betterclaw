@@ -63,8 +63,9 @@ pub use self::transcription::TranscriptionConfig;
 pub use self::tunnel::TunnelConfig;
 pub use self::wasm::WasmConfig;
 pub use crate::llm::config::{
-    BedrockConfig, CacheRetention, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
-    OpenAiCodexConfig, RegistryProviderConfig, default_openai_codex_auth_path,
+    BedrockConfig, CacheRetention, CopilotConfig, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
+    OpenAiCodexConfig, RegistryProviderConfig, default_copilot_api_url,
+    default_openai_codex_auth_path,
 };
 pub use crate::llm::session::SessionConfig;
 

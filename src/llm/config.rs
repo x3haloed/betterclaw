@@ -110,6 +110,25 @@ pub struct OpenAiCodexConfig {
     pub model: String,
 }
 
+/// Configuration for GitHub Copilot's chat completions endpoint.
+#[derive(Debug, Clone)]
+pub struct CopilotConfig {
+    /// Base URL for the Copilot API.
+    pub base_url: String,
+    /// OAuth access token sourced from local Copilot auth.
+    pub access_token: SecretString,
+    /// Integration id header required by Copilot (for example `vscode-chat`).
+    pub integration_id: String,
+    /// Model identifier to request.
+    pub model: String,
+    /// Optional session correlation header.
+    pub session_id: Option<String>,
+    /// Optional trace header.
+    pub trace_parent: Option<String>,
+    /// Extra HTTP headers injected into every request.
+    pub extra_headers: Vec<(String, String)>,
+}
+
 /// Configuration for AWS Bedrock (native Converse API).
 #[derive(Debug, Clone)]
 pub struct BedrockConfig {
@@ -140,6 +159,8 @@ pub struct LlmConfig {
     /// Resolved provider config for registry-based providers.
     /// `None` when backend is "nearai" or "bedrock".
     pub provider: Option<RegistryProviderConfig>,
+    /// Dedicated Copilot config for GitHub Copilot chat completions.
+    pub copilot: Option<CopilotConfig>,
     /// AWS Bedrock config (populated when backend=bedrock, requires --features bedrock).
     pub bedrock: Option<BedrockConfig>,
     /// Dedicated OpenAI Codex config for the ChatGPT Codex backend.
@@ -189,4 +210,8 @@ pub fn default_openai_codex_auth_path() -> String {
         .join("auth.json")
         .display()
         .to_string()
+}
+
+pub fn default_copilot_api_url() -> String {
+    "https://api.githubcopilot.com".to_string()
 }

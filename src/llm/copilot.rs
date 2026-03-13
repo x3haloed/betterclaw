@@ -12,8 +12,8 @@ use httpdate::parse_http_date;
 use crate::error::LlmError;
 use crate::llm::costs;
 use crate::llm::provider::{
-    ChatMessage, CompletionRequest, CompletionResponse, FinishReason, LlmProvider, ModelMetadata,
-    Role, ToolCall, ToolCompletionRequest, ToolCompletionResponse, ToolDefinition,
+    ChatMessage, CompletionRequest, CompletionResponse, ContentPart, FinishReason, LlmProvider,
+    ModelMetadata, Role, ToolCall, ToolCompletionRequest, ToolCompletionResponse, ToolDefinition,
 };
 use crate::llm::rig_adapter::normalize_schema_strict;
 
@@ -189,6 +189,8 @@ impl LlmProvider for CopilotProvider {
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
             finish_reason: parsed.finish_reason,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 
@@ -221,6 +223,8 @@ impl LlmProvider for CopilotProvider {
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
             finish_reason: parsed.finish_reason,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
         })
     }
 
@@ -342,7 +346,7 @@ impl CopilotMessage {
         .to_string();
 
         let content = match message.role {
-            Role::User if !message.images.is_empty() => Some(build_user_content(message)),
+            Role::User if !message.content_parts.is_empty() => Some(build_user_content(message)),
             Role::Assistant if message.tool_calls.is_some() && message.content.is_empty() => None,
             _ => Some(JsonValue::String(message.content.clone())),
         };
@@ -379,11 +383,13 @@ fn build_user_content(message: &ChatMessage) -> JsonValue {
             "text": message.content,
         }));
     }
-    for image in &message.images {
-        parts.push(serde_json::json!({
-            "type": "image_url",
-            "image_url": { "url": image }
-        }));
+    for part in &message.content_parts {
+        if let ContentPart::ImageUrl { image_url } = part {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": image_url.url }
+            }));
+        }
     }
     JsonValue::Array(parts)
 }

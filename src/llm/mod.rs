@@ -11,6 +11,7 @@
 mod anthropic_oauth;
 #[cfg(feature = "bedrock")]
 mod bedrock;
+mod copilot;
 pub mod circuit_breaker;
 pub mod config;
 pub mod costs;
@@ -35,8 +36,9 @@ pub mod vision_models;
 
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerProvider};
 pub use config::{
-    BedrockConfig, CacheRetention, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
-    OpenAiCodexConfig, RegistryProviderConfig, default_openai_codex_auth_path,
+    BedrockConfig, CacheRetention, CopilotConfig, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
+    OpenAiCodexConfig, RegistryProviderConfig, default_copilot_api_url,
+    default_openai_codex_auth_path,
 };
 pub use error::LlmError;
 pub use failover::{CooldownConfig, FailoverProvider};
@@ -92,6 +94,19 @@ pub async fn create_llm_provider(
                 provider: config.backend.clone(),
             })?;
         return Ok(Arc::new(OpenAiCodexProvider::new(codex)?));
+    }
+
+    if config.backend == "copilot"
+        || config.backend == "github_copilot"
+        || config.backend == "github-copilot"
+    {
+        let copilot = config
+            .copilot
+            .as_ref()
+            .ok_or_else(|| LlmError::AuthFailed {
+                provider: config.backend.clone(),
+            })?;
+        return Ok(Arc::new(copilot::CopilotProvider::new(copilot)?));
     }
 
     // Bedrock uses a native AWS SDK, not the rig-core registry

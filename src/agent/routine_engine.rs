@@ -33,7 +33,7 @@ use crate::llm::{
 };
 use crate::safety::SafetyLayer;
 use crate::tools::{ApprovalContext, ApprovalRequirement, ToolError, ToolRegistry};
-use crate::workspace::Workspace;
+use crate::workspace::{FsWorkspace, Workspace};
 
 enum EventMatcher {
     Message { routine: Routine, regex: Regex },
@@ -671,29 +671,23 @@ async fn execute_lightweight(
     context_paths: &[String],
     max_tokens: u32,
 ) -> Result<(RunStatus, Option<String>, Option<i32>), RoutineError> {
+    let fs_workspace = FsWorkspace::new(&routine.user_id);
+
     // Load context from workspace
     let mut context_parts = Vec::new();
     for path in context_paths {
-        match ctx.workspace.read(path).await {
-            Ok(doc) => {
-                context_parts.push(format!("## {}\n\n{}", path, doc.content));
-            }
-            Err(e) => {
-                tracing::debug!(
-                    routine = %routine.name,
-                    "Failed to read context path {}: {}", path, e
-                );
-            }
+        if let Some(content) = read_routine_workspace_text(ctx, &fs_workspace, &routine.user_id, path)
+            .await
+        {
+            context_parts.push(format!("## {}\n\n{}", path, content));
         }
     }
 
     // Load routine state from workspace (name sanitized to prevent path traversal)
     let safe_name = sanitize_routine_name(&routine.name);
     let state_path = format!("routines/{safe_name}/state.md");
-    let state_content = match ctx.workspace.read(&state_path).await {
-        Ok(doc) => Some(doc.content),
-        Err(_) => None,
-    };
+    let state_content =
+        read_routine_workspace_text(ctx, &fs_workspace, &routine.user_id, &state_path).await;
 
     // Build the user-facing prompt
     let mut full_prompt = String::new();
@@ -715,7 +709,7 @@ async fn execute_lightweight(
     );
 
     // Get system prompt
-    let system_prompt = match ctx.workspace.system_prompt().await {
+    let system_prompt = match fs_workspace.system_prompt().await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(routine = %routine.name, "Failed to get system prompt: {}", e);
@@ -985,14 +979,11 @@ async fn execute_routine_tool(
         .await
         .ok_or_else(|| format!("Tool '{}' not found", tc.name))?;
 
-    // Check approval requirement: only allow Never tools in lightweight routines.
-    // UnlessAutoApproved and Always tools are blocked to prevent prompt injection attacks.
-    // Lightweight routines can be triggered by external events and may process untrusted data,
-    // making them vulnerable to prompt injection that could trick the LLM into calling
-    // sensitive tools. Blocking these tools entirely is the safest approach.
+    // Check approval requirement: allow the autonomous-safe class used by routines
+    // (`UnlessAutoApproved`), but still block `Always`.
     match tool.requires_approval(&tc.arguments) {
-        ApprovalRequirement::Never => {}
-        ApprovalRequirement::UnlessAutoApproved | ApprovalRequirement::Always => {
+        ApprovalRequirement::Never | ApprovalRequirement::UnlessAutoApproved => {}
+        ApprovalRequirement::Always => {
             return Err(format!(
                 "Tool '{}' requires manual approval and cannot be used in lightweight routines",
                 tc.name
@@ -1061,6 +1052,29 @@ async fn execute_routine_tool(
     let result_str =
         serde_json::to_string(&result.result).unwrap_or_else(|_| "<serialize error>".to_string());
     Ok(result_str)
+}
+
+async fn read_routine_workspace_text(
+    ctx: &EngineContext,
+    fs_workspace: &FsWorkspace,
+    user_id: &str,
+    path: &str,
+) -> Option<String> {
+    match fs_workspace.read_text_rel(path).await {
+        Ok(content) => Some(content),
+        Err(crate::error::WorkspaceError::DocumentNotFound { .. }) => match ctx.workspace.read(path).await
+        {
+            Ok(doc) => Some(doc.content),
+            Err(e) => {
+                tracing::debug!("Failed to read context path {}: {} for user {}", path, e, user_id);
+                None
+            }
+        },
+        Err(e) => {
+            tracing::debug!("Failed to read context path {}: {} for user {}", path, e, user_id);
+            None
+        }
+    }
 }
 
 /// Send a notification based on the routine's notify config and run status.

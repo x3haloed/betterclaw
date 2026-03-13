@@ -957,11 +957,13 @@ impl Agent {
 
         // Convert SubmissionResult to response string
         match result? {
-            SubmissionResult::Response { content } => {
+                SubmissionResult::Response { content } => {
                 // Suppress silent replies (e.g. from group chat "nothing to say" responses)
                 if crate::llm::is_silent_reply(&content) {
                     tracing::debug!("Suppressing silent reply token");
-                    Ok(None)
+                    // Return an explicit empty string so the outer loop treats
+                    // this as a suppressed outbound message, not a shutdown.
+                    Ok(Some(String::new()))
                 } else {
                     Ok(Some(content))
                 }

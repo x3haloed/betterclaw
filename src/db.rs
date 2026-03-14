@@ -576,13 +576,22 @@ impl Db {
             stream_blob_id: row.get(19)?,
             error_summary: row.get(20)?,
         };
+        let response_blob = self.fetch_trace_blob_json(&trace.response_blob_id).await?;
+        let (response_body, reduced_result) = match response_blob {
+            Value::Object(map) => (
+                map.get("raw_response").cloned().unwrap_or(Value::Null),
+                map.get("reduced_result").cloned(),
+            ),
+            other => (other, None),
+        };
         Ok(Some(TraceDetail {
             request_body: self.fetch_trace_blob_json(&trace.request_blob_id).await?,
-            response_body: self.fetch_trace_blob_json(&trace.response_blob_id).await?,
+            response_body,
             stream_body: match &trace.stream_blob_id {
                 Some(blob_id) => Some(self.fetch_trace_blob_json(blob_id).await?),
                 None => None,
             },
+            reduced_result,
             trace,
         }))
     }

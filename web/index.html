@@ -27,7 +27,29 @@
         <section class="panel debug-panel">
           <div class="panel-title">Model Traces</div>
           <div id="trace-list" class="trace-list"></div>
-          <pre id="trace-detail" class="trace-detail"></pre>
+          <div id="trace-empty" class="trace-empty">Select a trace to inspect the full exchange.</div>
+          <div id="trace-detail" class="trace-detail" hidden>
+            <section class="trace-section">
+              <h3>Summary</h3>
+              <div id="trace-summary" class="trace-summary"></div>
+            </section>
+            <section class="trace-section">
+              <h3>Reduced Result</h3>
+              <pre id="trace-reduced" class="trace-code"></pre>
+            </section>
+            <section class="trace-section">
+              <h3>Request</h3>
+              <pre id="trace-request" class="trace-code"></pre>
+            </section>
+            <section class="trace-section">
+              <h3>Response</h3>
+              <pre id="trace-response" class="trace-code"></pre>
+            </section>
+            <section class="trace-section">
+              <h3>Raw Frames</h3>
+              <pre id="trace-frames" class="trace-code"></pre>
+            </section>
+          </div>
         </section>
       </main>
     </div>

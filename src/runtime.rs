@@ -411,13 +411,18 @@ impl Runtime {
             .map_err(RuntimeError::from)?;
         let response_blob = self
             .db
-            .store_trace_blob_json(
-                &exchange
-                    .raw_trace
-                    .response_body
-                    .clone()
-                    .unwrap_or_else(|| Value::Null),
-            )
+            .store_trace_blob_json(&json!({
+                "raw_response": exchange.raw_trace.response_body,
+                "reduced_result": {
+                    "content": exchange.content,
+                    "reasoning": exchange.reasoning,
+                    "tool_calls": exchange.tool_calls,
+                    "finish_reason": exchange.finish_reason,
+                    "usage": exchange.usage,
+                    "outcome": exchange.outcome,
+                    "error_summary": exchange.error_summary,
+                }
+            }))
             .await
             .map_err(RuntimeError::from)?;
         let stream_blob_id = if exchange.raw_trace.raw_frames.is_empty() {

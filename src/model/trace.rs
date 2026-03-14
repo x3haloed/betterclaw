@@ -67,4 +67,5 @@ pub struct TraceDetail {
     pub request_body: Value,
     pub response_body: Value,
     pub stream_body: Option<Value>,
+    pub reduced_result: Option<Value>,
 }

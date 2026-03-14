@@ -50,6 +50,10 @@ button {
   background: #d8c7a5;
 }
 
+.trace-item.active {
+  background: #d8c7a5;
+}
+
 .main {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
@@ -104,6 +108,75 @@ textarea {
   padding: 12px;
 }
 
+.trace-empty {
+  margin-top: 16px;
+  border: 1px dashed #b8ad99;
+  background: #f7f2e7;
+  padding: 16px;
+  color: #675843;
+}
+
+.trace-section + .trace-section {
+  margin-top: 16px;
+}
+
+.trace-section h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.trace-code {
+  margin: 0;
+  border: 1px solid #d8cfbf;
+  background: #fffdf7;
+  padding: 12px;
+  overflow: auto;
+  max-height: 280px;
+}
+
+.trace-primary,
+.trace-secondary {
+  display: block;
+}
+
+.trace-primary {
+  font-weight: 700;
+}
+
+.trace-secondary {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #675843;
+}
+
+.trace-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.summary-row {
+  border: 1px solid #d8cfbf;
+  background: #fffdf7;
+  padding: 10px;
+}
+
+.summary-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #675843;
+}
+
+.summary-value {
+  display: block;
+  margin-top: 4px;
+  font-weight: 700;
+}
+
 @media (max-width: 960px) {
   .layout,
   .main {
@@ -112,5 +185,9 @@ textarea {
 
   .panel {
     min-height: auto;
+  }
+
+  .trace-summary {
+    grid-template-columns: 1fr;
   }
 }

@@ -1,5 +1,6 @@
 const state = {
   selectedThreadId: null,
+  selectedTraceId: null,
 };
 
 async function request(path, options = {}) {
@@ -12,6 +13,50 @@ async function request(path, options = {}) {
     throw new Error(body.error || response.statusText);
   }
   return response.json();
+}
+
+function pretty(value) {
+  if (value == null) return "null";
+  return JSON.stringify(value, null, 2);
+}
+
+function renderTraceSummary(detail) {
+  const trace = detail.trace;
+  const reduced = detail.reduced_result || {};
+  return [
+    ["Model", trace.model],
+    ["Outcome", trace.outcome],
+    ["Duration", `${trace.duration_ms} ms`],
+    ["Tools", trace.tool_names.length ? trace.tool_names.join(", ") : "none"],
+    ["Finish", reduced.finish_reason || "n/a"],
+    ["Frames", Array.isArray(detail.stream_body) ? detail.stream_body.length : 0],
+  ]
+    .map(
+      ([label, value]) =>
+        `<div class="summary-row"><span class="summary-label">${label}</span><span class="summary-value">${value}</span></div>`,
+    )
+    .join("");
+}
+
+function renderTraceDetail(detail) {
+  document.getElementById("trace-empty").hidden = true;
+  const traceDetail = document.getElementById("trace-detail");
+  traceDetail.hidden = false;
+  document.getElementById("trace-summary").innerHTML = renderTraceSummary(detail);
+  document.getElementById("trace-reduced").textContent = pretty(detail.reduced_result);
+  document.getElementById("trace-request").textContent = pretty(detail.request_body);
+  document.getElementById("trace-response").textContent = pretty(detail.response_body);
+  document.getElementById("trace-frames").textContent = pretty(detail.stream_body);
+}
+
+function clearTraceDetail() {
+  document.getElementById("trace-empty").hidden = false;
+  document.getElementById("trace-detail").hidden = true;
+  document.getElementById("trace-summary").innerHTML = "";
+  document.getElementById("trace-reduced").textContent = "";
+  document.getElementById("trace-request").textContent = "";
+  document.getElementById("trace-response").textContent = "";
+  document.getElementById("trace-frames").textContent = "";
 }
 
 async function loadThreads() {
@@ -33,6 +78,7 @@ async function loadThreads() {
 
 async function selectThread(threadId) {
   state.selectedThreadId = threadId;
+  state.selectedTraceId = null;
   const detail = await request(`/api/threads/${threadId}`);
   document.getElementById("thread-title").textContent = detail.thread.title;
 
@@ -51,22 +97,35 @@ async function selectThread(threadId) {
   await loadThreads();
 }
 
+async function selectTrace(traceId) {
+  state.selectedTraceId = traceId;
+  const detail = await request(`/api/traces/${traceId}`);
+  renderTraceDetail(detail);
+  const buttons = document.querySelectorAll(".trace-item");
+  for (const button of buttons) {
+    button.classList.toggle("active", button.dataset.traceId === traceId);
+  }
+}
+
 async function loadTraces(turnId) {
   const traceList = document.getElementById("trace-list");
-  const traceDetail = document.getElementById("trace-detail");
   traceList.innerHTML = "";
-  traceDetail.textContent = "";
+  clearTraceDetail();
   if (!turnId) return;
   const traces = await request(`/api/turns/${turnId}/traces`);
   for (const trace of traces) {
     const button = document.createElement("button");
     button.className = "trace-item";
-    button.textContent = `${trace.model} • ${trace.outcome}`;
-    button.onclick = async () => {
-      const detail = await request(`/api/traces/${trace.id}`);
-      traceDetail.textContent = JSON.stringify(detail, null, 2);
-    };
+    button.dataset.traceId = trace.id;
+    button.innerHTML = `
+      <span class="trace-primary">${trace.model}</span>
+      <span class="trace-secondary">${trace.outcome} • ${trace.duration_ms}ms</span>
+    `;
+    button.onclick = () => selectTrace(trace.id);
     traceList.appendChild(button);
+  }
+  if (traces[0]) {
+    await selectTrace(traces[0].id);
   }
 }
 

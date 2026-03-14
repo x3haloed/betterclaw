@@ -8,3 +8,4 @@ Big missing areas left to implement:
 - [ ] Add tidepool support
 - [ ] Add Codex & Copilot providers in
 - [ ] image and video attachments (image_url for openai-compat, video_url if supported by provider), input via Discord
+- [ ] first-class skills support

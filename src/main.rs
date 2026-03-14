@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use betterclaw::channels::discord::{DiscordChannel, DiscordConfig};
+use betterclaw::channels::tidepool::TidepoolChannel;
 use betterclaw::db::Db;
 use betterclaw::logging;
 use betterclaw::runtime::Runtime;
+use betterclaw::tidepool::TidepoolConfig;
 use betterclaw::web;
 
 #[tokio::main]
@@ -34,6 +36,22 @@ async fn main() -> Result<()> {
         Some(DiscordChannel::new(Arc::clone(&runtime), config)?.spawn())
     } else {
         tracing::info!("Discord channel disabled (DISCORD_BOT_TOKEN not set)");
+        None
+    };
+
+    let _tidepool = if let Some(config) = TidepoolConfig::from_env() {
+        if config.token_exists() {
+            tracing::info!(token_path = %config.token_path.display(), "Starting Tidepool channel");
+            Some(TidepoolChannel::new(Arc::clone(&runtime), config).spawn())
+        } else {
+            tracing::info!(
+                token_path = %config.token_path.display(),
+                "Tidepool configured but inactive because the token file is missing"
+            );
+            None
+        }
+    } else {
+        tracing::info!("Tidepool channel disabled (TIDEPOOL_DATABASE/TIDEPOOL_HANDLE not set)");
         None
     };
 

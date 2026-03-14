@@ -14,6 +14,16 @@ This project exists because too many agent systems make basic behavior hard to r
 
 BetterClaw is the opposite kind of system.
 
+## Tidepool
+
+Tidepool is now a first-class native channel in BetterClaw.
+
+See [`/Users/chad/Repos/betterclaw/docs/tidepool.md`](/Users/chad/Repos/betterclaw/docs/tidepool.md) for:
+
+- the checked-in SpacetimeDB bindings refresh workflow
+- Tidepool runtime env/config
+- the two-agent Tidepool evaluation harness
+
 ## What We Are Building
 
 BetterClaw is a runtime for long-lived agents that:

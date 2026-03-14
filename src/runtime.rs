@@ -363,6 +363,7 @@ impl Runtime {
                 channel: thread.channel.clone(),
                 external_thread_id: thread.external_thread_id.clone(),
                 content: source_turn.user_message,
+                metadata: None,
                 received_at: Utc::now(),
             },
             Some(source_turn_id.to_string()),
@@ -394,7 +395,11 @@ impl Runtime {
             &turn.id,
             &thread.id,
             EventKind::InboundMessage,
-            json!({ "content": event.content, "received_at": event.received_at }),
+            json!({
+                "content": event.content,
+                "received_at": event.received_at,
+                "metadata": event.metadata,
+            }),
         )
         .await?;
         self.append_event_and_publish(
@@ -510,7 +515,13 @@ impl Runtime {
             };
             if !continuation_messages.outbound_messages.is_empty() {
                 for content in &continuation_messages.outbound_messages {
-                    self.record_outbound_and_publish(&turn, &thread, content).await?;
+                    self.record_outbound_and_publish(
+                        &turn,
+                        &thread,
+                        content,
+                        event.metadata.clone(),
+                    )
+                    .await?;
                 }
                 outbound_messages.extend(continuation_messages.outbound_messages.clone());
             }
@@ -538,7 +549,7 @@ impl Runtime {
             )
             .await?;
         }
-        self.record_outbound_and_publish(&turn, &thread, &final_response)
+        self.record_outbound_and_publish(&turn, &thread, &final_response, event.metadata.clone())
             .await?;
         outbound_messages.push(final_response.clone());
 
@@ -929,6 +940,7 @@ impl Runtime {
         turn: &Turn,
         thread: &Thread,
         content: &str,
+        metadata: Option<Value>,
     ) -> Result<(), RuntimeError> {
         let outbound = OutboundMessage {
             id: Uuid::new_v4().to_string(),
@@ -937,6 +949,7 @@ impl Runtime {
             channel: thread.channel.clone(),
             external_thread_id: thread.external_thread_id.clone(),
             content: content.to_string(),
+            metadata: metadata.clone(),
             created_at: Utc::now(),
         };
         self.db
@@ -947,7 +960,7 @@ impl Runtime {
             &turn.id,
             &thread.id,
             EventKind::OutboundMessage,
-            json!({ "content": outbound.content }),
+            json!({ "content": outbound.content, "metadata": metadata }),
         )
         .await
     }

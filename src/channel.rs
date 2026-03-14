@@ -7,6 +7,8 @@ pub struct InboundEvent {
     pub channel: String,
     pub external_thread_id: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     pub received_at: DateTime<Utc>,
 }
 
@@ -21,6 +23,7 @@ impl InboundEvent {
             channel: "web".to_string(),
             external_thread_id: thread_id.into(),
             content: content.into(),
+            metadata: None,
             received_at: Utc::now(),
         }
     }
@@ -34,6 +37,8 @@ pub struct OutboundMessage {
     pub channel: String,
     pub external_thread_id: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 

@@ -129,6 +129,7 @@ impl Db {
                 channel TEXT NOT NULL,
                 external_thread_id TEXT NOT NULL,
                 content TEXT NOT NULL,
+                metadata_json TEXT,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS runtime_settings (
@@ -152,6 +153,29 @@ impl Db {
         "#,
         )
         .await?;
+        self.add_column_if_missing(&conn, "outbound_messages", "metadata_json", "TEXT")
+            .await?;
+        Ok(())
+    }
+
+    async fn add_column_if_missing(
+        &self,
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<()> {
+        let pragma = format!("PRAGMA table_info({table})");
+        let mut rows = conn.query(&pragma, params![]).await?;
+        while let Some(row) = rows.next().await? {
+            let existing: String = row.get(1)?;
+            if existing == column {
+                return Ok(());
+            }
+        }
+
+        let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+        conn.execute(&alter, params![]).await?;
         Ok(())
     }
 
@@ -856,7 +880,7 @@ impl Db {
     pub async fn record_outbound_message(&self, outbound: &OutboundMessage) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT INTO outbound_messages (id, turn_id, thread_id, channel, external_thread_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO outbound_messages (id, turn_id, thread_id, channel, external_thread_id, content, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 outbound.id.clone(),
                 outbound.turn_id.clone(),
@@ -864,11 +888,35 @@ impl Db {
                 outbound.channel.clone(),
                 outbound.external_thread_id.clone(),
                 outbound.content.clone(),
+                outbound.metadata.as_ref().map(Value::to_string),
                 outbound.created_at.to_rfc3339()
             ],
         )
         .await?;
         Ok(())
+    }
+
+    pub async fn load_cursor(
+        &self,
+        channel: &str,
+        cursor_key: &str,
+    ) -> Result<Option<ChannelCursor>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT channel, cursor_key, cursor_value, updated_at FROM channel_cursors WHERE channel = ? AND cursor_key = ?",
+                params![channel.to_string(), cursor_key.to_string()],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            return Ok(Some(ChannelCursor {
+                channel: row.get::<String>(0)?,
+                cursor_key: row.get::<String>(1)?,
+                cursor_value: row.get::<String>(2)?,
+                updated_at: row.get::<String>(3)?.parse()?,
+            }));
+        }
+        Ok(None)
     }
 
     pub async fn upsert_cursor(&self, cursor: &ChannelCursor) -> Result<()> {

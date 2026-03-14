@@ -306,6 +306,7 @@ impl DiscordChannel {
                 channel: "discord".to_string(),
                 external_thread_id: discord_thread_key(&channel_id, is_dm),
                 content,
+                metadata: None,
                 received_at: chrono::Utc::now(),
             },
             message_id,

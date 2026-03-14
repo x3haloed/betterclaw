@@ -134,7 +134,7 @@ impl Tool for ReadFileTool {
         let total_lines = lines.len();
 
         let start_line = if offset > 0 {
-            offset.saturating_sub(1)
+            offset.saturating_sub(1).min(total_lines)
         } else {
             0
         };
@@ -790,6 +790,32 @@ mod tests {
 
         let content = result.result.get("content").unwrap().as_str().unwrap();
         assert!(content.contains("hello from outside"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_offset_past_end_returns_empty_content() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("short.txt");
+        std::fs::write(&file_path, "a\nb\nc\n").unwrap();
+
+        let tool = ReadFileTool::new();
+        let ctx = JobContext::default();
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "path": file_path.to_str().unwrap(),
+                    "offset": 400_u64,
+                    "limit": 400_u64
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.result["content"].as_str().unwrap(), "");
+        assert_eq!(result.result["total_lines"].as_u64().unwrap(), 3);
+        assert_eq!(result.result["lines_shown"].as_u64().unwrap(), 0);
     }
 
     #[tokio::test]

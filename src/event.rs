@@ -25,6 +25,7 @@ pub enum EventKind {
     ModelResponse,
     ToolCall,
     ToolResult,
+    AwaitingUser,
     OutboundMessage,
     Error,
 }

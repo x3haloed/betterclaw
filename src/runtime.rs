@@ -20,7 +20,7 @@ use crate::model::{
 use crate::settings::RetentionSettings;
 use crate::settings::RuntimeSettings;
 use crate::thread::Thread;
-use crate::tool::{ToolInvocation, ToolRegistry, ToolResult};
+use crate::tool::{ToolContext, ToolInvocation, ToolRegistry, ToolResult};
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
 
@@ -70,6 +70,24 @@ pub struct TracePruneReport {
 }
 
 impl Runtime {
+    fn parse_tool_control(output: &Value) -> Option<ToolControl> {
+        let control = output
+            .get("control")
+            .and_then(|value| value.get("__betterclaw_control"))
+            .or_else(|| output.get("__betterclaw_control"))?;
+        let kind = control.get("kind")?.as_str()?;
+        let payload = control.get("payload")?;
+        match kind {
+            "message" => Some(ToolControl::Message {
+                content: payload.get("content")?.as_str()?.to_string(),
+            }),
+            "ask_user" => Some(ToolControl::AskUser {
+                question: payload.get("question")?.as_str()?.to_string(),
+            }),
+            _ => None,
+        }
+    }
+
     pub async fn new(db: Db) -> Result<Self, RuntimeError> {
         Self::with_model_engine(db, ModelEngine::stub(StubModelEngine), "local-debug-model").await
     }
@@ -417,7 +435,8 @@ impl Runtime {
         .await?;
 
         let mut request = initial_request;
-        let (final_response, last_trace_id) = loop {
+        let mut outbound_messages = Vec::new();
+        let (final_response, last_trace_id, final_status) = loop {
             let exchange = self
                 .run_and_record_exchange(&turn, &thread, &event.agent_id, &event.channel, request)
                 .await?;
@@ -461,6 +480,7 @@ impl Runtime {
                         .map(strip_reasoning_tags)
                         .unwrap_or_default(),
                     trace_id,
+                    TurnStatus::Succeeded,
                 );
             }
 
@@ -468,7 +488,7 @@ impl Runtime {
                 .execute_tool_calls(&turn, &thread, &workspace, exchange.tool_calls)
                 .await
             {
-                Ok(messages) => messages,
+                Ok(outcome) => outcome,
                 Err(error) => {
                     self.update_turn_and_publish(
                         &thread.id,
@@ -488,44 +508,47 @@ impl Runtime {
                     return Err(error);
                 }
             };
-            conversation.extend(continuation_messages);
+            if !continuation_messages.outbound_messages.is_empty() {
+                for content in &continuation_messages.outbound_messages {
+                    self.record_outbound_and_publish(&turn, &thread, content).await?;
+                }
+                outbound_messages.extend(continuation_messages.outbound_messages.clone());
+            }
+            if let Some(question) = continuation_messages.ask_user_question {
+                break (question, trace_id, TurnStatus::AwaitingUser);
+            }
+            conversation.extend(continuation_messages.continuation_messages);
             request = self.build_model_request(conversation.clone(), true, &settings);
         };
 
         self.update_turn_and_publish(
             &thread.id,
             &turn.id,
-            TurnStatus::Succeeded,
+            final_status.clone(),
             Some(final_response.clone()),
             None,
         )
         .await?;
-        let outbound = OutboundMessage {
-            id: Uuid::new_v4().to_string(),
-            turn_id: turn.id.clone(),
-            thread_id: thread.id.clone(),
-            channel: thread.channel.clone(),
-            external_thread_id: thread.external_thread_id.clone(),
-            content: final_response.clone(),
-            created_at: Utc::now(),
-        };
-        self.db
-            .record_outbound_message(&outbound)
-            .await
-            .map_err(RuntimeError::from)?;
-        self.append_event_and_publish(
-            &turn.id,
-            &thread.id,
-            EventKind::OutboundMessage,
-            json!({ "content": outbound.content }),
-        )
-        .await?;
+        if final_status == TurnStatus::AwaitingUser {
+            self.append_event_and_publish(
+                &turn.id,
+                &thread.id,
+                EventKind::AwaitingUser,
+                json!({ "question": final_response }),
+            )
+            .await?;
+        }
+        self.record_outbound_and_publish(&turn, &thread, &final_response)
+            .await?;
+        outbound_messages.push(final_response.clone());
 
         Ok(TurnOutcome {
             thread,
             turn_id: turn.id,
             response: final_response,
             trace_id: last_trace_id,
+            status: final_status,
+            outbound_messages,
         })
     }
 
@@ -792,10 +815,19 @@ impl Runtime {
         thread: &Thread,
         workspace: &Workspace,
         tool_calls: Vec<ReducedToolCall>,
-    ) -> Result<Vec<ModelMessage>, RuntimeError> {
+    ) -> Result<ToolExecutionOutcome, RuntimeError> {
         let mut assistant_tool_calls = Vec::new();
         let mut continuation_messages = Vec::new();
+        let mut outbound_messages = Vec::new();
+        let mut ask_user_question = None;
         let mut batch = Vec::new();
+        let tool_context = ToolContext::new(
+            workspace.clone(),
+            thread.id.clone(),
+            thread.external_thread_id.clone(),
+            thread.channel.clone(),
+            self.db(),
+        );
 
         for tool_call in tool_calls {
             let arguments = tool_call.arguments_json.clone().ok_or_else(|| {
@@ -837,12 +869,22 @@ impl Runtime {
 
         let executions = batch.iter().map(|(tool_call, _, arguments)| {
             self.tools
-                .execute(&tool_call.name, arguments.clone(), workspace)
+                .execute(&tool_call.name, arguments.clone(), &tool_context)
         });
         let outputs = join_all(executions).await;
 
         for ((tool_call, invocation, _arguments), output) in batch.into_iter().zip(outputs) {
             let output = output?;
+            if let Some(control) = Self::parse_tool_control(&output) {
+                match control {
+                    ToolControl::Message { content } => outbound_messages.push(content),
+                    ToolControl::AskUser { question } => {
+                        if ask_user_question.is_none() {
+                            ask_user_question = Some(question);
+                        }
+                    }
+                }
+            }
             let result = ToolResult {
                 invocation_id: invocation.id.clone(),
                 tool_name: tool_call.name.clone(),
@@ -875,7 +917,39 @@ impl Runtime {
             tool_call_id: None,
         }];
         messages.extend(continuation_messages);
-        Ok(messages)
+        Ok(ToolExecutionOutcome {
+            continuation_messages: messages,
+            outbound_messages,
+            ask_user_question,
+        })
+    }
+
+    async fn record_outbound_and_publish(
+        &self,
+        turn: &Turn,
+        thread: &Thread,
+        content: &str,
+    ) -> Result<(), RuntimeError> {
+        let outbound = OutboundMessage {
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn.id.clone(),
+            thread_id: thread.id.clone(),
+            channel: thread.channel.clone(),
+            external_thread_id: thread.external_thread_id.clone(),
+            content: content.to_string(),
+            created_at: Utc::now(),
+        };
+        self.db
+            .record_outbound_message(&outbound)
+            .await
+            .map_err(RuntimeError::from)?;
+        self.append_event_and_publish(
+            &turn.id,
+            &thread.id,
+            EventKind::OutboundMessage,
+            json!({ "content": outbound.content }),
+        )
+        .await
     }
 
     async fn append_event_and_publish(
@@ -931,6 +1005,20 @@ pub struct TurnOutcome {
     pub turn_id: String,
     pub response: String,
     pub trace_id: String,
+    pub status: TurnStatus,
+    pub outbound_messages: Vec<String>,
+}
+
+struct ToolExecutionOutcome {
+    continuation_messages: Vec<ModelMessage>,
+    outbound_messages: Vec<String>,
+    ask_user_question: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum ToolControl {
+    Message { content: String },
+    AskUser { question: String },
 }
 
 #[cfg(test)]
@@ -1013,6 +1101,31 @@ mod tests {
             .count();
         assert_eq!(tool_call_events, 2);
         assert_eq!(tool_result_events, 2);
+    }
+
+    #[tokio::test]
+    async fn ask_user_tool_marks_turn_as_awaiting_user() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("ask-user.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-ask-user",
+                "/tool ask_user {\"question\":\"Which branch should I use?\"}",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status, TurnStatus::AwaitingUser);
+        assert_eq!(outcome.response, "Which branch should I use?");
+        assert_eq!(outcome.outbound_messages, vec!["Which branch should I use?".to_string()]);
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        assert!(timeline.iter().any(|event| event.kind == EventKind::AwaitingUser));
     }
 
     #[tokio::test]

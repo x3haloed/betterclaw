@@ -213,12 +213,17 @@ impl DiscordChannel {
             }
         };
 
-        if outcome.response.trim().is_empty() {
+        if outcome.outbound_messages.iter().all(|content| content.trim().is_empty()) {
             return Ok(());
         }
 
-        self.send_text_reply(&message.channel_id, &outcome.response)
-            .await
+        for outbound in &outcome.outbound_messages {
+            if outbound.trim().is_empty() {
+                continue;
+            }
+            self.send_text_reply(&message.channel_id, outbound).await?;
+        }
+        Ok(())
     }
 
     fn parse_inbound_message(

@@ -18,6 +18,7 @@ pub struct Turn {
 pub enum TurnStatus {
     Pending,
     Running,
+    AwaitingUser,
     Succeeded,
     Failed,
 }

@@ -901,6 +901,7 @@ fn turn_status_string(status: &TurnStatus) -> String {
     match status {
         TurnStatus::Pending => "pending",
         TurnStatus::Running => "running",
+        TurnStatus::AwaitingUser => "awaiting_user",
         TurnStatus::Succeeded => "succeeded",
         TurnStatus::Failed => "failed",
     }
@@ -911,6 +912,7 @@ fn turn_status_from_string(value: &str) -> TurnStatus {
     match value {
         "pending" => TurnStatus::Pending,
         "running" => TurnStatus::Running,
+        "awaiting_user" => TurnStatus::AwaitingUser,
         "succeeded" => TurnStatus::Succeeded,
         "failed" => TurnStatus::Failed,
         _ => TurnStatus::Failed,

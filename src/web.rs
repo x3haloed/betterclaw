@@ -207,6 +207,8 @@ struct PostMessageResponse {
     turn_id: String,
     response: String,
     trace_id: String,
+    status: crate::turn::TurnStatus,
+    outbound_messages: Vec<String>,
 }
 
 async fn post_message(
@@ -222,6 +224,8 @@ async fn post_message(
         turn_id: outcome.turn_id,
         response: outcome.response,
         trace_id: outcome.trace_id,
+        status: outcome.status,
+        outbound_messages: outcome.outbound_messages,
     }))
 }
 
@@ -238,6 +242,8 @@ struct ReplayTurnResponse {
     turn_id: String,
     response: String,
     trace_id: String,
+    status: crate::turn::TurnStatus,
+    outbound_messages: Vec<String>,
 }
 
 async fn replay_turn(
@@ -250,6 +256,8 @@ async fn replay_turn(
         turn_id: outcome.turn_id,
         response: outcome.response,
         trace_id: outcome.trace_id,
+        status: outcome.status,
+        outbound_messages: outcome.outbound_messages,
     }))
 }
 

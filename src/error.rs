@@ -16,6 +16,8 @@ pub enum RuntimeError {
     InvalidToolParameters { tool: String, reason: String },
     #[error("tool execution failed for '{tool}': {reason}")]
     ToolExecution { tool: String, reason: String },
+    #[error("turn is waiting for user input")]
+    AwaitingUserInput,
     #[error("model parse failed: {0}")]
     ModelParse(String),
     #[error(transparent)]

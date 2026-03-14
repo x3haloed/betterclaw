@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
+use futures_util::future::join_all;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -11,8 +12,9 @@ use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::{
-    ModelEngine, ModelExchangeRequest, ModelMessage, ModelTrace, OpenAiChatCompletionsConfig,
-    OpenAiChatCompletionsEngine, StubModelEngine, TraceDetail, TraceOutcome,
+    ModelEngine, ModelExchangeRequest, ModelExchangeResult, ModelMessage, ModelToolCallMessage,
+    ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsConfig,
+    OpenAiChatCompletionsEngine, ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome,
 };
 use crate::thread::Thread;
 use crate::tool::{ToolInvocation, ToolRegistry, ToolResult};
@@ -177,35 +179,40 @@ impl Runtime {
             .await
             .map_err(RuntimeError::from)?;
 
-        let model_request = self.build_model_request(&thread, &turn).await?;
+        let mut conversation = self.build_conversation_history(&thread, &turn).await?;
+        let initial_request = self.build_model_request(conversation.clone(), true);
         self.db
             .append_event(
                 &turn.id,
                 &thread.id,
                 EventKind::ContextAssembled,
                 &json!({
-                    "message_count": model_request.messages.len(),
-                    "tool_count": model_request.tools.len(),
-                    "model": model_request.model,
-                    "stream": model_request.stream,
+                    "message_count": initial_request.messages.len(),
+                    "tool_count": initial_request.tools.len(),
+                    "model": initial_request.model,
+                    "stream": initial_request.stream,
                 }),
             )
             .await
             .map_err(RuntimeError::from)?;
 
-        let exchange = match self.model_engine.run(model_request).await {
-            Ok(exchange) => exchange,
-            Err(error) => {
-                self.record_trace(&turn, &thread, &event.agent_id, &event.channel, error.exchange())
-                    .await?;
-                self.append_model_events(&turn, &thread, error.exchange()).await?;
+        let mut request = initial_request;
+        let (final_response, last_trace_id) = loop {
+            let exchange = self
+                .run_and_record_exchange(&turn, &thread, &event.agent_id, &event.channel, request)
+                .await?;
+            let trace = self
+                .record_trace(&turn, &thread, &event.agent_id, &event.channel, &exchange)
+                .await?;
+            let trace_id = trace.id;
+
+            if exchange.outcome != TraceOutcome::Ok {
+                let error = exchange
+                    .error_summary
+                    .clone()
+                    .unwrap_or_else(|| "model exchange failed".to_string());
                 self.db
-                    .update_turn(
-                        &turn.id,
-                        TurnStatus::Failed,
-                        None,
-                        error.exchange().error_summary.as_deref(),
-                    )
+                    .update_turn(&turn.id, TurnStatus::Failed, None, Some(&error))
                     .await
                     .map_err(RuntimeError::from)?;
                 self.db
@@ -213,50 +220,28 @@ impl Runtime {
                         &turn.id,
                         &thread.id,
                         EventKind::Error,
-                        &json!({ "message": error.to_string() }),
+                        &json!({ "message": error }),
                     )
                     .await
                     .map_err(RuntimeError::from)?;
-                return Err(RuntimeError::ModelEngine(error));
+                return Err(RuntimeError::ModelParse(
+                    exchange
+                        .error_summary
+                        .unwrap_or_else(|| "model exchange failed".to_string()),
+                ));
             }
+
+            if exchange.tool_calls.is_empty() {
+                break (exchange.content.unwrap_or_default(), trace_id);
+            }
+
+            let continuation_messages = self
+                .execute_tool_calls(&turn, &thread, &workspace, exchange.tool_calls)
+                .await?;
+            conversation.extend(continuation_messages);
+            request = self.build_model_request(conversation.clone(), true);
         };
 
-        self.append_model_events(&turn, &thread, &exchange).await?;
-        let trace = self
-            .record_trace(&turn, &thread, &event.agent_id, &event.channel, &exchange)
-            .await?;
-
-        if exchange.outcome != TraceOutcome::Ok {
-            let error = exchange
-                .error_summary
-                .clone()
-                .unwrap_or_else(|| "model exchange failed".to_string());
-            self.db
-                .update_turn(&turn.id, TurnStatus::Failed, None, Some(&error))
-                .await
-                .map_err(RuntimeError::from)?;
-            self.db
-                .append_event(
-                    &turn.id,
-                    &thread.id,
-                    EventKind::Error,
-                    &json!({ "message": error }),
-                )
-                .await
-                .map_err(RuntimeError::from)?;
-            return Err(RuntimeError::ModelParse(
-                exchange
-                    .error_summary
-                    .unwrap_or_else(|| "model exchange failed".to_string()),
-            ));
-        }
-
-        let final_response = if exchange.tool_calls.is_empty() {
-            exchange.content.unwrap_or_default()
-        } else {
-            self.execute_tool_calls(&turn, &thread, &workspace, exchange.tool_calls)
-                .await?
-        };
         self.db
             .update_turn(&turn.id, TurnStatus::Succeeded, Some(&final_response), None)
             .await
@@ -288,15 +273,15 @@ impl Runtime {
             thread,
             turn_id: turn.id,
             response: final_response,
-            trace_id: trace.id,
+            trace_id: last_trace_id,
         })
     }
 
-    async fn build_model_request(
+    async fn build_conversation_history(
         &self,
         thread: &Thread,
         turn: &Turn,
-    ) -> Result<ModelExchangeRequest, RuntimeError> {
+    ) -> Result<Vec<ModelMessage>, RuntimeError> {
         let mut messages = Vec::new();
         for prior_turn in self.list_thread_turns(&thread.id).await? {
             if prior_turn.id == turn.id {
@@ -304,36 +289,94 @@ impl Runtime {
             }
             messages.push(ModelMessage {
                 role: "user".to_string(),
-                content: prior_turn.user_message,
+                content: Some(prior_turn.user_message),
+                tool_calls: None,
+                tool_call_id: None,
             });
             if let Some(assistant_message) = prior_turn.assistant_message {
                 messages.push(ModelMessage {
                     role: "assistant".to_string(),
-                    content: assistant_message,
+                    content: Some(assistant_message),
+                    tool_calls: None,
+                    tool_call_id: None,
                 });
             }
         }
         messages.push(ModelMessage {
             role: "user".to_string(),
-            content: turn.user_message.clone(),
+            content: Some(turn.user_message.clone()),
+            tool_calls: None,
+            tool_call_id: None,
         });
-        Ok(ModelExchangeRequest {
+        Ok(messages)
+    }
+
+    fn build_model_request(
+        &self,
+        messages: Vec<ModelMessage>,
+        allow_tools: bool,
+    ) -> ModelExchangeRequest {
+        ModelExchangeRequest {
             model: self.model_name.clone(),
             messages,
-            tools: self.tool_definitions(),
+            tools: if allow_tools {
+                self.tool_definitions()
+            } else {
+                Vec::new()
+            },
             temperature: Some(0.2),
             max_tokens: Some(1024),
             stream: true,
             response_format: None,
             extra: json!({}),
-        })
+        }
+    }
+
+    async fn run_and_record_exchange(
+        &self,
+        turn: &Turn,
+        thread: &Thread,
+        agent_id: &str,
+        channel: &str,
+        request: ModelExchangeRequest,
+    ) -> Result<ModelExchangeResult, RuntimeError> {
+        match self.model_engine.run(request).await {
+            Ok(exchange) => {
+                self.append_model_events(turn, thread, &exchange).await?;
+                Ok(exchange)
+            }
+            Err(error) => {
+                self.record_trace(turn, thread, agent_id, channel, error.exchange())
+                    .await?;
+                self.append_model_events(turn, thread, error.exchange()).await?;
+                self.db
+                    .update_turn(
+                        &turn.id,
+                        TurnStatus::Failed,
+                        None,
+                        error.exchange().error_summary.as_deref(),
+                    )
+                    .await
+                    .map_err(RuntimeError::from)?;
+                self.db
+                    .append_event(
+                        &turn.id,
+                        &thread.id,
+                        EventKind::Error,
+                        &json!({ "message": error.to_string() }),
+                    )
+                    .await
+                    .map_err(RuntimeError::from)?;
+                Err(RuntimeError::ModelEngine(error))
+            }
+        }
     }
 
     async fn append_model_events(
         &self,
         turn: &Turn,
         thread: &Thread,
-        exchange: &crate::model::ModelExchangeResult,
+        exchange: &ModelExchangeResult,
     ) -> Result<(), RuntimeError> {
         self.db
             .append_event(
@@ -355,6 +398,7 @@ impl Runtime {
                     "finish_reason": exchange.finish_reason,
                     "outcome": exchange.outcome,
                     "error_summary": exchange.error_summary,
+                    "tool_call_count": exchange.tool_calls.len(),
                 }),
             )
             .await
@@ -402,7 +446,7 @@ impl Runtime {
         thread: &Thread,
         agent_id: &str,
         channel: &str,
-        exchange: &crate::model::ModelExchangeResult,
+        exchange: &ModelExchangeResult,
     ) -> Result<ModelTrace, RuntimeError> {
         let request_blob = self
             .db
@@ -476,9 +520,12 @@ impl Runtime {
         turn: &Turn,
         thread: &Thread,
         workspace: &Workspace,
-        tool_calls: Vec<crate::model::ReducedToolCall>,
-    ) -> Result<String, RuntimeError> {
-        let mut parts = Vec::new();
+        tool_calls: Vec<ReducedToolCall>,
+    ) -> Result<Vec<ModelMessage>, RuntimeError> {
+        let mut assistant_tool_calls = Vec::new();
+        let mut continuation_messages = Vec::new();
+        let mut batch = Vec::new();
+
         for tool_call in tool_calls {
             let arguments = tool_call.arguments_json.clone().ok_or_else(|| {
                 RuntimeError::ModelParse(format!(
@@ -508,10 +555,25 @@ impl Runtime {
                 )
                 .await
                 .map_err(RuntimeError::from)?;
-            let output = self
-                .tools
-                .execute(&tool_call.name, arguments, workspace)
-                .await?;
+            assistant_tool_calls.push(ModelToolCallMessage {
+                id: tool_call.id.clone(),
+                kind: "function".to_string(),
+                function: ModelToolFunctionMessage {
+                    name: tool_call.name.clone(),
+                    arguments: tool_call.arguments_text.clone(),
+                },
+            });
+            batch.push((tool_call, invocation, arguments));
+        }
+
+        let executions = batch.iter().map(|(tool_call, _, arguments)| {
+            self.tools
+                .execute(&tool_call.name, arguments.clone(), workspace)
+        });
+        let outputs = join_all(executions).await;
+
+        for ((tool_call, invocation, _arguments), output) in batch.into_iter().zip(outputs) {
+            let output = output?;
             let result = ToolResult {
                 invocation_id: invocation.id.clone(),
                 tool_name: tool_call.name.clone(),
@@ -531,9 +593,22 @@ impl Runtime {
                 )
                 .await
                 .map_err(RuntimeError::from)?;
-            parts.push(format!("{} => {}", tool_call.name, output));
+            continuation_messages.push(ModelMessage {
+                role: "tool".to_string(),
+                content: Some(output.to_string()),
+                tool_calls: None,
+                tool_call_id: Some(tool_call.id),
+            });
         }
-        Ok(parts.join("\n"))
+
+        let mut messages = vec![ModelMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(assistant_tool_calls),
+            tool_call_id: None,
+        }];
+        messages.extend(continuation_messages);
+        Ok(messages)
     }
 }
 
@@ -551,6 +626,7 @@ mod tests {
     use super::Runtime;
     use crate::channel::InboundEvent;
     use crate::db::Db;
+    use crate::event::EventKind;
 
     #[tokio::test]
     async fn thread_resolution_is_stable() {
@@ -568,5 +644,58 @@ mod tests {
             .unwrap();
 
         assert_eq!(first.thread.id, second.thread.id);
+    }
+
+    #[tokio::test]
+    async fn tool_calls_continue_to_a_followup_model_response() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("test.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-tools",
+                "/tool echo {\"message\":\"hi\"}",
+            ))
+            .await
+            .unwrap();
+
+        assert!(outcome.response.contains("\"message\":\"hi\""));
+        let traces = runtime.list_turn_traces(&outcome.turn_id).await.unwrap();
+        assert_eq!(traces.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn parallel_tool_calls_continue_in_one_batch() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("test.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-parallel-tools",
+                "/tool-batch [{\"name\":\"echo\",\"arguments\":{\"message\":\"one\"}},{\"name\":\"echo\",\"arguments\":{\"message\":\"two\"}}]",
+            ))
+            .await
+            .unwrap();
+
+        assert!(outcome.response.contains("\"message\":\"one\""));
+        assert!(outcome.response.contains("\"message\":\"two\""));
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        let tool_call_events = timeline
+            .iter()
+            .filter(|event| event.kind == EventKind::ToolCall)
+            .count();
+        let tool_result_events = timeline
+            .iter()
+            .filter(|event| event.kind == EventKind::ToolResult)
+            .count();
+        assert_eq!(tool_call_events, 2);
+        assert_eq!(tool_result_events, 2);
     }
 }

@@ -13,7 +13,26 @@ use crate::model::{ModelEvent, RawModelTrace, TraceOutcome};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMessage {
     pub role: String,
-    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ModelToolCallMessage>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelToolCallMessage {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: ModelToolFunctionMessage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelToolFunctionMessage {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

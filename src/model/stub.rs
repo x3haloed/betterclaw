@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::model::{
@@ -21,8 +21,14 @@ impl ModelRunner for StubModelEngine {
         let last_message = request
             .messages
             .last()
-            .map(|message| message.content.clone())
+            .and_then(|message| message.content.clone())
             .unwrap_or_default();
+        let tool_messages = request
+            .messages
+            .iter()
+            .filter(|message| message.role == "tool")
+            .filter_map(|message| message.content.clone())
+            .collect::<Vec<_>>();
         let raw_request = json!({
             "model": request.model,
             "messages": request.messages,
@@ -35,7 +41,63 @@ impl ModelRunner for StubModelEngine {
         accumulator.push(&events[0]);
 
         let mut response_body = json!({});
-        if let Some(rest) = last_message.strip_prefix("/tool ") {
+        if let Some(rest) = last_message.strip_prefix("/tool-batch ") {
+            let parsed_calls: Vec<Value> = serde_json::from_str(rest).unwrap_or_default();
+            let mut tool_events = Vec::new();
+            let mut tool_call_payloads = Vec::new();
+            for (index, call) in parsed_calls.iter().enumerate() {
+                let tool_name = call
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let args = call
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}))
+                    .to_string();
+                let key = index.to_string();
+                let tool_id = Uuid::new_v4().to_string();
+                tool_events.extend([
+                    ModelEvent::ToolCallStarted {
+                        key: key.clone(),
+                        id: Some(tool_id.clone()),
+                    },
+                    ModelEvent::ToolCallNameDelta {
+                        key: key.clone(),
+                        text: tool_name.clone(),
+                    },
+                    ModelEvent::ToolCallArgumentsDelta {
+                        key: key.clone(),
+                        text: args.clone(),
+                    },
+                    ModelEvent::ToolCallFinished { key },
+                ]);
+                tool_call_payloads.push(json!({
+                    "id": tool_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": args,
+                    }
+                }));
+            }
+            tool_events.push(ModelEvent::Completed {
+                finish_reason: Some("tool_calls".to_string()),
+            });
+            response_body = json!({
+                "choices": [{
+                    "message": {
+                        "tool_calls": tool_call_payloads
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            });
+            for event in tool_events {
+                accumulator.push(&event);
+                events.push(event);
+            }
+        } else if let Some(rest) = last_message.strip_prefix("/tool ") {
             let mut parts = rest.splitn(2, ' ');
             let tool_name = parts.next().unwrap_or_default();
             let args = parts.next().unwrap_or("{}");
@@ -84,7 +146,11 @@ impl ModelRunner for StubModelEngine {
             } else {
                 format!(" ({} tools available)", request.tools.len())
             };
-            let text = format!("Echo: {last_message}{tool_hint}");
+            let text = if tool_messages.is_empty() {
+                format!("Echo: {last_message}{tool_hint}")
+            } else {
+                format!("Echo: {}{tool_hint}", tool_messages.join("\n"))
+            };
             response_body = json!({
                 "choices": [{
                     "message": { "content": text },

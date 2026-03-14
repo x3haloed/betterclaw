@@ -17,6 +17,6 @@ pub use trace::{RawFrame, RawModelTrace, TraceBlob, TraceDetail, TraceOutcome};
 pub use transport::TransportKind;
 pub use types::{
     ModelEngine, ModelEngineError, ModelExchangeRequest, ModelExchangeResult, ModelMessage,
-    ModelRunner, ModelUsage, ReducedToolCall,
+    ModelRunner, ModelToolCallMessage, ModelToolFunctionMessage, ModelUsage, ReducedToolCall,
 };
 pub use trace::ModelTrace;

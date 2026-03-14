@@ -54,6 +54,47 @@ button {
   background: #d8c7a5;
 }
 
+.trace-chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.trace-chain-arrow {
+  color: #675843;
+  font-weight: 700;
+}
+
+.trace-chip {
+  border: 1px solid #b8ad99;
+  background: #fbf5e8;
+  color: #1e1f1c;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.trace-chip.active {
+  background: #d8c7a5;
+}
+
+.trace-chip-step,
+.trace-chip-outcome {
+  display: block;
+}
+
+.trace-chip-step {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.trace-chip-outcome {
+  margin-top: 4px;
+  font-weight: 700;
+}
+
 .main {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
@@ -137,8 +178,18 @@ textarea {
 }
 
 .trace-primary,
-.trace-secondary {
+.trace-secondary,
+.trace-step,
+.trace-preview {
   display: block;
+}
+
+.trace-step {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #675843;
+  margin-bottom: 6px;
 }
 
 .trace-primary {
@@ -149,6 +200,12 @@ textarea {
   margin-top: 4px;
   font-size: 12px;
   color: #675843;
+}
+
+.trace-preview {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .trace-summary {

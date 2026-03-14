@@ -14,6 +14,7 @@ use crate::agent::Agent;
 use crate::channel::{ChannelCursor, OutboundMessage};
 use crate::event::{Event, EventKind};
 use crate::model::{ModelTrace, TraceBlob, TraceDetail};
+use crate::settings::RuntimeSettings;
 use crate::thread::Thread;
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
@@ -124,6 +125,18 @@ impl Db {
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS runtime_settings (
+                agent_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                temperature REAL NOT NULL,
+                max_tokens INTEGER NOT NULL,
+                stream INTEGER NOT NULL,
+                allow_tools INTEGER NOT NULL,
+                max_history_turns INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         "#,
         )
         .await?;
@@ -145,6 +158,75 @@ impl Db {
         conn.execute(
             "INSERT OR IGNORE INTO agents (id, display_name, workspace_id, created_at) VALUES (?, ?, ?, ?)",
             params![agent.id.clone(), agent.display_name.clone(), workspace.id.clone(), now],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn seed_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO runtime_settings (agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                settings.agent_id.clone(),
+                settings.model.clone(),
+                settings.system_prompt.clone(),
+                settings.temperature as f64,
+                settings.max_tokens as i64,
+                if settings.stream { 1 } else { 0 },
+                if settings.allow_tools { 1 } else { 0 },
+                settings.max_history_turns as i64,
+                settings.created_at.to_rfc3339(),
+                settings.updated_at.to_rfc3339(),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn load_runtime_settings(&self, agent_id: &str) -> Result<Option<RuntimeSettings>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
+                params![agent_id.to_string()],
+            )
+            .await?;
+        Ok(if let Some(row) = rows.next().await? {
+            Some(RuntimeSettings {
+                agent_id: row.get(0)?,
+                model: row.get(1)?,
+                system_prompt: row.get(2)?,
+                temperature: row.get::<f64>(3)? as f32,
+                max_tokens: row.get::<i64>(4)? as u32,
+                stream: row.get::<i64>(5)? != 0,
+                allow_tools: row.get::<i64>(6)? != 0,
+                max_history_turns: row.get::<i64>(7)? as u32,
+                created_at: parse_datetime(&row.get::<String>(8)?)?,
+                updated_at: parse_datetime(&row.get::<String>(9)?)?,
+            })
+        } else {
+            None
+        })
+    }
+
+    pub async fn update_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO runtime_settings (agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
+            params![
+                settings.agent_id.clone(),
+                settings.model.clone(),
+                settings.system_prompt.clone(),
+                settings.temperature as f64,
+                settings.max_tokens as i64,
+                if settings.stream { 1 } else { 0 },
+                if settings.allow_tools { 1 } else { 0 },
+                settings.max_history_turns as i64,
+                settings.agent_id.clone(),
+                settings.created_at.to_rfc3339(),
+                settings.updated_at.to_rfc3339(),
+            ],
         )
         .await?;
         Ok(())

@@ -6,6 +6,7 @@ pub mod event;
 pub mod logging;
 pub mod model;
 pub mod runtime;
+pub mod settings;
 pub mod thread;
 pub mod tool;
 pub mod turn;

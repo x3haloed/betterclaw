@@ -13,6 +13,43 @@
           <h1>BetterClaw</h1>
           <button id="new-thread">New Thread</button>
         </div>
+        <section class="settings-panel">
+          <div class="settings-header">Runtime</div>
+          <form id="settings-form" class="settings-form">
+            <label class="settings-field">
+              <span>Model</span>
+              <input id="settings-model" type="text" />
+            </label>
+            <label class="settings-field">
+              <span>System Prompt</span>
+              <textarea id="settings-system-prompt"></textarea>
+            </label>
+            <div class="settings-row">
+              <label class="settings-field">
+                <span>Temperature</span>
+                <input id="settings-temperature" type="number" min="0" max="2" step="0.1" />
+              </label>
+              <label class="settings-field">
+                <span>Max Tokens</span>
+                <input id="settings-max-tokens" type="number" min="1" step="1" />
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-field">
+                <span>History Turns</span>
+                <input id="settings-max-history-turns" type="number" min="0" step="1" />
+              </label>
+              <div class="settings-toggles">
+                <label><input id="settings-stream" type="checkbox" /> Stream</label>
+                <label><input id="settings-allow-tools" type="checkbox" /> Allow tools</label>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <button type="submit">Save Settings</button>
+              <span id="settings-status" class="settings-status"></span>
+            </div>
+          </form>
+        </section>
         <div id="thread-list" class="thread-list"></div>
       </aside>
       <main class="main">

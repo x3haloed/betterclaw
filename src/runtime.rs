@@ -17,6 +17,7 @@ use crate::model::{
     ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsConfig,
     OpenAiChatCompletionsEngine, ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome,
 };
+use crate::settings::RuntimeSettings;
 use crate::thread::Thread;
 use crate::tool::{ToolInvocation, ToolRegistry, ToolResult};
 use crate::turn::{Turn, TurnStatus};
@@ -27,7 +28,6 @@ pub struct Runtime {
     db: Arc<Db>,
     tools: ToolRegistry,
     model_engine: Arc<ModelEngine>,
-    model_name: String,
     updates: broadcast::Sender<RuntimeUpdate>,
 }
 
@@ -89,7 +89,11 @@ impl Runtime {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         );
         let agent = Agent::new("default", "Default Agent", workspace.id.clone());
+        let default_settings = RuntimeSettings::with_defaults("default", model_name.into());
         db.seed_default_agent(&agent, &workspace)
+            .await
+            .map_err(RuntimeError::from)?;
+        db.seed_runtime_settings(&default_settings)
             .await
             .map_err(RuntimeError::from)?;
 
@@ -97,13 +101,45 @@ impl Runtime {
             db,
             tools: ToolRegistry::with_defaults(),
             model_engine: Arc::new(model_engine),
-            model_name: model_name.into(),
             updates,
         })
     }
 
     pub fn db(&self) -> Arc<Db> {
         Arc::clone(&self.db)
+    }
+
+    pub async fn get_runtime_settings(
+        &self,
+        agent_id: &str,
+    ) -> Result<RuntimeSettings, RuntimeError> {
+        self.db
+            .load_runtime_settings(agent_id)
+            .await
+            .map_err(RuntimeError::from)?
+            .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.to_string()))
+    }
+
+    pub async fn update_runtime_settings(
+        &self,
+        mut settings: RuntimeSettings,
+    ) -> Result<RuntimeSettings, RuntimeError> {
+        let existing = self
+            .db
+            .load_runtime_settings(&settings.agent_id)
+            .await
+            .map_err(RuntimeError::from)?;
+        let created_at = existing
+            .as_ref()
+            .map(|item| item.created_at)
+            .unwrap_or(settings.created_at);
+        settings.created_at = created_at;
+        settings.updated_at = Utc::now();
+        self.db
+            .update_runtime_settings(&settings)
+            .await
+            .map_err(RuntimeError::from)?;
+        Ok(settings)
     }
 
     pub fn subscribe_updates(&self) -> broadcast::Receiver<RuntimeUpdate> {
@@ -186,6 +222,7 @@ impl Runtime {
             .resolve_thread(&event.agent_id, &event.channel, &event.external_thread_id)
             .await?;
         let workspace = self.workspace_for_agent(&event.agent_id).await?;
+        let settings = self.get_runtime_settings(&event.agent_id).await?;
         let turn = self
             .db
             .create_turn(&thread.id, &event.content)
@@ -207,8 +244,10 @@ impl Runtime {
         )
         .await?;
 
-        let mut conversation = self.build_conversation_history(&thread, &turn).await?;
-        let initial_request = self.build_model_request(conversation.clone(), true);
+        let mut conversation = self
+            .build_conversation_history(&thread, &turn, &settings)
+            .await?;
+        let initial_request = self.build_model_request(conversation.clone(), true, &settings);
         self.append_event_and_publish(
             &turn.id,
             &thread.id,
@@ -267,7 +306,7 @@ impl Runtime {
                 .execute_tool_calls(&turn, &thread, &workspace, exchange.tool_calls)
                 .await?;
             conversation.extend(continuation_messages);
-            request = self.build_model_request(conversation.clone(), true);
+            request = self.build_model_request(conversation.clone(), true, &settings);
         };
 
         self.update_turn_and_publish(
@@ -311,19 +350,37 @@ impl Runtime {
         &self,
         thread: &Thread,
         turn: &Turn,
+        settings: &RuntimeSettings,
     ) -> Result<Vec<ModelMessage>, RuntimeError> {
         let mut messages = Vec::new();
-        for prior_turn in self.list_thread_turns(&thread.id).await? {
-            if prior_turn.id == turn.id {
-                continue;
-            }
+        if !settings.system_prompt.trim().is_empty() {
             messages.push(ModelMessage {
-                role: "user".to_string(),
-                content: Some(prior_turn.user_message),
+                role: "system".to_string(),
+                content: Some(settings.system_prompt.clone()),
                 tool_calls: None,
                 tool_call_id: None,
             });
-            if let Some(assistant_message) = prior_turn.assistant_message {
+        }
+        let prior_turns = self
+            .list_thread_turns(&thread.id)
+            .await?
+            .into_iter()
+            .filter(|prior_turn| prior_turn.id != turn.id)
+            .collect::<Vec<_>>();
+        let history_limit = settings.max_history_turns as usize;
+        let history_slice = if prior_turns.len() > history_limit {
+            &prior_turns[prior_turns.len() - history_limit..]
+        } else {
+            &prior_turns[..]
+        };
+        for prior_turn in history_slice {
+            messages.push(ModelMessage {
+                role: "user".to_string(),
+                content: Some(prior_turn.user_message.clone()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+            if let Some(assistant_message) = prior_turn.assistant_message.clone() {
                 messages.push(ModelMessage {
                     role: "assistant".to_string(),
                     content: Some(assistant_message),
@@ -345,18 +402,19 @@ impl Runtime {
         &self,
         messages: Vec<ModelMessage>,
         allow_tools: bool,
+        settings: &RuntimeSettings,
     ) -> ModelExchangeRequest {
         ModelExchangeRequest {
-            model: self.model_name.clone(),
+            model: settings.model.clone(),
             messages,
-            tools: if allow_tools {
+            tools: if allow_tools && settings.allow_tools {
                 self.tool_definitions()
             } else {
                 Vec::new()
             },
-            temperature: Some(0.2),
-            max_tokens: Some(1024),
-            stream: true,
+            temperature: Some(settings.temperature),
+            max_tokens: Some(settings.max_tokens),
+            stream: settings.stream,
             response_format: None,
             extra: json!({}),
         }

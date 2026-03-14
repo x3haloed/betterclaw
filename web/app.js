@@ -4,6 +4,7 @@ const state = {
   selectedTurnTraceDetails: [],
   stream: null,
   refreshTimer: null,
+  runtimeSettings: null,
 };
 
 async function request(path, options = {}) {
@@ -110,6 +111,22 @@ async function loadThreads() {
   if (!state.selectedThreadId && threads[0]) {
     await selectThread(threads[0].id);
   }
+}
+
+function renderSettings(settings) {
+  state.runtimeSettings = settings;
+  document.getElementById("settings-model").value = settings.model;
+  document.getElementById("settings-system-prompt").value = settings.system_prompt;
+  document.getElementById("settings-temperature").value = settings.temperature;
+  document.getElementById("settings-max-tokens").value = settings.max_tokens;
+  document.getElementById("settings-max-history-turns").value = settings.max_history_turns;
+  document.getElementById("settings-stream").checked = settings.stream;
+  document.getElementById("settings-allow-tools").checked = settings.allow_tools;
+}
+
+async function loadSettings() {
+  const settings = await request("/api/settings/runtime");
+  renderSettings(settings);
 }
 
 function scheduleThreadRefresh() {
@@ -243,6 +260,30 @@ document.getElementById("composer").onsubmit = async (event) => {
   await selectThread(state.selectedThreadId);
 };
 
-loadThreads().catch((error) => {
+document.getElementById("settings-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("settings-status");
+  status.textContent = "Saving...";
+  const payload = {
+    model: document.getElementById("settings-model").value.trim(),
+    system_prompt: document.getElementById("settings-system-prompt").value,
+    temperature: Number(document.getElementById("settings-temperature").value),
+    max_tokens: Number(document.getElementById("settings-max-tokens").value),
+    max_history_turns: Number(document.getElementById("settings-max-history-turns").value),
+    stream: document.getElementById("settings-stream").checked,
+    allow_tools: document.getElementById("settings-allow-tools").checked,
+  };
+  const settings = await request("/api/settings/runtime", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  renderSettings(settings);
+  status.textContent = "Saved";
+  setTimeout(() => {
+    if (status.textContent === "Saved") status.textContent = "";
+  }, 1500);
+};
+
+Promise.all([loadSettings(), loadThreads()]).catch((error) => {
   document.getElementById("timeline").textContent = error.message;
 });

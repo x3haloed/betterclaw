@@ -23,6 +23,10 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
         .route("/", get(index))
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
+        .route(
+            "/api/settings/runtime",
+            get(get_runtime_settings).put(update_runtime_settings),
+        )
         .route("/api/threads", get(list_threads).post(create_thread))
         .route("/api/threads/{thread_id}", get(get_thread))
         .route("/api/threads/{thread_id}/messages", post(post_message))
@@ -52,6 +56,43 @@ async fn list_threads(
     State(runtime): State<Arc<Runtime>>,
 ) -> Result<Json<Vec<crate::thread::Thread>>, ApiError> {
     Ok(Json(runtime.list_threads().await?))
+}
+
+async fn get_runtime_settings(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<crate::settings::RuntimeSettings>, ApiError> {
+    Ok(Json(runtime.get_runtime_settings("default").await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRuntimeSettingsRequest {
+    model: String,
+    system_prompt: String,
+    temperature: f32,
+    max_tokens: u32,
+    stream: bool,
+    allow_tools: bool,
+    max_history_turns: u32,
+}
+
+async fn update_runtime_settings(
+    State(runtime): State<Arc<Runtime>>,
+    Json(payload): Json<UpdateRuntimeSettingsRequest>,
+) -> Result<Json<crate::settings::RuntimeSettings>, ApiError> {
+    let current = runtime.get_runtime_settings("default").await?;
+    let updated = crate::settings::RuntimeSettings {
+        agent_id: current.agent_id,
+        model: payload.model,
+        system_prompt: payload.system_prompt,
+        temperature: payload.temperature,
+        max_tokens: payload.max_tokens,
+        stream: payload.stream,
+        allow_tools: payload.allow_tools,
+        max_history_turns: payload.max_history_turns,
+        created_at: current.created_at,
+        updated_at: current.updated_at,
+    };
+    Ok(Json(runtime.update_runtime_settings(updated).await?))
 }
 
 #[derive(Debug, Deserialize)]

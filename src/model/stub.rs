@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::model::{
-    ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest, ModelExchangeResult,
-    ModelRunner, RawModelTrace, TraceOutcome, TransportKind,
+    AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest,
+    ModelExchangeResult, ModelRunner, RawModelTrace, ReasoningMode, TraceOutcome, TransportKind,
 };
 
 #[derive(Debug, Default)]
@@ -41,7 +41,8 @@ impl ModelRunner for StubModelEngine {
         });
 
         let mut events = vec![ModelEvent::ExchangeStarted];
-        let mut accumulator = ExchangeAccumulator::new(request.model.clone());
+        let mut accumulator =
+            ExchangeAccumulator::new(request.model.clone(), AccumulationMode::FullSnapshot);
         accumulator.push(&events[0]);
 
         let mut response_body = json!({});
@@ -162,7 +163,7 @@ impl ModelRunner for StubModelEngine {
                 }]
             });
             for event in [
-                ModelEvent::TextDelta { text },
+                ModelEvent::TextSnapshot { text },
                 ModelEvent::Completed {
                     finish_reason: Some("stop".to_string()),
                 },
@@ -182,6 +183,8 @@ impl ModelRunner for StubModelEngine {
                 raw_frames: Vec::new(),
                 provider_request_id: Some(Uuid::new_v4().to_string()),
                 transport_kind: TransportKind::HttpJson,
+                accumulation_mode: AccumulationMode::FullSnapshot,
+                reasoning_mode: ReasoningMode::Unknown,
             },
             events,
         );

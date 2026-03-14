@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::model::TransportKind;
+use crate::model::{AccumulationMode, ReasoningMode, TransportKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceBlob {
@@ -34,6 +34,8 @@ pub struct RawModelTrace {
     pub raw_frames: Vec<RawFrame>,
     pub provider_request_id: Option<String>,
     pub transport_kind: TransportKind,
+    pub accumulation_mode: AccumulationMode,
+    pub reasoning_mode: ReasoningMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

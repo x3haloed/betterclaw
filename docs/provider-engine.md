@@ -86,6 +86,166 @@ That means Copilot fits naturally into an event-normalizing engine, but poorly i
 Reference:
 - [`/Users/chad/Repos/copilot-sdk/nodejs/src/session.ts`](\/Users/chad/Repos/copilot-sdk/nodejs/src/session.ts)
 
+## Streaming Accumulation Modes
+
+Different providers and SDKs expose streaming output with meaningfully different accumulation contracts.
+
+This matters a lot because the runtime must know whether to:
+
+- append the new chunk
+- replace the current full text with the latest snapshot
+- wait for a final canonical payload
+
+And it also matters for reasoning-tag handling such as `<think>...</think>`.
+
+### 1. Delta-only streaming
+
+Each event contains only the new fragment since the previous event.
+
+Examples:
+
+- Copilot SDK `assistant.message_delta` and `assistant.reasoning_delta`
+- Qwen-Agent `delta_stream=True` mode
+
+References:
+- [`/Users/chad/Repos/copilot-sdk/dotnet/README.md`](\/Users/chad/Repos/copilot-sdk/dotnet/README.md)
+- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py)
+
+Runtime rule:
+
+- accumulate by appending deltas
+
+Reasoning-tag implication:
+
+- `<think>` parsing must be stateful across chunk boundaries
+- per-chunk stripping is unsafe because tags can be split across frames
+
+### 2. Full-so-far snapshot streaming
+
+Each yielded item contains the full accumulated response up to that point, not just the new fragment.
+
+Examples:
+
+- Qwen-Agent `stream=True, delta_stream=False`
+- Qwen DashScope `_full_stream_output`
+
+References:
+- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/base.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/base.py)
+- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py)
+- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/qwen_dashscope.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/qwen_dashscope.py)
+
+Runtime rule:
+
+- treat each update as a replacement snapshot, not an append
+
+Reasoning-tag implication:
+
+- easiest streaming mode for `<think>` handling
+- the runtime can re-parse the full snapshot each update and derive clean text + reasoning repeatedly
+
+### 3. Delta stream plus final canonical full event
+
+The stream emits incremental deltas while generating, then later emits a final event containing the complete finished content.
+
+Examples:
+
+- Copilot SDK:
+  - `assistant.message_delta`
+  - `assistant.reasoning_delta`
+  - final `assistant.message`
+  - final `assistant.reasoning`
+
+References:
+- [`/Users/chad/Repos/copilot-sdk/dotnet/README.md`](\/Users/chad/Repos/copilot-sdk/dotnet/README.md)
+- [`/Users/chad/Repos/copilot-sdk/.github/copilot-instructions.md`](\/Users/chad/Repos/copilot-sdk/.github/copilot-instructions.md)
+
+Runtime rule:
+
+- append deltas during streaming
+- reconcile against the final canonical message when it arrives
+
+Reasoning-tag implication:
+
+- live reasoning stripping may be approximate
+- final reconciliation can produce the exact clean text and exact reasoning content
+
+### 4. Inline reasoning inside normal content
+
+Some providers do not expose reasoning in a separate field and instead return:
+
+- `<think>reasoning</think>final answer`
+
+Examples:
+
+- Qwen-Agent documents this as `thought_in_content=True`
+- OpenClaw has dedicated utilities to strip and split thinking-tagged text
+
+References:
+- [`/Users/chad/Repos/Qwen-Agent/README.md`](\/Users/chad/Repos/Qwen-Agent/README.md)
+- [`/Users/chad/Repos/openclaw/src/agents/pi-embedded-utils.ts`](\/Users/chad/Repos/openclaw/src/agents/pi-embedded-utils.ts)
+- [`/Users/chad/Repos/openclaw/src/agents/pi-embedded-subscribe.ts`](\/Users/chad/Repos/openclaw/src/agents/pi-embedded-subscribe.ts)
+
+Runtime rule:
+
+- never assume `content` is safe to deliver as-is
+- parse and split reasoning-tagged content before storing visible assistant text
+
+Reasoning-tag implication:
+
+- this is the primary case that requires `<think>` parsing and stripping
+
+### 5. Structured reasoning separate from visible content
+
+Some providers expose reasoning in a first-class field separate from visible assistant text.
+
+Examples:
+
+- Qwen-Agent OpenAI-compatible handling of `reasoning_content`
+- Copilot SDK reasoning-specific event stream
+- OpenClaw reasoning visibility model
+
+References:
+- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/schema.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/schema.py)
+- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py)
+- [`/Users/chad/Repos/openclaw/src/auto-reply/thinking.ts`](\/Users/chad/Repos/openclaw/src/auto-reply/thinking.ts)
+
+Runtime rule:
+
+- reasoning and visible content should be modeled separately from the start
+
+Reasoning-tag implication:
+
+- `<think>` stripping should still exist as a fallback safety net, but not as the primary mechanism
+
+## Design Consequences
+
+The provider engine should treat accumulation mode as explicit provider metadata, not as an accidental detail.
+
+At minimum, BetterClaw should classify stream decoders by:
+
+- `Delta`
+- `FullSnapshot`
+- `DeltaPlusFinal`
+
+And separately classify reasoning shape by:
+
+- `Structured`
+- `InlineTagged`
+- `Unknown`
+
+That gives the runtime enough information to:
+
+- assemble the stream correctly
+- avoid duplicate text from snapshot streams
+- reconcile with canonical final payloads when available
+- handle `<think>` parsing only where it is actually needed
+
+This also explains why a single generic “append all chunks” rule is wrong.
+
+- It breaks full-snapshot streams by duplicating content.
+- It breaks inline reasoning streams by leaking `<think>` blocks.
+- It underuses structured reasoning providers by collapsing reasoning into content.
+
 ## Design Decision
 
 BetterClaw should use:

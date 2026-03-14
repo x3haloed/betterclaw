@@ -7,7 +7,11 @@ use crate::model::ModelUsage;
 pub enum ModelEvent {
     ExchangeStarted,
     TextDelta { text: String },
+    TextSnapshot { text: String },
+    TextFinal { text: String },
     ReasoningDelta { text: String },
+    ReasoningSnapshot { text: String },
+    ReasoningFinal { text: String },
     ToolCallStarted { key: String, id: Option<String> },
     ToolCallNameDelta { key: String, text: String },
     ToolCallArgumentsDelta { key: String, text: String },

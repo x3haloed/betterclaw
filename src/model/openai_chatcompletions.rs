@@ -8,8 +8,9 @@ use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
 
 use crate::model::{
-    ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest, ModelExchangeResult,
-    ModelRunner, ModelUsage, RawFrame, RawModelTrace, TransportKind, TraceOutcome,
+    AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest,
+    ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace, ReasoningMode,
+    TraceOutcome, TransportKind,
 };
 
 #[derive(Debug, Clone)]
@@ -74,8 +75,12 @@ impl OpenAiChatCompletionsEngine {
         payload
     }
 
-    fn new_accumulator(&self, model: &str) -> ExchangeAccumulator {
-        ExchangeAccumulator::new(model.to_string())
+    fn new_accumulator(
+        &self,
+        model: &str,
+        accumulation_mode: AccumulationMode,
+    ) -> ExchangeAccumulator {
+        ExchangeAccumulator::new(model.to_string(), accumulation_mode)
     }
 
     fn base_raw_trace(
@@ -83,6 +88,8 @@ impl OpenAiChatCompletionsEngine {
         request_body: Value,
         provider_request_id: Option<String>,
         transport_kind: TransportKind,
+        accumulation_mode: AccumulationMode,
+        reasoning_mode: ReasoningMode,
     ) -> RawModelTrace {
         RawModelTrace {
             request_body,
@@ -90,6 +97,8 @@ impl OpenAiChatCompletionsEngine {
             raw_frames: Vec::new(),
             provider_request_id,
             transport_kind,
+            accumulation_mode,
+            reasoning_mode,
         }
     }
 
@@ -110,6 +119,8 @@ impl OpenAiChatCompletionsEngine {
         transport_kind: TransportKind,
         message: String,
         response_body: Option<Value>,
+        accumulation_mode: AccumulationMode,
+        reasoning_mode: ReasoningMode,
     ) -> ModelExchangeResult {
         let completed_at = Utc::now();
         ModelExchangeResult {
@@ -127,6 +138,8 @@ impl OpenAiChatCompletionsEngine {
                 raw_frames: Vec::new(),
                 provider_request_id,
                 transport_kind,
+                accumulation_mode,
+                reasoning_mode,
             },
             normalized_events: vec![
                 ModelEvent::ExchangeStarted,
@@ -149,9 +162,10 @@ impl OpenAiChatCompletionsEngine {
     ) -> ModelExchangeResult {
         let completed_at = Utc::now();
         let mut events = vec![ModelEvent::ExchangeStarted];
-        let mut accumulator = self.new_accumulator(&request.model);
+        let mut accumulator = self.new_accumulator(&request.model, AccumulationMode::FullSnapshot);
         accumulator.push(&events[0]);
-        for event in decode_openai_response_json(&response_body) {
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        for event in decode_openai_response_json(&response_body, &mut reasoning_mode) {
             accumulator.push(&event);
             events.push(event);
         }
@@ -164,6 +178,8 @@ impl OpenAiChatCompletionsEngine {
                 raw_frames: Vec::new(),
                 provider_request_id,
                 transport_kind: TransportKind::HttpJson,
+                accumulation_mode: AccumulationMode::FullSnapshot,
+                reasoning_mode,
             },
             events,
         )
@@ -177,9 +193,15 @@ impl OpenAiChatCompletionsEngine {
         provider_request_id: Option<String>,
         response: reqwest::Response,
     ) -> Result<ModelExchangeResult, ModelEngineError> {
-        let mut raw_trace =
-            self.base_raw_trace(request_body, provider_request_id, TransportKind::HttpSse);
-        let mut accumulator = self.new_accumulator(&request.model);
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let mut raw_trace = self.base_raw_trace(
+            request_body,
+            provider_request_id,
+            TransportKind::HttpSse,
+            AccumulationMode::Delta,
+            reasoning_mode,
+        );
+        let mut accumulator = self.new_accumulator(&request.model, AccumulationMode::Delta);
         let mut events = vec![ModelEvent::ExchangeStarted];
         accumulator.push(&events[0]);
 
@@ -192,12 +214,7 @@ impl OpenAiChatCompletionsEngine {
                 Ok(chunk) => chunk,
                 Err(error) => {
                     let completed_at = Utc::now();
-                    let exchange = accumulator.build(
-                        started_at,
-                        completed_at,
-                        raw_trace,
-                        events,
-                    );
+                    let exchange = accumulator.build(started_at, completed_at, raw_trace, events);
                     return Err(ModelEngineError::TransportFailure {
                         message: error.to_string(),
                         exchange: Box::new(ModelExchangeResult {
@@ -225,12 +242,8 @@ impl OpenAiChatCompletionsEngine {
                         events.push(ModelEvent::Failed {
                             message: format!("failed to parse SSE frame: {error}"),
                         });
-                        let exchange = accumulator.build(
-                            started_at,
-                            completed_at,
-                            raw_trace,
-                            events,
-                        );
+                        let exchange =
+                            accumulator.build(started_at, completed_at, raw_trace, events);
                         return Err(ModelEngineError::TransportFailure {
                             message: format!("failed to parse SSE frame: {error}"),
                             exchange: Box::new(ModelExchangeResult {
@@ -246,7 +259,7 @@ impl OpenAiChatCompletionsEngine {
                     data: frame_value.clone(),
                 });
                 frame_index += 1;
-                for event in decode_openai_stream_frame(&frame_value) {
+                for event in decode_openai_stream_frame(&frame_value, &mut reasoning_mode) {
                     accumulator.push(&event);
                     events.push(event);
                 }
@@ -254,11 +267,14 @@ impl OpenAiChatCompletionsEngine {
         }
 
         if !saw_done {
-            let event = ModelEvent::Completed { finish_reason: None };
+            let event = ModelEvent::Completed {
+                finish_reason: None,
+            };
             accumulator.push(&event);
             events.push(event);
         }
         let completed_at = Utc::now();
+        raw_trace.reasoning_mode = reasoning_mode;
         Ok(accumulator.build(started_at, completed_at, raw_trace, events))
     }
 }
@@ -290,6 +306,8 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
                     TransportKind::HttpJson,
                     error.to_string(),
                     None,
+                    AccumulationMode::FullSnapshot,
+                    ReasoningMode::Unknown,
                 );
                 return Err(ModelEngineError::TransportFailure {
                     message: error.to_string(),
@@ -302,7 +320,8 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
         if response.status() != StatusCode::OK {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
-            let body_json = serde_json::from_str(&body_text).unwrap_or_else(|_| json!({ "body": body_text }));
+            let body_json =
+                serde_json::from_str(&body_text).unwrap_or_else(|_| json!({ "body": body_text }));
             let exchange = self.reduced_error_result(
                 &request,
                 started_at,
@@ -311,6 +330,8 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
                 TransportKind::HttpJson,
                 format!("provider returned HTTP {status}"),
                 Some(body_json),
+                AccumulationMode::FullSnapshot,
+                ReasoningMode::Unknown,
             );
             return Err(ModelEngineError::HttpFailure {
                 status,
@@ -323,20 +344,24 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
             self.decode_sse_response(&request, started_at, payload, provider_request_id, response)
                 .await
         } else {
-            let response_body: Value = response.json().await.map_err(|error| {
-                ModelEngineError::TransportFailure {
-                    message: error.to_string(),
-                    exchange: Box::new(self.reduced_error_result(
-                        &request,
-                        started_at,
-                        payload.clone(),
-                        provider_request_id.clone(),
-                        TransportKind::HttpJson,
-                        error.to_string(),
-                        None,
-                    )),
-                }
-            })?;
+            let response_body: Value =
+                response
+                    .json()
+                    .await
+                    .map_err(|error| ModelEngineError::TransportFailure {
+                        message: error.to_string(),
+                        exchange: Box::new(self.reduced_error_result(
+                            &request,
+                            started_at,
+                            payload.clone(),
+                            provider_request_id.clone(),
+                            TransportKind::HttpJson,
+                            error.to_string(),
+                            None,
+                            AccumulationMode::FullSnapshot,
+                            ReasoningMode::Unknown,
+                        )),
+                    })?;
             Ok(self.decode_json_response(
                 &request,
                 started_at,
@@ -348,7 +373,10 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
     }
 }
 
-fn decode_openai_response_json(response_body: &Value) -> Vec<ModelEvent> {
+fn decode_openai_response_json(
+    response_body: &Value,
+    reasoning_mode: &mut ReasoningMode,
+) -> Vec<ModelEvent> {
     let mut events = Vec::new();
     let choice = response_body
         .get("choices")
@@ -360,8 +388,28 @@ fn decode_openai_response_json(response_body: &Value) -> Vec<ModelEvent> {
             .and_then(|message| message.get("content"))
             .and_then(Value::as_str)
         {
-            events.push(ModelEvent::TextDelta {
+            if content.contains("<think")
+                || content.contains("<thinking")
+                || content.contains("<thought")
+            {
+                *reasoning_mode = ReasoningMode::InlineTagged;
+            }
+            events.push(ModelEvent::TextSnapshot {
                 text: content.to_string(),
+            });
+        }
+        if let Some(reasoning) = choice
+            .get("message")
+            .and_then(|message| {
+                message
+                    .get("reasoning")
+                    .or_else(|| message.get("reasoning_content"))
+            })
+            .and_then(Value::as_str)
+        {
+            *reasoning_mode = ReasoningMode::Structured;
+            events.push(ModelEvent::ReasoningSnapshot {
+                text: reasoning.to_string(),
             });
         }
         if let Some(tool_calls) = choice
@@ -420,7 +468,10 @@ fn decode_openai_response_json(response_body: &Value) -> Vec<ModelEvent> {
     events
 }
 
-fn decode_openai_stream_frame(frame: &Value) -> Vec<ModelEvent> {
+fn decode_openai_stream_frame(
+    frame: &Value,
+    reasoning_mode: &mut ReasoningMode,
+) -> Vec<ModelEvent> {
     let mut events = Vec::new();
     if let Some(usage) = frame.get("usage") {
         events.push(ModelEvent::UsageUpdated {
@@ -433,6 +484,13 @@ fn decode_openai_stream_frame(frame: &Value) -> Vec<ModelEvent> {
     for choice in choices {
         if let Some(delta) = choice.get("delta") {
             if let Some(content) = delta.get("content").and_then(Value::as_str) {
+                if *reasoning_mode != ReasoningMode::Structured
+                    && (content.contains("<think")
+                        || content.contains("<thinking")
+                        || content.contains("<thought"))
+                {
+                    *reasoning_mode = ReasoningMode::InlineTagged;
+                }
                 events.push(ModelEvent::TextDelta {
                     text: content.to_string(),
                 });
@@ -442,6 +500,7 @@ fn decode_openai_stream_frame(frame: &Value) -> Vec<ModelEvent> {
                 .or_else(|| delta.get("reasoning_content"))
                 .and_then(Value::as_str)
             {
+                *reasoning_mode = ReasoningMode::Structured;
                 events.push(ModelEvent::ReasoningDelta {
                     text: reasoning.to_string(),
                 });
@@ -519,16 +578,10 @@ fn decode_usage(usage: &Value) -> ModelUsage {
 
 fn take_sse_block(buffer: &str) -> Option<(String, String)> {
     if let Some(index) = buffer.find("\n\n") {
-        return Some((
-            buffer[..index].to_string(),
-            buffer[index + 2..].to_string(),
-        ));
+        return Some((buffer[..index].to_string(), buffer[index + 2..].to_string()));
     }
     if let Some(index) = buffer.find("\r\n\r\n") {
-        return Some((
-            buffer[..index].to_string(),
-            buffer[index + 4..].to_string(),
-        ));
+        return Some((buffer[..index].to_string(), buffer[index + 4..].to_string()));
     }
     None
 }
@@ -548,29 +601,33 @@ mod tests {
     use serde_json::json;
 
     use super::{decode_openai_response_json, decode_openai_stream_frame};
-    use crate::model::ModelEvent;
+    use crate::model::{ModelEvent, ReasoningMode};
 
     #[test]
     fn decodes_non_streaming_tool_calls() {
-        let events = decode_openai_response_json(&json!({
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "id": "call-1",
-                        "type": "function",
-                        "function": {
-                            "name": "echo",
-                            "arguments": "{\"message\":\"hi\"}"
-                        }
-                    }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": {
-                "prompt_tokens": 12,
-                "completion_tokens": 3
-            }
-        }));
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let events = decode_openai_response_json(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "arguments": "{\"message\":\"hi\"}"
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 3
+                }
+            }),
+            &mut reasoning_mode,
+        );
         assert!(events.iter().any(|event| matches!(
             event,
             ModelEvent::ToolCallArgumentsDelta { text, .. } if text == "{\"message\":\"hi\"}"
@@ -579,20 +636,24 @@ mod tests {
 
     #[test]
     fn decodes_streaming_tool_call_fragments() {
-        let events = decode_openai_stream_frame(&json!({
-            "choices": [{
-                "delta": {
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call-1",
-                        "function": {
-                            "name": "read_file",
-                            "arguments": "{\"path\":\"README.md\"}"
-                        }
-                    }]
-                }
-            }]
-        }));
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let events = decode_openai_stream_frame(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call-1",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": "{\"path\":\"README.md\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            &mut reasoning_mode,
+        );
         assert!(events.iter().any(|event| matches!(
             event,
             ModelEvent::ToolCallNameDelta { text, .. } if text == "read_file"
@@ -601,27 +662,34 @@ mod tests {
 
     #[test]
     fn streaming_tool_call_uses_index_for_followup_fragments() {
-        let first = decode_openai_stream_frame(&json!({
-            "choices": [{
-                "delta": {
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call-1",
-                        "function": { "name": "echo", "arguments": "" }
-                    }]
-                }
-            }]
-        }));
-        let second = decode_openai_stream_frame(&json!({
-            "choices": [{
-                "delta": {
-                    "tool_calls": [{
-                        "index": 0,
-                        "function": { "arguments": "{\"message\":\"hi\"}" }
-                    }]
-                }
-            }]
-        }));
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let first = decode_openai_stream_frame(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "id": "call-1",
+                            "function": { "name": "echo", "arguments": "" }
+                        }]
+                    }
+                }]
+            }),
+            &mut reasoning_mode,
+        );
+        let second = decode_openai_stream_frame(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "tool_calls": [{
+                            "index": 0,
+                            "function": { "arguments": "{\"message\":\"hi\"}" }
+                        }]
+                    }
+                }]
+            }),
+            &mut reasoning_mode,
+        );
         assert!(first.iter().any(|event| matches!(
             event,
             ModelEvent::ToolCallStarted { key, id } if key == "0" && id.as_deref() == Some("call-1")
@@ -629,6 +697,48 @@ mod tests {
         assert!(second.iter().any(|event| matches!(
             event,
             ModelEvent::ToolCallArgumentsDelta { key, text } if key == "0" && text == "{\"message\":\"hi\"}"
+        )));
+    }
+
+    #[test]
+    fn detects_inline_reasoning_in_non_streaming_content() {
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let events = decode_openai_response_json(
+            &json!({
+                "choices": [{
+                    "message": {
+                        "content": "<think>hidden</think>Visible"
+                    },
+                    "finish_reason": "stop"
+                }]
+            }),
+            &mut reasoning_mode,
+        );
+        assert_eq!(reasoning_mode, ReasoningMode::InlineTagged);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelEvent::TextSnapshot { text } if text == "<think>hidden</think>Visible"
+        )));
+    }
+
+    #[test]
+    fn detects_structured_reasoning_in_stream_frames() {
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let events = decode_openai_stream_frame(
+            &json!({
+                "choices": [{
+                    "delta": {
+                        "reasoning_content": "hidden",
+                        "content": "Visible"
+                    }
+                }]
+            }),
+            &mut reasoning_mode,
+        );
+        assert_eq!(reasoning_mode, ReasoningMode::Structured);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelEvent::ReasoningDelta { text } if text == "hidden"
         )));
     }
 }

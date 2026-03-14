@@ -114,13 +114,19 @@ impl DiscordChannel {
                 *seq.lock().await = Some(value);
             }
 
-            match payload.get("op").and_then(Value::as_u64).unwrap_or_default() {
+            match payload
+                .get("op")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+            {
                 10 => {
                     let interval_ms = payload
                         .get("d")
                         .and_then(|value| value.get("heartbeat_interval"))
                         .and_then(Value::as_u64)
-                        .ok_or_else(|| anyhow!("Discord hello payload missing heartbeat interval"))?;
+                        .ok_or_else(|| {
+                            anyhow!("Discord hello payload missing heartbeat interval")
+                        })?;
                     let identify = json!({
                         "op": 2,
                         "d": {
@@ -167,7 +173,12 @@ impl DiscordChannel {
                         .send(Message::Text(heartbeat.to_string().into()))
                         .map_err(|_| anyhow!("Discord gateway writer dropped"))?;
                 }
-                7 | 9 => return Err(anyhow!("Discord requested reconnect (op {})", payload["op"])),
+                7 | 9 => {
+                    return Err(anyhow!(
+                        "Discord requested reconnect (op {})",
+                        payload["op"]
+                    ));
+                }
                 0 => {
                     let event_type = payload.get("t").and_then(Value::as_str).unwrap_or_default();
                     if event_type == "MESSAGE_CREATE" {
@@ -194,8 +205,10 @@ impl DiscordChannel {
             Ok(outcome) => outcome,
             Err(error) => {
                 tracing::error!(error = %error, "Discord inbound turn failed");
-                let error_text = format!("I hit an internal error while handling that message.\n\n{error}");
-                self.send_text_reply(&message.channel_id, &error_text).await?;
+                let error_text =
+                    format!("I hit an internal error while handling that message.\n\n{error}");
+                self.send_text_reply(&message.channel_id, &error_text)
+                    .await?;
                 return Ok(());
             }
         };
@@ -204,7 +217,8 @@ impl DiscordChannel {
             return Ok(());
         }
 
-        self.send_text_reply(&message.channel_id, &outcome.response).await
+        self.send_text_reply(&message.channel_id, &outcome.response)
+            .await
     }
 
     fn parse_inbound_message(
@@ -229,7 +243,11 @@ impl DiscordChannel {
             .map(ToOwned::to_owned);
         if let Some(guild_id) = guild_id.as_deref() {
             if !self.config.allowed_guild_ids.is_empty()
-                && !self.config.allowed_guild_ids.iter().any(|entry| entry == guild_id)
+                && !self
+                    .config
+                    .allowed_guild_ids
+                    .iter()
+                    .any(|entry| entry == guild_id)
             {
                 return None;
             }
@@ -249,8 +267,11 @@ impl DiscordChannel {
             .get("content")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let normalized =
-            normalize_message_content(raw_content, bot_user_id, !is_dm && self.config.mention_only)?;
+        let normalized = normalize_message_content(
+            raw_content,
+            bot_user_id,
+            !is_dm && self.config.mention_only,
+        )?;
 
         let author_name = author
             .get("global_name")
@@ -267,7 +288,10 @@ impl DiscordChannel {
         let content = if is_dm {
             content
         } else {
-            format!("Discord(guild): {} ({}): {}", author_name, author_id, content)
+            format!(
+                "Discord(guild): {} ({}): {}",
+                author_name, author_id, content
+            )
         };
 
         Some(DiscordInboundMessage {
@@ -287,7 +311,10 @@ impl DiscordChannel {
         for chunk in split_for_discord(content) {
             let response = self
                 .client
-                .post(format!("{}/channels/{channel_id}/messages", self.config.api_base))
+                .post(format!(
+                    "{}/channels/{channel_id}/messages",
+                    self.config.api_base
+                ))
                 .header("Authorization", format!("Bot {}", self.config.bot_token))
                 .json(&json!({ "content": chunk }))
                 .send()
@@ -320,7 +347,10 @@ impl DiscordChannel {
             let body = response.text().await.unwrap_or_default();
             return Err(anyhow!("Discord /users/@me failed ({status}): {body}"));
         }
-        let payload: Value = response.json().await.context("parsing Discord /users/@me")?;
+        let payload: Value = response
+            .json()
+            .await
+            .context("parsing Discord /users/@me")?;
         payload
             .get("id")
             .and_then(Value::as_str)
@@ -341,7 +371,10 @@ impl DiscordChannel {
             let body = response.text().await.unwrap_or_default();
             return Err(anyhow!("Discord /gateway/bot failed ({status}): {body}"));
         }
-        let payload: Value = response.json().await.context("parsing Discord /gateway/bot")?;
+        let payload: Value = response
+            .json()
+            .await
+            .context("parsing Discord /gateway/bot")?;
         let base = payload
             .get("url")
             .and_then(Value::as_str)
@@ -375,7 +408,12 @@ fn parse_csv_env(name: &str) -> Vec<String> {
 fn parse_bool_env(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -387,7 +425,11 @@ fn discord_thread_key(channel_id: &str, is_dm: bool) -> String {
     }
 }
 
-fn normalize_message_content(raw: &str, bot_user_id: &str, require_mention: bool) -> Option<String> {
+fn normalize_message_content(
+    raw: &str,
+    bot_user_id: &str,
+    require_mention: bool,
+) -> Option<String> {
     let mention_a = format!("<@{bot_user_id}>");
     let mention_b = format!("<@!{bot_user_id}>");
     let mentioned = raw.contains(&mention_a) || raw.contains(&mention_b);
@@ -412,7 +454,10 @@ fn append_attachment_lines(content: String, attachments: Option<&Value>) -> Stri
     }
     let mut lines = Vec::new();
     for attachment in items {
-        let url = attachment.get("url").and_then(Value::as_str).unwrap_or_default();
+        let url = attachment
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if url.is_empty() {
             continue;
         }
@@ -448,10 +493,7 @@ mod tests {
 
     #[test]
     fn guild_messages_require_mention_when_enabled() {
-        assert_eq!(
-            normalize_message_content("hello there", "123", true),
-            None
-        );
+        assert_eq!(normalize_message_content("hello there", "123", true), None);
         assert_eq!(
             normalize_message_content("<@123> hello there", "123", true).as_deref(),
             Some("hello there")

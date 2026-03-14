@@ -4,11 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use betterclaw::channels::discord::{DiscordChannel, DiscordConfig};
 use betterclaw::db::Db;
 use betterclaw::logging;
 use betterclaw::runtime::Runtime;
 use betterclaw::web;
-use betterclaw::channels::discord::{DiscordChannel, DiscordConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {

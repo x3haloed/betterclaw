@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use serde_json::json;
 
 use crate::model::{
-    ModelEvent, ModelExchangeResult, ModelUsage, RawModelTrace, ReducedToolCall, TraceOutcome,
+    AccumulationMode, ModelEvent, ModelExchangeResult, ModelUsage, RawModelTrace, ReducedToolCall,
+    TraceOutcome, split_inline_reasoning,
 };
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,7 @@ struct PartialToolCall {
 
 pub struct ExchangeAccumulator {
     model: String,
+    accumulation_mode: AccumulationMode,
     text: String,
     reasoning: String,
     usage: ModelUsage,
@@ -26,9 +28,10 @@ pub struct ExchangeAccumulator {
 }
 
 impl ExchangeAccumulator {
-    pub fn new(model: impl Into<String>) -> Self {
+    pub fn new(model: impl Into<String>, accumulation_mode: AccumulationMode) -> Self {
         Self {
             model: model.into(),
+            accumulation_mode,
             text: String::new(),
             reasoning: String::new(),
             usage: ModelUsage::default(),
@@ -43,7 +46,11 @@ impl ExchangeAccumulator {
         match event {
             ModelEvent::ExchangeStarted => {}
             ModelEvent::TextDelta { text } => self.text.push_str(text),
+            ModelEvent::TextSnapshot { text } => self.text = text.clone(),
+            ModelEvent::TextFinal { text } => self.text = text.clone(),
             ModelEvent::ReasoningDelta { text } => self.reasoning.push_str(text),
+            ModelEvent::ReasoningSnapshot { text } => self.reasoning = text.clone(),
+            ModelEvent::ReasoningFinal { text } => self.reasoning = text.clone(),
             ModelEvent::ToolCallStarted { key, id } => {
                 self.ensure_tool_call(key, id.clone());
             }
@@ -51,7 +58,9 @@ impl ExchangeAccumulator {
                 self.ensure_tool_call(key, None).name.push_str(text);
             }
             ModelEvent::ToolCallArgumentsDelta { key, text } => {
-                self.ensure_tool_call(key, None).arguments_text.push_str(text);
+                self.ensure_tool_call(key, None)
+                    .arguments_text
+                    .push_str(text);
             }
             ModelEvent::ToolCallFinished { key } => {
                 self.ensure_tool_call(key, None).finished = true;
@@ -81,7 +90,9 @@ impl ExchangeAccumulator {
                 call.id = Some(id);
             }
         }
-        self.tool_calls.get_mut(key).expect("tool call should exist")
+        self.tool_calls
+            .get_mut(key)
+            .expect("tool call should exist")
     }
 
     pub fn build(
@@ -91,14 +102,19 @@ impl ExchangeAccumulator {
         raw_trace: RawModelTrace,
         normalized_events: Vec<ModelEvent>,
     ) -> ModelExchangeResult {
+        if self.accumulation_mode == AccumulationMode::DeltaPlusFinal {
+            // No-op today other than making the mode explicit in traces; final overwrite
+            // behavior is driven by TextFinal/ReasoningFinal events during accumulation.
+        }
         let mut reduced_tool_calls = Vec::new();
         for key in &self.tool_order {
             let Some(partial) = self.tool_calls.get(key) else {
                 continue;
             };
             if partial.name.trim().is_empty() {
-                self.errors
-                    .push(format!("tool call '{key}' completed without a function name"));
+                self.errors.push(format!(
+                    "tool call '{key}' completed without a function name"
+                ));
                 continue;
             }
             let arguments_json = if partial.arguments_text.trim().is_empty() {
@@ -126,12 +142,27 @@ impl ExchangeAccumulator {
             });
         }
 
+        let mut content = (!self.text.is_empty()).then_some(self.text);
+        let mut reasoning = (!self.reasoning.is_empty()).then_some(self.reasoning);
+        if let Some(text) = content.take() {
+            let (inline_reasoning, sanitized_content) = split_inline_reasoning(&text);
+            if let Some(inline_reasoning) = inline_reasoning {
+                reasoning = Some(match reasoning.take() {
+                    Some(existing) if !existing.trim().is_empty() => {
+                        format!("{}\n{}", existing.trim(), inline_reasoning)
+                    }
+                    _ => inline_reasoning,
+                });
+            }
+            content = (!sanitized_content.is_empty()).then_some(sanitized_content);
+        }
+
         ModelExchangeResult {
             model: self.model,
             request_started_at: started_at,
             request_completed_at: completed_at,
-            content: (!self.text.is_empty()).then_some(self.text),
-            reasoning: (!self.reasoning.is_empty()).then_some(self.reasoning),
+            content,
+            reasoning,
             tool_calls: reduced_tool_calls,
             usage: self.usage,
             finish_reason: self.finish_reason,
@@ -153,11 +184,11 @@ mod tests {
     use serde_json::json;
 
     use super::ExchangeAccumulator;
-    use crate::model::{ModelEvent, RawModelTrace, TransportKind, TraceOutcome};
+    use crate::model::{AccumulationMode, ModelEvent, RawModelTrace, TraceOutcome, TransportKind};
 
     #[test]
     fn assembles_fragmented_tool_calls() {
-        let mut accumulator = ExchangeAccumulator::new("test-model");
+        let mut accumulator = ExchangeAccumulator::new("test-model", AccumulationMode::Delta);
         let events = vec![
             ModelEvent::ExchangeStarted,
             ModelEvent::ToolCallStarted {
@@ -196,6 +227,8 @@ mod tests {
                 raw_frames: Vec::new(),
                 provider_request_id: None,
                 transport_kind: TransportKind::HttpSse,
+                accumulation_mode: AccumulationMode::Delta,
+                reasoning_mode: crate::model::ReasoningMode::Unknown,
             },
             events,
         );
@@ -203,12 +236,15 @@ mod tests {
         assert_eq!(result.outcome, TraceOutcome::Ok);
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "read_file");
-        assert_eq!(result.tool_calls[0].arguments_json, Some(json!({"path":"README.md"})));
+        assert_eq!(
+            result.tool_calls[0].arguments_json,
+            Some(json!({"path":"README.md"}))
+        );
     }
 
     #[test]
     fn preserves_invalid_json_without_fallback() {
-        let mut accumulator = ExchangeAccumulator::new("test-model");
+        let mut accumulator = ExchangeAccumulator::new("test-model", AccumulationMode::Delta);
         let events = vec![
             ModelEvent::ToolCallStarted {
                 key: "0".to_string(),
@@ -225,7 +261,9 @@ mod tests {
             ModelEvent::ToolCallFinished {
                 key: "0".to_string(),
             },
-            ModelEvent::Completed { finish_reason: None },
+            ModelEvent::Completed {
+                finish_reason: None,
+            },
         ];
         for event in &events {
             accumulator.push(event);
@@ -239,11 +277,118 @@ mod tests {
                 raw_frames: Vec::new(),
                 provider_request_id: None,
                 transport_kind: TransportKind::HttpJson,
+                accumulation_mode: AccumulationMode::Delta,
+                reasoning_mode: crate::model::ReasoningMode::Unknown,
             },
             events,
         );
         assert_eq!(result.outcome, TraceOutcome::ParseError);
         assert_eq!(result.tool_calls[0].arguments_json, None);
         assert_eq!(result.tool_calls[0].arguments_text, "{");
+    }
+
+    #[test]
+    fn promotes_inline_reasoning_tags_to_reasoning_field() {
+        let mut accumulator = ExchangeAccumulator::new("test-model", AccumulationMode::Delta);
+        let events = vec![
+            ModelEvent::TextDelta {
+                text: "<think>hidden</think>Visible".to_string(),
+            },
+            ModelEvent::Completed {
+                finish_reason: None,
+            },
+        ];
+        for event in &events {
+            accumulator.push(event);
+        }
+        let result = accumulator.build(
+            Utc::now(),
+            Utc::now(),
+            RawModelTrace {
+                request_body: json!({}),
+                response_body: None,
+                raw_frames: Vec::new(),
+                provider_request_id: None,
+                transport_kind: TransportKind::HttpJson,
+                accumulation_mode: AccumulationMode::Delta,
+                reasoning_mode: crate::model::ReasoningMode::Unknown,
+            },
+            events,
+        );
+        assert_eq!(result.content.as_deref(), Some("Visible"));
+        assert_eq!(result.reasoning.as_deref(), Some("hidden"));
+    }
+
+    #[test]
+    fn snapshot_events_replace_prior_text() {
+        let mut accumulator =
+            ExchangeAccumulator::new("test-model", AccumulationMode::FullSnapshot);
+        let events = vec![
+            ModelEvent::TextSnapshot {
+                text: "Hel".to_string(),
+            },
+            ModelEvent::TextSnapshot {
+                text: "Hello".to_string(),
+            },
+            ModelEvent::Completed {
+                finish_reason: None,
+            },
+        ];
+        for event in &events {
+            accumulator.push(event);
+        }
+        let result = accumulator.build(
+            Utc::now(),
+            Utc::now(),
+            RawModelTrace {
+                request_body: json!({}),
+                response_body: None,
+                raw_frames: Vec::new(),
+                provider_request_id: None,
+                transport_kind: TransportKind::HttpSse,
+                accumulation_mode: AccumulationMode::FullSnapshot,
+                reasoning_mode: crate::model::ReasoningMode::Unknown,
+            },
+            events,
+        );
+        assert_eq!(result.content.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn final_events_override_prior_delta_text() {
+        let mut accumulator =
+            ExchangeAccumulator::new("test-model", AccumulationMode::DeltaPlusFinal);
+        let events = vec![
+            ModelEvent::TextDelta {
+                text: "He".to_string(),
+            },
+            ModelEvent::TextDelta {
+                text: "llo??".to_string(),
+            },
+            ModelEvent::TextFinal {
+                text: "Hello".to_string(),
+            },
+            ModelEvent::Completed {
+                finish_reason: None,
+            },
+        ];
+        for event in &events {
+            accumulator.push(event);
+        }
+        let result = accumulator.build(
+            Utc::now(),
+            Utc::now(),
+            RawModelTrace {
+                request_body: json!({}),
+                response_body: None,
+                raw_frames: Vec::new(),
+                provider_request_id: None,
+                transport_kind: TransportKind::SessionStream,
+                accumulation_mode: AccumulationMode::DeltaPlusFinal,
+                reasoning_mode: crate::model::ReasoningMode::Unknown,
+            },
+            events,
+        );
+        assert_eq!(result.content.as_deref(), Some("Hello"));
     }
 }

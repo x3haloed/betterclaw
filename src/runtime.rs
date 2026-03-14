@@ -14,8 +14,8 @@ use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::{
     ModelEngine, ModelExchangeRequest, ModelExchangeResult, ModelMessage, ModelToolCallMessage,
-    ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsConfig,
-    OpenAiChatCompletionsEngine, ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome,
+    ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsConfig, OpenAiChatCompletionsEngine,
+    ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome, strip_reasoning_tags,
 };
 use crate::settings::RuntimeSettings;
 use crate::thread::Thread;
@@ -69,12 +69,7 @@ impl Runtime {
             base_url,
             ..OpenAiChatCompletionsConfig::default()
         })?;
-        Self::with_model_engine(
-            db,
-            ModelEngine::openai_chat_completions(engine),
-            model_name,
-        )
-        .await
+        Self::with_model_engine(db, ModelEngine::openai_chat_completions(engine), model_name).await
     }
 
     pub async fn with_model_engine(
@@ -299,12 +294,40 @@ impl Runtime {
             }
 
             if exchange.tool_calls.is_empty() {
-                break (exchange.content.unwrap_or_default(), trace_id);
+                break (
+                    exchange
+                        .content
+                        .as_deref()
+                        .map(strip_reasoning_tags)
+                        .unwrap_or_default(),
+                    trace_id,
+                );
             }
 
-            let continuation_messages = self
+            let continuation_messages = match self
                 .execute_tool_calls(&turn, &thread, &workspace, exchange.tool_calls)
-                .await?;
+                .await
+            {
+                Ok(messages) => messages,
+                Err(error) => {
+                    self.update_turn_and_publish(
+                        &thread.id,
+                        &turn.id,
+                        TurnStatus::Failed,
+                        None,
+                        Some(error.to_string()),
+                    )
+                    .await?;
+                    self.append_event_and_publish(
+                        &turn.id,
+                        &thread.id,
+                        EventKind::Error,
+                        json!({ "message": error.to_string() }),
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
             conversation.extend(continuation_messages);
             request = self.build_model_request(conversation.clone(), true, &settings);
         };
@@ -383,7 +406,7 @@ impl Runtime {
             if let Some(assistant_message) = prior_turn.assistant_message.clone() {
                 messages.push(ModelMessage {
                     role: "assistant".to_string(),
-                    content: Some(assistant_message),
+                    content: Some(strip_reasoning_tags(&assistant_message)),
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -436,7 +459,8 @@ impl Runtime {
             Err(error) => {
                 self.record_trace(turn, thread, agent_id, channel, error.exchange())
                     .await?;
-                self.append_model_events(turn, thread, error.exchange()).await?;
+                self.append_model_events(turn, thread, error.exchange())
+                    .await?;
                 self.update_turn_and_publish(
                     &thread.id,
                     &turn.id,
@@ -757,6 +781,7 @@ mod tests {
     use crate::channel::InboundEvent;
     use crate::db::Db;
     use crate::event::EventKind;
+    use crate::model::strip_reasoning_tags;
 
     #[tokio::test]
     async fn thread_resolution_is_stable() {
@@ -827,5 +852,22 @@ mod tests {
             .count();
         assert_eq!(tool_call_events, 2);
         assert_eq!(tool_result_events, 2);
+    }
+
+    #[tokio::test]
+    async fn assistant_messages_saved_without_reasoning_tags() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("history.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web("default", "thread-1", "Hello"))
+            .await
+            .unwrap();
+        assert!(!outcome.response.contains("<think>"));
+
+        let turns = runtime.list_thread_turns("thread-1").await.unwrap();
+        let assistant = turns[0].assistant_message.clone().unwrap();
+        assert_eq!(assistant, strip_reasoning_tags(&assistant));
     }
 }

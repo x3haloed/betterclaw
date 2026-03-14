@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod channel;
+pub mod channels;
 pub mod db;
 pub mod error;
 pub mod event;

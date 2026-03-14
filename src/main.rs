@@ -8,9 +8,11 @@ use betterclaw::db::Db;
 use betterclaw::logging;
 use betterclaw::runtime::Runtime;
 use betterclaw::web;
+use betterclaw::channels::discord::{DiscordChannel, DiscordConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     logging::init()?;
 
     let db_path = env::var("BETTERCLAW_DB_PATH")
@@ -26,6 +28,14 @@ async fn main() -> Result<()> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
 
     tracing::info!(db_path = %db_path.display(), %address, "Starting BetterClaw");
+
+    let _discord = if let Some(config) = DiscordConfig::from_env() {
+        tracing::info!("Starting Discord channel");
+        Some(DiscordChannel::new(Arc::clone(&runtime), config)?.spawn())
+    } else {
+        tracing::info!("Discord channel disabled (DISCORD_BOT_TOKEN not set)");
+        None
+    };
 
     let app = web::app(runtime);
     let listener = tokio::net::TcpListener::bind(address).await?;

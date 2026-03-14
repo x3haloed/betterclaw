@@ -17,7 +17,10 @@
       </aside>
       <main class="main">
         <section class="panel chat-panel">
-          <div id="thread-title" class="panel-title">No thread selected</div>
+          <div class="panel-title">
+            <span id="thread-title">No thread selected</span>
+            <span id="live-indicator" class="live-indicator" hidden>Live</span>
+          </div>
           <div id="timeline" class="timeline"></div>
           <form id="composer" class="composer">
             <textarea id="message-input" placeholder="Type a message or use /tool echo {&quot;message&quot;:&quot;hi&quot;}"></textarea>

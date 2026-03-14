@@ -2,6 +2,8 @@ const state = {
   selectedThreadId: null,
   selectedTraceId: null,
   selectedTurnTraceDetails: [],
+  stream: null,
+  refreshTimer: null,
 };
 
 async function request(path, options = {}) {
@@ -110,9 +112,47 @@ async function loadThreads() {
   }
 }
 
-async function selectThread(threadId) {
+function scheduleThreadRefresh() {
+  if (!state.selectedThreadId) return;
+  if (state.refreshTimer) {
+    clearTimeout(state.refreshTimer);
+  }
+  state.refreshTimer = setTimeout(() => {
+    state.refreshTimer = null;
+    selectThread(state.selectedThreadId, { preserveTrace: true }).catch((error) => {
+      document.getElementById("timeline").textContent = error.message;
+    });
+  }, 120);
+}
+
+function connectThreadStream(threadId) {
+  if (state.stream) {
+    state.stream.close();
+    state.stream = null;
+  }
+  document.getElementById("live-indicator").hidden = true;
+  if (!threadId) return;
+  const stream = new EventSource(`/api/threads/${threadId}/stream`);
+  document.getElementById("live-indicator").hidden = false;
+  stream.onmessage = () => {
+    scheduleThreadRefresh();
+  };
+  stream.onerror = () => {
+    document.getElementById("live-indicator").hidden = true;
+    stream.close();
+    if (state.selectedThreadId === threadId) {
+      setTimeout(() => connectThreadStream(threadId), 1000);
+    }
+  };
+  state.stream = stream;
+}
+
+async function selectThread(threadId, options = {}) {
   state.selectedThreadId = threadId;
-  state.selectedTraceId = null;
+  if (!options.preserveTrace) {
+    state.selectedTraceId = null;
+  }
+  connectThreadStream(threadId);
   const detail = await request(`/api/threads/${threadId}`);
   document.getElementById("thread-title").textContent = detail.thread.title;
 
@@ -127,7 +167,7 @@ async function selectThread(threadId) {
   }
 
   const lastTurn = detail.turns[detail.turns.length - 1];
-  await loadTraces(lastTurn?.id || null);
+  await loadTraces(lastTurn?.id || null, options);
   await loadThreads();
 }
 
@@ -146,7 +186,7 @@ async function selectTrace(traceId) {
   }
 }
 
-async function loadTraces(turnId) {
+async function loadTraces(turnId, options = {}) {
   const traceList = document.getElementById("trace-list");
   document.getElementById("trace-chain").innerHTML = "";
   traceList.innerHTML = "";
@@ -172,7 +212,12 @@ async function loadTraces(turnId) {
     traceList.appendChild(button);
   }
   if (details.length) {
-    await selectTrace(details[details.length - 1].trace.id);
+    const preferredTraceId =
+      options.preserveTrace &&
+      details.some((detail) => detail.trace.id === state.selectedTraceId)
+        ? state.selectedTraceId
+        : details[details.length - 1].trace.id;
+    await selectTrace(preferredTraceId);
   }
 }
 

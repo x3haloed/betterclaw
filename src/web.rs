@@ -2,14 +2,17 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::channel::InboundEvent;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, RuntimeUpdate};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
@@ -23,6 +26,7 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
         .route("/api/threads", get(list_threads).post(create_thread))
         .route("/api/threads/{thread_id}", get(get_thread))
         .route("/api/threads/{thread_id}/messages", post(post_message))
+        .route("/api/threads/{thread_id}/stream", get(stream_thread))
         .route("/api/threads/{thread_id}/timeline", get(get_timeline))
         .route("/api/turns/{turn_id}/traces", get(get_turn_traces))
         .route("/api/traces/{trace_id}", get(get_trace))
@@ -80,6 +84,31 @@ async fn get_timeline(
     Path(thread_id): Path<String>,
 ) -> Result<Json<Vec<crate::event::Event>>, ApiError> {
     Ok(Json(runtime.list_thread_timeline(&thread_id).await?))
+}
+
+async fn stream_thread(
+    State(runtime): State<Arc<Runtime>>,
+    Path(thread_id): Path<String>,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    let receiver = runtime.subscribe_updates();
+    let stream = BroadcastStream::new(receiver).filter_map(move |message| {
+        let thread_id = thread_id.clone();
+        async move {
+            let Ok(update) = message else {
+                return None;
+            };
+            let update_thread_id = match &update {
+                RuntimeUpdate::EventAdded { thread_id, .. }
+                | RuntimeUpdate::TraceRecorded { thread_id, .. }
+                | RuntimeUpdate::TurnUpdated { thread_id, .. } => thread_id,
+            };
+            if update_thread_id != &thread_id {
+                return None;
+            }
+            Some(Ok(Event::default().json_data(update).unwrap()))
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 #[derive(Debug, Deserialize)]

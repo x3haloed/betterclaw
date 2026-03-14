@@ -117,6 +117,16 @@ button {
   padding: 10px;
 }
 
+.live-indicator {
+  border: 1px solid #56714f;
+  background: #dceccf;
+  color: #2f4a28;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .timeline-kind {
   font-weight: 700;
   margin-bottom: 6px;

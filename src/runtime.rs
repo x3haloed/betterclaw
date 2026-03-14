@@ -4,6 +4,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use futures_util::future::join_all;
 use serde_json::{Value, json};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::agent::Agent;
@@ -27,6 +28,31 @@ pub struct Runtime {
     tools: ToolRegistry,
     model_engine: Arc<ModelEngine>,
     model_name: String,
+    updates: broadcast::Sender<RuntimeUpdate>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RuntimeUpdate {
+    EventAdded {
+        thread_id: String,
+        turn_id: String,
+        kind: EventKind,
+        payload: Value,
+    },
+    TraceRecorded {
+        thread_id: String,
+        turn_id: String,
+        trace_id: String,
+        outcome: TraceOutcome,
+    },
+    TurnUpdated {
+        thread_id: String,
+        turn_id: String,
+        status: TurnStatus,
+        assistant_message: Option<String>,
+        error: Option<String>,
+    },
 }
 
 impl Runtime {
@@ -57,6 +83,7 @@ impl Runtime {
         model_name: impl Into<String>,
     ) -> Result<Self, RuntimeError> {
         let db = Arc::new(db);
+        let (updates, _) = broadcast::channel(512);
         let workspace = Workspace::new(
             "default",
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -71,11 +98,16 @@ impl Runtime {
             tools: ToolRegistry::with_defaults(),
             model_engine: Arc::new(model_engine),
             model_name: model_name.into(),
+            updates,
         })
     }
 
     pub fn db(&self) -> Arc<Db> {
         Arc::clone(&self.db)
+    }
+
+    pub fn subscribe_updates(&self) -> broadcast::Receiver<RuntimeUpdate> {
+        self.updates.subscribe()
     }
 
     pub fn tool_definitions(&self) -> Vec<Value> {
@@ -160,41 +192,35 @@ impl Runtime {
             .await
             .map_err(RuntimeError::from)?;
 
-        self.db
-            .append_event(
-                &turn.id,
-                &thread.id,
-                EventKind::InboundMessage,
-                &json!({ "content": event.content, "received_at": event.received_at }),
-            )
-            .await
-            .map_err(RuntimeError::from)?;
-        self.db
-            .append_event(
-                &turn.id,
-                &thread.id,
-                EventKind::ThreadResolved,
-                &json!({ "thread_id": thread.id, "external_thread_id": thread.external_thread_id }),
-            )
-            .await
-            .map_err(RuntimeError::from)?;
+        self.append_event_and_publish(
+            &turn.id,
+            &thread.id,
+            EventKind::InboundMessage,
+            json!({ "content": event.content, "received_at": event.received_at }),
+        )
+        .await?;
+        self.append_event_and_publish(
+            &turn.id,
+            &thread.id,
+            EventKind::ThreadResolved,
+            json!({ "thread_id": thread.id, "external_thread_id": thread.external_thread_id }),
+        )
+        .await?;
 
         let mut conversation = self.build_conversation_history(&thread, &turn).await?;
         let initial_request = self.build_model_request(conversation.clone(), true);
-        self.db
-            .append_event(
-                &turn.id,
-                &thread.id,
-                EventKind::ContextAssembled,
-                &json!({
-                    "message_count": initial_request.messages.len(),
-                    "tool_count": initial_request.tools.len(),
-                    "model": initial_request.model,
-                    "stream": initial_request.stream,
-                }),
-            )
-            .await
-            .map_err(RuntimeError::from)?;
+        self.append_event_and_publish(
+            &turn.id,
+            &thread.id,
+            EventKind::ContextAssembled,
+            json!({
+                "message_count": initial_request.messages.len(),
+                "tool_count": initial_request.tools.len(),
+                "model": initial_request.model,
+                "stream": initial_request.stream,
+            }),
+        )
+        .await?;
 
         let mut request = initial_request;
         let (final_response, last_trace_id) = loop {
@@ -211,19 +237,21 @@ impl Runtime {
                     .error_summary
                     .clone()
                     .unwrap_or_else(|| "model exchange failed".to_string());
-                self.db
-                    .update_turn(&turn.id, TurnStatus::Failed, None, Some(&error))
-                    .await
-                    .map_err(RuntimeError::from)?;
-                self.db
-                    .append_event(
-                        &turn.id,
-                        &thread.id,
-                        EventKind::Error,
-                        &json!({ "message": error }),
-                    )
-                    .await
-                    .map_err(RuntimeError::from)?;
+                self.update_turn_and_publish(
+                    &thread.id,
+                    &turn.id,
+                    TurnStatus::Failed,
+                    None,
+                    Some(error.clone()),
+                )
+                .await?;
+                self.append_event_and_publish(
+                    &turn.id,
+                    &thread.id,
+                    EventKind::Error,
+                    json!({ "message": error }),
+                )
+                .await?;
                 return Err(RuntimeError::ModelParse(
                     exchange
                         .error_summary
@@ -242,10 +270,14 @@ impl Runtime {
             request = self.build_model_request(conversation.clone(), true);
         };
 
-        self.db
-            .update_turn(&turn.id, TurnStatus::Succeeded, Some(&final_response), None)
-            .await
-            .map_err(RuntimeError::from)?;
+        self.update_turn_and_publish(
+            &thread.id,
+            &turn.id,
+            TurnStatus::Succeeded,
+            Some(final_response.clone()),
+            None,
+        )
+        .await?;
         let outbound = OutboundMessage {
             id: Uuid::new_v4().to_string(),
             turn_id: turn.id.clone(),
@@ -259,15 +291,13 @@ impl Runtime {
             .record_outbound_message(&outbound)
             .await
             .map_err(RuntimeError::from)?;
-        self.db
-            .append_event(
-                &turn.id,
-                &thread.id,
-                EventKind::OutboundMessage,
-                &json!({ "content": outbound.content }),
-            )
-            .await
-            .map_err(RuntimeError::from)?;
+        self.append_event_and_publish(
+            &turn.id,
+            &thread.id,
+            EventKind::OutboundMessage,
+            json!({ "content": outbound.content }),
+        )
+        .await?;
 
         Ok(TurnOutcome {
             thread,
@@ -349,24 +379,21 @@ impl Runtime {
                 self.record_trace(turn, thread, agent_id, channel, error.exchange())
                     .await?;
                 self.append_model_events(turn, thread, error.exchange()).await?;
-                self.db
-                    .update_turn(
-                        &turn.id,
-                        TurnStatus::Failed,
-                        None,
-                        error.exchange().error_summary.as_deref(),
-                    )
-                    .await
-                    .map_err(RuntimeError::from)?;
-                self.db
-                    .append_event(
-                        &turn.id,
-                        &thread.id,
-                        EventKind::Error,
-                        &json!({ "message": error.to_string() }),
-                    )
-                    .await
-                    .map_err(RuntimeError::from)?;
+                self.update_turn_and_publish(
+                    &thread.id,
+                    &turn.id,
+                    TurnStatus::Failed,
+                    None,
+                    error.exchange().error_summary.clone(),
+                )
+                .await?;
+                self.append_event_and_publish(
+                    &turn.id,
+                    &thread.id,
+                    EventKind::Error,
+                    json!({ "message": error.to_string() }),
+                )
+                .await?;
                 Err(RuntimeError::ModelEngine(error))
             }
         }
@@ -378,31 +405,27 @@ impl Runtime {
         thread: &Thread,
         exchange: &ModelExchangeResult,
     ) -> Result<(), RuntimeError> {
-        self.db
-            .append_event(
-                &turn.id,
-                &thread.id,
-                EventKind::ModelRequest,
-                &exchange.raw_trace.request_body,
-            )
-            .await
-            .map_err(RuntimeError::from)?;
-        self.db
-            .append_event(
-                &turn.id,
-                &thread.id,
-                EventKind::ModelResponse,
-                &json!({
-                    "response": exchange.raw_trace.response_body,
-                    "stream_frame_count": exchange.raw_trace.raw_frames.len(),
-                    "finish_reason": exchange.finish_reason,
-                    "outcome": exchange.outcome,
-                    "error_summary": exchange.error_summary,
-                    "tool_call_count": exchange.tool_calls.len(),
-                }),
-            )
-            .await
-            .map_err(RuntimeError::from)?;
+        self.append_event_and_publish(
+            &turn.id,
+            &thread.id,
+            EventKind::ModelRequest,
+            exchange.raw_trace.request_body.clone(),
+        )
+        .await?;
+        self.append_event_and_publish(
+            &turn.id,
+            &thread.id,
+            EventKind::ModelResponse,
+            json!({
+                "response": exchange.raw_trace.response_body,
+                "stream_frame_count": exchange.raw_trace.raw_frames.len(),
+                "finish_reason": exchange.finish_reason,
+                "outcome": exchange.outcome,
+                "error_summary": exchange.error_summary,
+                "tool_call_count": exchange.tool_calls.len(),
+            }),
+        )
+        .await?;
         Ok(())
     }
 
@@ -512,6 +535,12 @@ impl Runtime {
             .record_model_trace(&trace)
             .await
             .map_err(RuntimeError::from)?;
+        let _ = self.updates.send(RuntimeUpdate::TraceRecorded {
+            thread_id: thread.id.clone(),
+            turn_id: turn.id.clone(),
+            trace_id: trace.id.clone(),
+            outcome: trace.outcome.clone(),
+        });
         Ok(trace)
     }
 
@@ -541,20 +570,18 @@ impl Runtime {
                 parameters: arguments.clone(),
                 created_at: Utc::now(),
             };
-            self.db
-                .append_event(
-                    &turn.id,
-                    &thread.id,
-                    EventKind::ToolCall,
-                    &json!({
-                        "invocation_id": invocation.id,
-                        "tool_name": invocation.tool_name,
-                        "parameters": invocation.parameters,
-                        "raw_arguments": tool_call.arguments_text,
-                    }),
-                )
-                .await
-                .map_err(RuntimeError::from)?;
+            self.append_event_and_publish(
+                &turn.id,
+                &thread.id,
+                EventKind::ToolCall,
+                json!({
+                    "invocation_id": invocation.id,
+                    "tool_name": invocation.tool_name,
+                    "parameters": invocation.parameters,
+                    "raw_arguments": tool_call.arguments_text,
+                }),
+            )
+            .await?;
             assistant_tool_calls.push(ModelToolCallMessage {
                 id: tool_call.id.clone(),
                 kind: "function".to_string(),
@@ -580,19 +607,17 @@ impl Runtime {
                 output: output.clone(),
                 created_at: Utc::now(),
             };
-            self.db
-                .append_event(
-                    &turn.id,
-                    &thread.id,
-                    EventKind::ToolResult,
-                    &json!({
-                        "invocation_id": result.invocation_id,
-                        "tool_name": result.tool_name,
-                        "output": result.output,
-                    }),
-                )
-                .await
-                .map_err(RuntimeError::from)?;
+            self.append_event_and_publish(
+                &turn.id,
+                &thread.id,
+                EventKind::ToolResult,
+                json!({
+                    "invocation_id": result.invocation_id,
+                    "tool_name": result.tool_name,
+                    "output": result.output,
+                }),
+            )
+            .await?;
             continuation_messages.push(ModelMessage {
                 role: "tool".to_string(),
                 content: Some(output.to_string()),
@@ -609,6 +634,53 @@ impl Runtime {
         }];
         messages.extend(continuation_messages);
         Ok(messages)
+    }
+
+    async fn append_event_and_publish(
+        &self,
+        turn_id: &str,
+        thread_id: &str,
+        kind: EventKind,
+        payload: Value,
+    ) -> Result<(), RuntimeError> {
+        self.db
+            .append_event(turn_id, thread_id, kind.clone(), &payload)
+            .await
+            .map_err(RuntimeError::from)?;
+        let _ = self.updates.send(RuntimeUpdate::EventAdded {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+            kind,
+            payload,
+        });
+        Ok(())
+    }
+
+    async fn update_turn_and_publish(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        status: TurnStatus,
+        assistant_message: Option<String>,
+        error: Option<String>,
+    ) -> Result<(), RuntimeError> {
+        self.db
+            .update_turn(
+                turn_id,
+                status.clone(),
+                assistant_message.as_deref(),
+                error.as_deref(),
+            )
+            .await
+            .map_err(RuntimeError::from)?;
+        let _ = self.updates.send(RuntimeUpdate::TurnUpdated {
+            thread_id: thread_id.to_string(),
+            turn_id: turn_id.to_string(),
+            status,
+            assistant_message,
+            error,
+        });
+        Ok(())
     }
 }
 

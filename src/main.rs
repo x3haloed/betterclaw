@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("betterclaw.db"));
     let db = Db::open(&db_path).await?;
-    let runtime = Arc::new(Runtime::new(db).await?);
+    let runtime = Arc::new(Runtime::from_env(db).await?);
 
     let port = env::var("BETTERCLAW_PORT")
         .ok()

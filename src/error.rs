@@ -17,5 +17,7 @@ pub enum RuntimeError {
     #[error("model parse failed: {0}")]
     ModelParse(String),
     #[error(transparent)]
+    ModelEngine(#[from] crate::model::ModelEngineError),
+    #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

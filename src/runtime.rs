@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::agent::Agent;
@@ -11,10 +11,11 @@ use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::{
-    ModelExchange, ModelMessage, ModelRequest, ModelResponse, ModelTrace, TraceOutcome,
+    ModelEngine, ModelExchangeRequest, ModelMessage, ModelTrace, OpenAiChatCompletionsConfig,
+    OpenAiChatCompletionsEngine, StubModelEngine, TraceDetail, TraceOutcome,
 };
 use crate::thread::Thread;
-use crate::tool::{ToolCall, ToolInvocation, ToolRegistry, ToolResult};
+use crate::tool::{ToolInvocation, ToolRegistry, ToolResult};
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
 
@@ -22,11 +23,37 @@ use crate::workspace::Workspace;
 pub struct Runtime {
     db: Arc<Db>,
     tools: ToolRegistry,
+    model_engine: Arc<ModelEngine>,
     model_name: String,
 }
 
 impl Runtime {
     pub async fn new(db: Db) -> Result<Self, RuntimeError> {
+        Self::with_model_engine(db, ModelEngine::stub(StubModelEngine), "local-debug-model").await
+    }
+
+    pub async fn from_env(db: Db) -> Result<Self, RuntimeError> {
+        let model_name =
+            std::env::var("BETTERCLAW_MODEL").unwrap_or_else(|_| "qwen/qwen3.5-9b".to_string());
+        let base_url = std::env::var("BETTERCLAW_MODEL_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
+        let engine = OpenAiChatCompletionsEngine::new(OpenAiChatCompletionsConfig {
+            base_url,
+            ..OpenAiChatCompletionsConfig::default()
+        })?;
+        Self::with_model_engine(
+            db,
+            ModelEngine::openai_chat_completions(engine),
+            model_name,
+        )
+        .await
+    }
+
+    pub async fn with_model_engine(
+        db: Db,
+        model_engine: ModelEngine,
+        model_name: impl Into<String>,
+    ) -> Result<Self, RuntimeError> {
         let db = Arc::new(db);
         let workspace = Workspace::new(
             "default",
@@ -40,7 +67,8 @@ impl Runtime {
         Ok(Self {
             db,
             tools: ToolRegistry::with_defaults(),
-            model_name: "local-debug-model".to_string(),
+            model_engine: Arc::new(model_engine),
+            model_name: model_name.into(),
         })
     }
 
@@ -48,15 +76,18 @@ impl Runtime {
         Arc::clone(&self.db)
     }
 
-    pub fn tool_definitions(&self) -> Vec<serde_json::Value> {
+    pub fn tool_definitions(&self) -> Vec<Value> {
         self.tools
             .definitions()
             .into_iter()
             .map(|tool| {
                 json!({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters_schema": tool.parameters_schema
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters_schema
+                    }
                 })
             })
             .collect()
@@ -109,7 +140,7 @@ impl Runtime {
     pub async fn get_trace_detail(
         &self,
         trace_id: &str,
-    ) -> Result<Option<crate::model::TraceDetail>, RuntimeError> {
+    ) -> Result<Option<TraceDetail>, RuntimeError> {
         self.db
             .get_trace_detail(trace_id)
             .await
@@ -146,31 +177,170 @@ impl Runtime {
             .await
             .map_err(RuntimeError::from)?;
 
-        let model_request = ModelRequest {
-            model: self.model_name.clone(),
-            messages: vec![ModelMessage {
-                role: "user".to_string(),
-                content: turn.user_message.clone(),
-            }],
-            tools: self.tool_definitions(),
-        };
+        let model_request = self.build_model_request(&thread, &turn).await?;
         self.db
             .append_event(
                 &turn.id,
                 &thread.id,
                 EventKind::ContextAssembled,
-                &json!({ "message_count": model_request.messages.len(), "tool_count": model_request.tools.len() }),
+                &json!({
+                    "message_count": model_request.messages.len(),
+                    "tool_count": model_request.tools.len(),
+                    "model": model_request.model,
+                    "stream": model_request.stream,
+                }),
             )
             .await
             .map_err(RuntimeError::from)?;
 
-        let exchange = self.invoke_model(&model_request);
+        let exchange = match self.model_engine.run(model_request).await {
+            Ok(exchange) => exchange,
+            Err(error) => {
+                self.record_trace(&turn, &thread, &event.agent_id, &event.channel, error.exchange())
+                    .await?;
+                self.append_model_events(&turn, &thread, error.exchange()).await?;
+                self.db
+                    .update_turn(
+                        &turn.id,
+                        TurnStatus::Failed,
+                        None,
+                        error.exchange().error_summary.as_deref(),
+                    )
+                    .await
+                    .map_err(RuntimeError::from)?;
+                self.db
+                    .append_event(
+                        &turn.id,
+                        &thread.id,
+                        EventKind::Error,
+                        &json!({ "message": error.to_string() }),
+                    )
+                    .await
+                    .map_err(RuntimeError::from)?;
+                return Err(RuntimeError::ModelEngine(error));
+            }
+        };
+
+        self.append_model_events(&turn, &thread, &exchange).await?;
+        let trace = self
+            .record_trace(&turn, &thread, &event.agent_id, &event.channel, &exchange)
+            .await?;
+
+        if exchange.outcome != TraceOutcome::Ok {
+            let error = exchange
+                .error_summary
+                .clone()
+                .unwrap_or_else(|| "model exchange failed".to_string());
+            self.db
+                .update_turn(&turn.id, TurnStatus::Failed, None, Some(&error))
+                .await
+                .map_err(RuntimeError::from)?;
+            self.db
+                .append_event(
+                    &turn.id,
+                    &thread.id,
+                    EventKind::Error,
+                    &json!({ "message": error }),
+                )
+                .await
+                .map_err(RuntimeError::from)?;
+            return Err(RuntimeError::ModelParse(
+                exchange
+                    .error_summary
+                    .unwrap_or_else(|| "model exchange failed".to_string()),
+            ));
+        }
+
+        let final_response = if exchange.tool_calls.is_empty() {
+            exchange.content.unwrap_or_default()
+        } else {
+            self.execute_tool_calls(&turn, &thread, &workspace, exchange.tool_calls)
+                .await?
+        };
+        self.db
+            .update_turn(&turn.id, TurnStatus::Succeeded, Some(&final_response), None)
+            .await
+            .map_err(RuntimeError::from)?;
+        let outbound = OutboundMessage {
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn.id.clone(),
+            thread_id: thread.id.clone(),
+            channel: thread.channel.clone(),
+            external_thread_id: thread.external_thread_id.clone(),
+            content: final_response.clone(),
+            created_at: Utc::now(),
+        };
+        self.db
+            .record_outbound_message(&outbound)
+            .await
+            .map_err(RuntimeError::from)?;
+        self.db
+            .append_event(
+                &turn.id,
+                &thread.id,
+                EventKind::OutboundMessage,
+                &json!({ "content": outbound.content }),
+            )
+            .await
+            .map_err(RuntimeError::from)?;
+
+        Ok(TurnOutcome {
+            thread,
+            turn_id: turn.id,
+            response: final_response,
+            trace_id: trace.id,
+        })
+    }
+
+    async fn build_model_request(
+        &self,
+        thread: &Thread,
+        turn: &Turn,
+    ) -> Result<ModelExchangeRequest, RuntimeError> {
+        let mut messages = Vec::new();
+        for prior_turn in self.list_thread_turns(&thread.id).await? {
+            if prior_turn.id == turn.id {
+                continue;
+            }
+            messages.push(ModelMessage {
+                role: "user".to_string(),
+                content: prior_turn.user_message,
+            });
+            if let Some(assistant_message) = prior_turn.assistant_message {
+                messages.push(ModelMessage {
+                    role: "assistant".to_string(),
+                    content: assistant_message,
+                });
+            }
+        }
+        messages.push(ModelMessage {
+            role: "user".to_string(),
+            content: turn.user_message.clone(),
+        });
+        Ok(ModelExchangeRequest {
+            model: self.model_name.clone(),
+            messages,
+            tools: self.tool_definitions(),
+            temperature: Some(0.2),
+            max_tokens: Some(1024),
+            stream: true,
+            response_format: None,
+            extra: json!({}),
+        })
+    }
+
+    async fn append_model_events(
+        &self,
+        turn: &Turn,
+        thread: &Thread,
+        exchange: &crate::model::ModelExchangeResult,
+    ) -> Result<(), RuntimeError> {
         self.db
             .append_event(
                 &turn.id,
                 &thread.id,
                 EventKind::ModelRequest,
-                &exchange.raw_request,
+                &exchange.raw_trace.request_body,
             )
             .await
             .map_err(RuntimeError::from)?;
@@ -179,74 +349,17 @@ impl Runtime {
                 &turn.id,
                 &thread.id,
                 EventKind::ModelResponse,
-                &exchange.raw_response,
+                &json!({
+                    "response": exchange.raw_trace.response_body,
+                    "stream_frame_count": exchange.raw_trace.raw_frames.len(),
+                    "finish_reason": exchange.finish_reason,
+                    "outcome": exchange.outcome,
+                    "error_summary": exchange.error_summary,
+                }),
             )
             .await
             .map_err(RuntimeError::from)?;
-
-        let trace = self
-            .record_trace(&turn, &thread, &event.agent_id, &event.channel, &exchange)
-            .await?;
-
-        match exchange.parsed {
-            Ok(response) => {
-                let final_response = if response.tool_calls.is_empty() {
-                    response.content.unwrap_or_default()
-                } else {
-                    self.execute_tool_calls(&turn, &thread, &workspace, response.tool_calls)
-                        .await?
-                };
-                self.db
-                    .update_turn(&turn.id, TurnStatus::Succeeded, Some(&final_response), None)
-                    .await
-                    .map_err(RuntimeError::from)?;
-                let outbound = OutboundMessage {
-                    id: Uuid::new_v4().to_string(),
-                    turn_id: turn.id.clone(),
-                    thread_id: thread.id.clone(),
-                    channel: thread.channel.clone(),
-                    external_thread_id: thread.external_thread_id.clone(),
-                    content: final_response.clone(),
-                    created_at: Utc::now(),
-                };
-                self.db
-                    .record_outbound_message(&outbound)
-                    .await
-                    .map_err(RuntimeError::from)?;
-                self.db
-                    .append_event(
-                        &turn.id,
-                        &thread.id,
-                        EventKind::OutboundMessage,
-                        &json!({ "content": outbound.content }),
-                    )
-                    .await
-                    .map_err(RuntimeError::from)?;
-
-                Ok(TurnOutcome {
-                    thread,
-                    turn_id: turn.id,
-                    response: final_response,
-                    trace_id: trace.id,
-                })
-            }
-            Err(error) => {
-                self.db
-                    .update_turn(&turn.id, TurnStatus::Failed, None, Some(&error))
-                    .await
-                    .map_err(RuntimeError::from)?;
-                self.db
-                    .append_event(
-                        &turn.id,
-                        &thread.id,
-                        EventKind::Error,
-                        &json!({ "message": error }),
-                    )
-                    .await
-                    .map_err(RuntimeError::from)?;
-                Err(RuntimeError::ModelParse(error))
-            }
-        }
+        Ok(())
     }
 
     async fn resolve_thread(
@@ -283,148 +396,68 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::WorkspaceNotFound(agent.workspace_id))
     }
 
-    fn invoke_model(&self, request: &ModelRequest) -> ModelExchange {
-        let request_started_at = Utc::now();
-        let last_message = request
-            .messages
-            .last()
-            .map(|message| message.content.clone())
-            .unwrap_or_default();
-        let raw_request = json!({
-            "model": request.model,
-            "messages": request.messages,
-            "tools": request.tools,
-        });
-
-        let parsed = if let Some(rest) = last_message.strip_prefix("/tool ") {
-            let mut parts = rest.splitn(2, ' ');
-            let tool_name = parts.next().unwrap_or_default();
-            let args = parts.next().unwrap_or("{}");
-            match serde_json::from_str(args) {
-                Ok(arguments) => Ok(ModelResponse {
-                    content: None,
-                    tool_calls: vec![ToolCall {
-                        id: Uuid::new_v4().to_string(),
-                        name: tool_name.to_string(),
-                        arguments,
-                    }],
-                }),
-                Err(error) => Err(format!(
-                    "Tool call '{tool_name}' had malformed JSON arguments: {error}"
-                )),
-            }
-        } else if let Some(rest) = last_message.strip_prefix("/malformed-tool ") {
-            let mut parts = rest.splitn(2, ' ');
-            let tool_name = parts.next().unwrap_or_default();
-            let args = parts.next().unwrap_or("{");
-            Err(format!(
-                "Tool call '{tool_name}' had malformed JSON arguments: simulated malformed input: {args}"
-            ))
-        } else {
-            Ok(ModelResponse {
-                content: Some(format!("Echo: {}", last_message)),
-                tool_calls: Vec::new(),
-            })
-        };
-
-        let raw_response = match &parsed {
-            Ok(response) => {
-                if response.tool_calls.is_empty() {
-                    json!({ "content": response.content })
-                } else {
-                    json!({
-                        "tool_calls": response.tool_calls.iter().map(|tool_call| {
-                            json!({
-                                "id": tool_call.id,
-                                "name": tool_call.name,
-                                "arguments": tool_call.arguments,
-                            })
-                        }).collect::<Vec<_>>()
-                    })
-                }
-            }
-            Err(error) => json!({
-                "error": error,
-                "tool_calls": [{
-                    "id": Uuid::new_v4().to_string(),
-                    "name": "malformed",
-                    "arguments": "{"
-                }]
-            }),
-        };
-
-        let request_completed_at = Utc::now();
-        ModelExchange {
-            request_started_at,
-            request_completed_at,
-            raw_request,
-            raw_response,
-            parsed,
-            provider_request_id: Some(Uuid::new_v4().to_string()),
-            input_tokens: last_message.len() as i64,
-            output_tokens: 32,
-        }
-    }
-
     async fn record_trace(
         &self,
         turn: &Turn,
         thread: &Thread,
         agent_id: &str,
         channel: &str,
-        exchange: &ModelExchange,
+        exchange: &crate::model::ModelExchangeResult,
     ) -> Result<ModelTrace, RuntimeError> {
         let request_blob = self
             .db
-            .store_trace_blob(&exchange.raw_request)
+            .store_trace_blob_json(&exchange.raw_trace.request_body)
             .await
             .map_err(RuntimeError::from)?;
         let response_blob = self
             .db
-            .store_trace_blob(&exchange.raw_response)
+            .store_trace_blob_json(
+                &exchange
+                    .raw_trace
+                    .response_body
+                    .clone()
+                    .unwrap_or_else(|| Value::Null),
+            )
             .await
             .map_err(RuntimeError::from)?;
+        let stream_blob_id = if exchange.raw_trace.raw_frames.is_empty() {
+            None
+        } else {
+            Some(
+                self.db
+                    .store_trace_blob_json(&exchange.raw_trace.raw_frames)
+                    .await
+                    .map_err(RuntimeError::from)?
+                    .id,
+            )
+        };
         let trace = ModelTrace {
             id: Uuid::new_v4().to_string(),
             turn_id: turn.id.clone(),
             thread_id: thread.id.clone(),
             agent_id: agent_id.to_string(),
             channel: channel.to_string(),
-            model: self.model_name.clone(),
+            model: exchange.model.clone(),
             request_started_at: exchange.request_started_at,
             request_completed_at: exchange.request_completed_at,
             duration_ms: (exchange.request_completed_at - exchange.request_started_at)
                 .num_milliseconds(),
-            outcome: if exchange.parsed.is_ok() {
-                TraceOutcome::Ok
-            } else {
-                TraceOutcome::ParseError
-            },
-            input_tokens: exchange.input_tokens,
-            output_tokens: exchange.output_tokens,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            provider_request_id: exchange.provider_request_id.clone(),
-            tool_count: exchange
-                .parsed
-                .as_ref()
-                .map(|response| response.tool_calls.len() as i64)
-                .unwrap_or(0),
+            outcome: exchange.outcome.clone(),
+            input_tokens: exchange.usage.input_tokens,
+            output_tokens: exchange.usage.output_tokens,
+            cache_read_input_tokens: exchange.usage.cache_read_input_tokens,
+            cache_creation_input_tokens: exchange.usage.cache_creation_input_tokens,
+            provider_request_id: exchange.raw_trace.provider_request_id.clone(),
+            tool_count: exchange.tool_calls.len() as i64,
             tool_names: exchange
-                .parsed
-                .as_ref()
-                .map(|response| {
-                    response
-                        .tool_calls
-                        .iter()
-                        .map(|tool_call| tool_call.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default(),
+                .tool_calls
+                .iter()
+                .map(|tool_call| tool_call.name.clone())
+                .collect(),
             request_blob_id: request_blob.id,
             response_blob_id: response_blob.id,
-            stream_blob_id: None,
-            error_summary: exchange.parsed.as_ref().err().cloned(),
+            stream_blob_id,
+            error_summary: exchange.error_summary.clone(),
         };
         self.db
             .record_model_trace(&trace)
@@ -438,16 +471,22 @@ impl Runtime {
         turn: &Turn,
         thread: &Thread,
         workspace: &Workspace,
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Vec<crate::model::ReducedToolCall>,
     ) -> Result<String, RuntimeError> {
         let mut parts = Vec::new();
         for tool_call in tool_calls {
+            let arguments = tool_call.arguments_json.clone().ok_or_else(|| {
+                RuntimeError::ModelParse(format!(
+                    "tool call '{}' had malformed JSON arguments: {}",
+                    tool_call.name, tool_call.arguments_text
+                ))
+            })?;
             let invocation = ToolInvocation {
                 id: Uuid::new_v4().to_string(),
                 turn_id: turn.id.clone(),
                 thread_id: thread.id.clone(),
                 tool_name: tool_call.name.clone(),
-                parameters: tool_call.arguments.clone(),
+                parameters: arguments.clone(),
                 created_at: Utc::now(),
             };
             self.db
@@ -459,13 +498,14 @@ impl Runtime {
                         "invocation_id": invocation.id,
                         "tool_name": invocation.tool_name,
                         "parameters": invocation.parameters,
+                        "raw_arguments": tool_call.arguments_text,
                     }),
                 )
                 .await
                 .map_err(RuntimeError::from)?;
             let output = self
                 .tools
-                .execute(&tool_call.name, tool_call.arguments.clone(), workspace)
+                .execute(&tool_call.name, arguments, workspace)
                 .await?;
             let result = ToolResult {
                 invocation_id: invocation.id.clone(),

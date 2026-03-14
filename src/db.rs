@@ -427,9 +427,14 @@ impl Db {
     }
 
     pub async fn store_trace_blob(&self, body: &Value) -> Result<TraceBlob> {
+        self.store_trace_blob_json(body).await
+    }
+
+    pub async fn store_trace_blob_json<T: serde::Serialize>(&self, body: &T) -> Result<TraceBlob> {
         let id = Uuid::new_v4().to_string();
         let created_at = Utc::now();
-        let body = compress_bytes(redact_json(body).to_string().as_bytes())?;
+        let value = redact_json(&serde_json::to_value(body)?);
+        let body = compress_bytes(value.to_string().as_bytes())?;
         let blob = TraceBlob {
             id: id.clone(),
             encoding: "gzip".to_string(),
@@ -574,6 +579,10 @@ impl Db {
         Ok(Some(TraceDetail {
             request_body: self.fetch_trace_blob_json(&trace.request_blob_id).await?,
             response_body: self.fetch_trace_blob_json(&trace.response_blob_id).await?,
+            stream_body: match &trace.stream_blob_id {
+                Some(blob_id) => Some(self.fetch_trace_blob_json(blob_id).await?),
+                None => None,
+            },
             trace,
         }))
     }
@@ -663,9 +672,13 @@ fn redact_json(value: &Value) -> Value {
                         "token",
                         "access_token",
                         "refresh_token",
+                        "session_token",
+                        "bearer_token",
                     ]
                     .iter()
-                    .any(|needle| lower.contains(needle))
+                    .any(|needle| lower == *needle)
+                        || lower.ends_with("_api_key")
+                        || lower.ends_with("_secret")
                     {
                         (key.clone(), Value::String("[REDACTED]".to_string()))
                     } else {
@@ -695,5 +708,16 @@ mod tests {
         let redacted = redact_json(&value);
         assert_eq!(redacted["authorization"], "[REDACTED]");
         assert_eq!(redacted["nested"]["api_key"], "[REDACTED]");
+    }
+
+    #[test]
+    fn preserves_non_secret_token_counters() {
+        let value = json!({
+            "max_tokens": 512,
+            "prompt_tokens": 128
+        });
+        let redacted = redact_json(&value);
+        assert_eq!(redacted["max_tokens"], 512);
+        assert_eq!(redacted["prompt_tokens"], 128);
     }
 }

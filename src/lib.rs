@@ -1,9 +1,13 @@
 pub mod agent;
 pub mod channel;
+pub mod db;
 pub mod error;
 pub mod event;
 pub mod logging;
+pub mod model;
 pub mod runtime;
 pub mod thread;
 pub mod tool;
+pub mod turn;
+pub mod web;
 pub mod workspace;

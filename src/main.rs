@@ -1,19 +1,35 @@
+use std::env;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use anyhow::Result;
+use betterclaw::db::Db;
 use betterclaw::logging;
 use betterclaw::runtime::Runtime;
+use betterclaw::web;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     logging::init()?;
 
-    let runtime = Runtime::new();
+    let db_path = env::var("BETTERCLAW_DB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("betterclaw.db"));
+    let db = Db::open(&db_path).await?;
+    let runtime = Arc::new(Runtime::new(db).await?);
 
-    tracing::info!(
-        agent_count = runtime.agents().len(),
-        thread_count = runtime.threads().len(),
-        tool_count = runtime.tools().len(),
-        channel_count = runtime.channels().len(),
-        "BetterClaw runtime initialized"
-    );
+    let port = env::var("BETTERCLAW_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(3000);
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+
+    tracing::info!(db_path = %db_path.display(), %address, "Starting BetterClaw");
+
+    let app = web::app(runtime);
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

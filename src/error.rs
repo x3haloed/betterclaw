@@ -8,8 +8,14 @@ pub enum RuntimeError {
     ThreadNotFound(String),
     #[error("tool not found: {0}")]
     ToolNotFound(String),
-    #[error("channel not found: {0}")]
-    ChannelNotFound(String),
+    #[error("workspace not found: {0}")]
+    WorkspaceNotFound(String),
     #[error("invalid tool parameters for '{tool}': {reason}")]
     InvalidToolParameters { tool: String, reason: String },
+    #[error("tool execution failed for '{tool}': {reason}")]
+    ToolExecution { tool: String, reason: String },
+    #[error("model parse failed: {0}")]
+    ModelParse(String),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }

@@ -1,20 +1,46 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelDefinition {
-    pub name: String,
-    pub description: String,
+pub struct InboundEvent {
+    pub agent_id: String,
+    pub channel: String,
+    pub external_thread_id: String,
+    pub content: String,
+    pub received_at: DateTime<Utc>,
 }
 
-impl ChannelDefinition {
-    pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
+impl InboundEvent {
+    pub fn web(
+        agent_id: impl Into<String>,
+        thread_id: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
-            name: name.into(),
-            description: description.into(),
+            agent_id: agent_id.into(),
+            channel: "web".to_string(),
+            external_thread_id: thread_id.into(),
+            content: content.into(),
+            received_at: Utc::now(),
         }
     }
 }
 
-pub trait Channel: Send + Sync {
-    fn definition(&self) -> ChannelDefinition;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutboundMessage {
+    pub id: String,
+    pub turn_id: String,
+    pub thread_id: String,
+    pub channel: String,
+    pub external_thread_id: String,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelCursor {
+    pub channel: String,
+    pub cursor_key: String,
+    pub cursor_value: String,
+    pub updated_at: DateTime<Utc>,
 }

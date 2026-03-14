@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetterClaw</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>BetterClaw</h1>
+          <button id="new-thread">New Thread</button>
+        </div>
+        <div id="thread-list" class="thread-list"></div>
+      </aside>
+      <main class="main">
+        <section class="panel chat-panel">
+          <div id="thread-title" class="panel-title">No thread selected</div>
+          <div id="timeline" class="timeline"></div>
+          <form id="composer" class="composer">
+            <textarea id="message-input" placeholder="Type a message or use /tool echo {&quot;message&quot;:&quot;hi&quot;}"></textarea>
+            <button type="submit">Send</button>
+          </form>
+        </section>
+        <section class="panel debug-panel">
+          <div class="panel-title">Model Traces</div>
+          <div id="trace-list" class="trace-list"></div>
+          <pre id="trace-detail" class="trace-detail"></pre>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

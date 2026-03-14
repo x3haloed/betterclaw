@@ -1,39 +1,28 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
-    pub id: Uuid,
-    pub thread_id: Uuid,
-    pub timestamp: DateTime<Utc>,
+    pub id: String,
+    pub turn_id: String,
+    pub thread_id: String,
+    pub sequence: i64,
     pub kind: EventKind,
     pub payload: Value,
+    pub created_at: DateTime<Utc>,
 }
 
-impl Event {
-    pub fn new(thread_id: Uuid, kind: EventKind, payload: Value) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            thread_id,
-            timestamp: Utc::now(),
-            kind,
-            payload,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     InboundMessage,
+    ThreadResolved,
     ContextAssembled,
-    LlmRequest,
-    LlmResponse,
+    ModelRequest,
+    ModelResponse,
     ToolCall,
     ToolResult,
-    CursorAdvanced,
     OutboundMessage,
     Error,
 }

@@ -1,0 +1,699 @@
+use std::io::{Read, Write};
+use std::path::Path;
+
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use flate2::Compression;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use libsql::{Builder, Connection, Database, Rows, params};
+use serde_json::Value;
+use uuid::Uuid;
+
+use crate::agent::Agent;
+use crate::channel::{ChannelCursor, OutboundMessage};
+use crate::event::{Event, EventKind};
+use crate::model::{ModelTrace, TraceBlob, TraceDetail};
+use crate::thread::Thread;
+use crate::turn::{Turn, TurnStatus};
+use crate::workspace::Workspace;
+
+pub struct Db {
+    database: Database,
+}
+
+impl Db {
+    pub async fn open(path: &Path) -> Result<Self> {
+        let database = Builder::new_local(path).build().await?;
+        let db = Self { database };
+        db.migrate().await?;
+        Ok(db)
+    }
+
+    fn connect(&self) -> Result<Connection> {
+        Ok(self.database.connect()?)
+    }
+
+    async fn migrate(&self) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS agents (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                root TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS threads (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                external_thread_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(agent_id, channel, external_thread_id)
+            );
+            CREATE TABLE IF NOT EXISTS turns (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                user_message TEXT NOT NULL,
+                assistant_message TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS events (
+                id TEXT PRIMARY KEY,
+                turn_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS trace_blobs (
+                id TEXT PRIMARY KEY,
+                encoding TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                body BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS model_traces (
+                id TEXT PRIMARY KEY,
+                turn_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                model TEXT NOT NULL,
+                request_started_at TEXT NOT NULL,
+                request_completed_at TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                outcome TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_input_tokens INTEGER NOT NULL,
+                cache_creation_input_tokens INTEGER NOT NULL,
+                provider_request_id TEXT,
+                tool_count INTEGER NOT NULL,
+                tool_names TEXT NOT NULL,
+                request_blob_id TEXT NOT NULL,
+                response_blob_id TEXT NOT NULL,
+                stream_blob_id TEXT,
+                error_summary TEXT
+            );
+            CREATE TABLE IF NOT EXISTS channel_cursors (
+                channel TEXT NOT NULL,
+                cursor_key TEXT NOT NULL,
+                cursor_value TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(channel, cursor_key)
+            );
+            CREATE TABLE IF NOT EXISTS outbound_messages (
+                id TEXT PRIMARY KEY,
+                turn_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                external_thread_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+        "#,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn seed_default_agent(&self, agent: &Agent, workspace: &Workspace) -> Result<()> {
+        let conn = self.connect()?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR IGNORE INTO workspaces (id, root, created_at) VALUES (?, ?, ?)",
+            params![
+                workspace.id.clone(),
+                workspace.root.display().to_string(),
+                now.clone()
+            ],
+        )
+        .await?;
+        conn.execute(
+            "INSERT OR IGNORE INTO agents (id, display_name, workspace_id, created_at) VALUES (?, ?, ?, ?)",
+            params![agent.id.clone(), agent.display_name.clone(), workspace.id.clone(), now],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn load_agent(&self, agent_id: &str) -> Result<Option<Agent>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, display_name, workspace_id FROM agents WHERE id = ?",
+                params![agent_id.to_string()],
+            )
+            .await?;
+        Ok(if let Some(row) = rows.next().await? {
+            Some(Agent {
+                id: row.get(0)?,
+                display_name: row.get(1)?,
+                workspace_id: row.get(2)?,
+            })
+        } else {
+            None
+        })
+    }
+
+    pub async fn load_workspace(&self, workspace_id: &str) -> Result<Option<Workspace>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, root FROM workspaces WHERE id = ?",
+                params![workspace_id.to_string()],
+            )
+            .await?;
+        Ok(if let Some(row) = rows.next().await? {
+            Some(Workspace::new(row.get::<String>(0)?, row.get::<String>(1)?))
+        } else {
+            None
+        })
+    }
+
+    pub async fn create_thread(
+        &self,
+        agent_id: &str,
+        channel: &str,
+        external_thread_id: &str,
+        title: &str,
+    ) -> Result<Thread> {
+        let conn = self.connect()?;
+        let id = external_thread_id.to_string();
+        let now = Utc::now();
+        conn.execute(
+            "INSERT INTO threads (id, agent_id, channel, external_thread_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                id.clone(),
+                agent_id.to_string(),
+                channel.to_string(),
+                external_thread_id.to_string(),
+                title.to_string(),
+                now.to_rfc3339(),
+                now.to_rfc3339()
+            ],
+        )
+        .await?;
+        Ok(Thread {
+            id,
+            agent_id: agent_id.to_string(),
+            channel: channel.to_string(),
+            external_thread_id: external_thread_id.to_string(),
+            title: title.to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub async fn find_thread(
+        &self,
+        agent_id: &str,
+        channel: &str,
+        external_thread_id: &str,
+    ) -> Result<Option<Thread>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, agent_id, channel, external_thread_id, title, created_at, updated_at FROM threads WHERE agent_id = ? AND channel = ? AND external_thread_id = ?",
+                params![agent_id.to_string(), channel.to_string(), external_thread_id.to_string()],
+            )
+            .await?;
+        Ok(self.read_thread(&mut rows).await?)
+    }
+
+    pub async fn get_thread(&self, thread_id: &str) -> Result<Option<Thread>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, agent_id, channel, external_thread_id, title, created_at, updated_at FROM threads WHERE id = ?",
+                params![thread_id.to_string()],
+            )
+            .await?;
+        Ok(self.read_thread(&mut rows).await?)
+    }
+
+    async fn read_thread(&self, rows: &mut Rows) -> Result<Option<Thread>> {
+        Ok(if let Some(row) = rows.next().await? {
+            Some(Thread {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                channel: row.get(2)?,
+                external_thread_id: row.get(3)?,
+                title: row.get(4)?,
+                created_at: parse_datetime(&row.get::<String>(5)?)?,
+                updated_at: parse_datetime(&row.get::<String>(6)?)?,
+            })
+        } else {
+            None
+        })
+    }
+
+    pub async fn list_threads(&self) -> Result<Vec<Thread>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, agent_id, channel, external_thread_id, title, created_at, updated_at FROM threads ORDER BY updated_at DESC",
+                params![],
+            )
+            .await?;
+        let mut threads = Vec::new();
+        while let Some(row) = rows.next().await? {
+            threads.push(Thread {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                channel: row.get(2)?,
+                external_thread_id: row.get(3)?,
+                title: row.get(4)?,
+                created_at: parse_datetime(&row.get::<String>(5)?)?,
+                updated_at: parse_datetime(&row.get::<String>(6)?)?,
+            });
+        }
+        Ok(threads)
+    }
+
+    pub async fn create_turn(&self, thread_id: &str, user_message: &str) -> Result<Turn> {
+        let conn = self.connect()?;
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+        conn.execute(
+            "INSERT INTO turns (id, thread_id, status, user_message, assistant_message, error, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)",
+            params![
+                id.clone(),
+                thread_id.to_string(),
+                "running".to_string(),
+                user_message.to_string(),
+                now.to_rfc3339(),
+                now.to_rfc3339()
+            ],
+        )
+        .await?;
+        Ok(Turn {
+            id,
+            thread_id: thread_id.to_string(),
+            status: TurnStatus::Running,
+            user_message: user_message.to_string(),
+            assistant_message: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub async fn update_turn(
+        &self,
+        turn_id: &str,
+        status: TurnStatus,
+        assistant_message: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE turns SET status = ?, assistant_message = ?, error = ?, updated_at = ? WHERE id = ?",
+            params![
+                turn_status_string(&status),
+                assistant_message.map(ToString::to_string),
+                error.map(ToString::to_string),
+                now,
+                turn_id.to_string()
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_thread_turns(&self, thread_id: &str) -> Result<Vec<Turn>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, thread_id, status, user_message, assistant_message, error, created_at, updated_at FROM turns WHERE thread_id = ? ORDER BY created_at ASC",
+                params![thread_id.to_string()],
+            )
+            .await?;
+        let mut turns = Vec::new();
+        while let Some(row) = rows.next().await? {
+            turns.push(Turn {
+                id: row.get(0)?,
+                thread_id: row.get(1)?,
+                status: turn_status_from_string(&row.get::<String>(2)?),
+                user_message: row.get(3)?,
+                assistant_message: row.get(4)?,
+                error: row.get(5)?,
+                created_at: parse_datetime(&row.get::<String>(6)?)?,
+                updated_at: parse_datetime(&row.get::<String>(7)?)?,
+            });
+        }
+        Ok(turns)
+    }
+
+    pub async fn append_event(
+        &self,
+        turn_id: &str,
+        thread_id: &str,
+        kind: EventKind,
+        payload: &Value,
+    ) -> Result<Event> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE turn_id = ?",
+                params![turn_id.to_string()],
+            )
+            .await?;
+        let sequence = if let Some(row) = rows.next().await? {
+            row.get::<i64>(0)?
+        } else {
+            1
+        };
+        let event = Event {
+            id: Uuid::new_v4().to_string(),
+            turn_id: turn_id.to_string(),
+            thread_id: thread_id.to_string(),
+            sequence,
+            kind,
+            payload: payload.clone(),
+            created_at: Utc::now(),
+        };
+        conn.execute(
+            "INSERT INTO events (id, turn_id, thread_id, sequence, kind, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                event.id.clone(),
+                event.turn_id.clone(),
+                event.thread_id.clone(),
+                event.sequence,
+                serde_json::to_string(&event.kind)?,
+                serde_json::to_string(&event.payload)?,
+                event.created_at.to_rfc3339()
+            ],
+        )
+        .await?;
+        Ok(event)
+    }
+
+    pub async fn list_thread_events(&self, thread_id: &str) -> Result<Vec<Event>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, turn_id, thread_id, sequence, kind, payload, created_at FROM events WHERE thread_id = ? ORDER BY created_at ASC, sequence ASC",
+                params![thread_id.to_string()],
+            )
+            .await?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().await? {
+            events.push(Event {
+                id: row.get(0)?,
+                turn_id: row.get(1)?,
+                thread_id: row.get(2)?,
+                sequence: row.get(3)?,
+                kind: serde_json::from_str(&row.get::<String>(4)?)?,
+                payload: serde_json::from_str(&row.get::<String>(5)?)?,
+                created_at: parse_datetime(&row.get::<String>(6)?)?,
+            });
+        }
+        Ok(events)
+    }
+
+    pub async fn store_trace_blob(&self, body: &Value) -> Result<TraceBlob> {
+        let id = Uuid::new_v4().to_string();
+        let created_at = Utc::now();
+        let body = compress_bytes(redact_json(body).to_string().as_bytes())?;
+        let blob = TraceBlob {
+            id: id.clone(),
+            encoding: "gzip".to_string(),
+            content_type: "application/json".to_string(),
+            body,
+            created_at,
+        };
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO trace_blobs (id, encoding, content_type, body, created_at) VALUES (?, ?, ?, ?, ?)",
+            params![
+                blob.id.clone(),
+                blob.encoding.clone(),
+                blob.content_type.clone(),
+                blob.body.clone(),
+                blob.created_at.to_rfc3339()
+            ],
+        )
+        .await?;
+        Ok(blob)
+    }
+
+    pub async fn fetch_trace_blob_json(&self, blob_id: &str) -> Result<Value> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT body FROM trace_blobs WHERE id = ?",
+                params![blob_id.to_string()],
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("trace blob not found: {blob_id}"))?;
+        let body: Vec<u8> = row.get(0)?;
+        Ok(serde_json::from_slice(&decompress_bytes(&body)?)?)
+    }
+
+    pub async fn record_model_trace(&self, trace: &ModelTrace) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO model_traces (id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                trace.id.clone(),
+                trace.turn_id.clone(),
+                trace.thread_id.clone(),
+                trace.agent_id.clone(),
+                trace.channel.clone(),
+                trace.model.clone(),
+                trace.request_started_at.to_rfc3339(),
+                trace.request_completed_at.to_rfc3339(),
+                trace.duration_ms,
+                serde_json::to_string(&trace.outcome)?,
+                trace.input_tokens,
+                trace.output_tokens,
+                trace.cache_read_input_tokens,
+                trace.cache_creation_input_tokens,
+                trace.provider_request_id.clone(),
+                trace.tool_count,
+                serde_json::to_string(&trace.tool_names)?,
+                trace.request_blob_id.clone(),
+                trace.response_blob_id.clone(),
+                trace.stream_blob_id.clone(),
+                trace.error_summary.clone()
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_turn_traces(&self, turn_id: &str) -> Result<Vec<ModelTrace>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary FROM model_traces WHERE turn_id = ? ORDER BY request_started_at ASC",
+                params![turn_id.to_string()],
+            )
+            .await?;
+        let mut traces = Vec::new();
+        while let Some(row) = rows.next().await? {
+            traces.push(ModelTrace {
+                id: row.get(0)?,
+                turn_id: row.get(1)?,
+                thread_id: row.get(2)?,
+                agent_id: row.get(3)?,
+                channel: row.get(4)?,
+                model: row.get(5)?,
+                request_started_at: parse_datetime(&row.get::<String>(6)?)?,
+                request_completed_at: parse_datetime(&row.get::<String>(7)?)?,
+                duration_ms: row.get(8)?,
+                outcome: serde_json::from_str(&row.get::<String>(9)?)?,
+                input_tokens: row.get(10)?,
+                output_tokens: row.get(11)?,
+                cache_read_input_tokens: row.get(12)?,
+                cache_creation_input_tokens: row.get(13)?,
+                provider_request_id: row.get(14)?,
+                tool_count: row.get(15)?,
+                tool_names: serde_json::from_str(&row.get::<String>(16)?)?,
+                request_blob_id: row.get(17)?,
+                response_blob_id: row.get(18)?,
+                stream_blob_id: row.get(19)?,
+                error_summary: row.get(20)?,
+            });
+        }
+        Ok(traces)
+    }
+
+    pub async fn get_trace_detail(&self, trace_id: &str) -> Result<Option<TraceDetail>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary FROM model_traces WHERE id = ?",
+                params![trace_id.to_string()],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(None);
+        };
+        let trace = ModelTrace {
+            id: row.get(0)?,
+            turn_id: row.get(1)?,
+            thread_id: row.get(2)?,
+            agent_id: row.get(3)?,
+            channel: row.get(4)?,
+            model: row.get(5)?,
+            request_started_at: parse_datetime(&row.get::<String>(6)?)?,
+            request_completed_at: parse_datetime(&row.get::<String>(7)?)?,
+            duration_ms: row.get(8)?,
+            outcome: serde_json::from_str(&row.get::<String>(9)?)?,
+            input_tokens: row.get(10)?,
+            output_tokens: row.get(11)?,
+            cache_read_input_tokens: row.get(12)?,
+            cache_creation_input_tokens: row.get(13)?,
+            provider_request_id: row.get(14)?,
+            tool_count: row.get(15)?,
+            tool_names: serde_json::from_str(&row.get::<String>(16)?)?,
+            request_blob_id: row.get(17)?,
+            response_blob_id: row.get(18)?,
+            stream_blob_id: row.get(19)?,
+            error_summary: row.get(20)?,
+        };
+        Ok(Some(TraceDetail {
+            request_body: self.fetch_trace_blob_json(&trace.request_blob_id).await?,
+            response_body: self.fetch_trace_blob_json(&trace.response_blob_id).await?,
+            trace,
+        }))
+    }
+
+    pub async fn record_outbound_message(&self, outbound: &OutboundMessage) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO outbound_messages (id, turn_id, thread_id, channel, external_thread_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                outbound.id.clone(),
+                outbound.turn_id.clone(),
+                outbound.thread_id.clone(),
+                outbound.channel.clone(),
+                outbound.external_thread_id.clone(),
+                outbound.content.clone(),
+                outbound.created_at.to_rfc3339()
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn upsert_cursor(&self, cursor: &ChannelCursor) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO channel_cursors (channel, cursor_key, cursor_value, updated_at) VALUES (?, ?, ?, ?)",
+            params![
+                cursor.channel.clone(),
+                cursor.cursor_key.clone(),
+                cursor.cursor_value.clone(),
+                cursor.updated_at.to_rfc3339()
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+fn turn_status_string(status: &TurnStatus) -> String {
+    match status {
+        TurnStatus::Pending => "pending",
+        TurnStatus::Running => "running",
+        TurnStatus::Succeeded => "succeeded",
+        TurnStatus::Failed => "failed",
+    }
+    .to_string()
+}
+
+fn turn_status_from_string(value: &str) -> TurnStatus {
+    match value {
+        "pending" => TurnStatus::Pending,
+        "running" => TurnStatus::Running,
+        "succeeded" => TurnStatus::Succeeded,
+        "failed" => TurnStatus::Failed,
+        _ => TurnStatus::Failed,
+    }
+}
+
+fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {
+    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+}
+
+fn compress_bytes(input: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(input)?;
+    Ok(encoder.finish()?)
+}
+
+fn decompress_bytes(input: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = GzDecoder::new(input);
+    let mut output = Vec::new();
+    decoder.read_to_end(&mut output)?;
+    Ok(output)
+}
+
+fn redact_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    let lower = key.to_ascii_lowercase();
+                    if [
+                        "authorization",
+                        "api_key",
+                        "x-api-key",
+                        "cookie",
+                        "token",
+                        "access_token",
+                        "refresh_token",
+                    ]
+                    .iter()
+                    .any(|needle| lower.contains(needle))
+                    {
+                        (key.clone(), Value::String("[REDACTED]".to_string()))
+                    } else {
+                        (key.clone(), redact_json(value))
+                    }
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(redact_json).collect()),
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_json;
+    use serde_json::json;
+
+    #[test]
+    fn redacts_secret_keys() {
+        let value = json!({
+            "authorization": "Bearer abc",
+            "nested": {
+                "api_key": "secret"
+            }
+        });
+        let redacted = redact_json(&value);
+        assert_eq!(redacted["authorization"], "[REDACTED]");
+        assert_eq!(redacted["nested"]["api_key"], "[REDACTED]");
+    }
+}

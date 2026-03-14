@@ -343,6 +343,30 @@ impl Db {
         })
     }
 
+    pub async fn get_turn(&self, turn_id: &str) -> Result<Option<Turn>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, thread_id, status, user_message, assistant_message, error, created_at, updated_at FROM turns WHERE id = ?",
+                params![turn_id.to_string()],
+            )
+            .await?;
+        Ok(if let Some(row) = rows.next().await? {
+            Some(Turn {
+                id: row.get(0)?,
+                thread_id: row.get(1)?,
+                status: turn_status_from_string(&row.get::<String>(2)?),
+                user_message: row.get(3)?,
+                assistant_message: row.get(4)?,
+                error: row.get(5)?,
+                created_at: parse_datetime(&row.get::<String>(6)?)?,
+                updated_at: parse_datetime(&row.get::<String>(7)?)?,
+            })
+        } else {
+            None
+        })
+    }
+
     pub async fn list_threads(&self) -> Result<Vec<Thread>> {
         let conn = self.connect()?;
         let mut rows = conn
@@ -423,6 +447,30 @@ impl Db {
             .query(
                 "SELECT id, thread_id, status, user_message, assistant_message, error, created_at, updated_at FROM turns WHERE thread_id = ? ORDER BY created_at ASC",
                 params![thread_id.to_string()],
+            )
+            .await?;
+        let mut turns = Vec::new();
+        while let Some(row) = rows.next().await? {
+            turns.push(Turn {
+                id: row.get(0)?,
+                thread_id: row.get(1)?,
+                status: turn_status_from_string(&row.get::<String>(2)?),
+                user_message: row.get(3)?,
+                assistant_message: row.get(4)?,
+                error: row.get(5)?,
+                created_at: parse_datetime(&row.get::<String>(6)?)?,
+                updated_at: parse_datetime(&row.get::<String>(7)?)?,
+            });
+        }
+        Ok(turns)
+    }
+
+    pub async fn list_running_turns(&self) -> Result<Vec<Turn>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, thread_id, status, user_message, assistant_message, error, created_at, updated_at FROM turns WHERE status = ? ORDER BY created_at ASC",
+                params!["running".to_string()],
             )
             .await?;
         let mut turns = Vec::new();

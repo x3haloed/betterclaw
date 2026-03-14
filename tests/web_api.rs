@@ -217,6 +217,86 @@ async fn trace_endpoint_returns_full_payloads() {
 }
 
 #[tokio::test]
+async fn replay_endpoint_creates_a_new_turn() {
+    let app = app().await;
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/threads")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"Replay"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let thread: Value = serde_json::from_slice(&body).unwrap();
+    let thread_id = thread["id"].as_str().unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/threads/{thread_id}/messages"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"content":"replay me"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let first: Value = serde_json::from_slice(&body).unwrap();
+
+    let replay = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/turns/{}/replay",
+                    first["turn_id"].as_str().unwrap()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(replay.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let replay: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(replay["thread_id"], thread_id);
+    assert_ne!(replay["turn_id"], first["turn_id"]);
+
+    let timeline = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/threads/{thread_id}/timeline"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(timeline.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let timeline: Value = serde_json::from_slice(&body).unwrap();
+    assert!(timeline.as_array().unwrap().iter().any(|event| {
+        event["turn_id"] == replay["turn_id"] && event["kind"] == "replay_requested"
+    }));
+}
+
+#[tokio::test]
 async fn runtime_settings_round_trip_and_affect_request_payload() {
     let app = app().await;
 

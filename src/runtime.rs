@@ -55,6 +55,12 @@ pub enum RuntimeUpdate {
     },
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecoveryReport {
+    pub recovered_turn_count: usize,
+    pub recovered_turn_ids: Vec<String>,
+}
+
 impl Runtime {
     pub async fn new(db: Db) -> Result<Self, RuntimeError> {
         Self::with_model_engine(db, ModelEngine::stub(StubModelEngine), "local-debug-model").await
@@ -92,12 +98,14 @@ impl Runtime {
             .await
             .map_err(RuntimeError::from)?;
 
-        Ok(Self {
+        let runtime = Self {
             db,
             tools: ToolRegistry::with_defaults(),
             model_engine: Arc::new(model_engine),
             updates,
-        })
+        };
+        runtime.recover_incomplete_turns().await?;
+        Ok(runtime)
     }
 
     pub fn db(&self) -> Arc<Db> {
@@ -212,7 +220,76 @@ impl Runtime {
             .map_err(RuntimeError::from)
     }
 
+    pub async fn get_turn(&self, turn_id: &str) -> Result<Option<Turn>, RuntimeError> {
+        self.db.get_turn(turn_id).await.map_err(RuntimeError::from)
+    }
+
+    pub async fn recover_incomplete_turns(&self) -> Result<RecoveryReport, RuntimeError> {
+        let running_turns = self
+            .db
+            .list_running_turns()
+            .await
+            .map_err(RuntimeError::from)?;
+        let mut recovered_turn_ids = Vec::new();
+        for turn in running_turns {
+            let message = "Recovered abandoned running turn during runtime startup".to_string();
+            self.update_turn_and_publish(
+                &turn.thread_id,
+                &turn.id,
+                TurnStatus::Failed,
+                None,
+                Some(message.clone()),
+            )
+            .await?;
+            self.append_event_and_publish(
+                &turn.id,
+                &turn.thread_id,
+                EventKind::TurnRecovered,
+                json!({
+                    "recovered_at": Utc::now(),
+                    "reason": message,
+                }),
+            )
+            .await?;
+            recovered_turn_ids.push(turn.id);
+        }
+        Ok(RecoveryReport {
+            recovered_turn_count: recovered_turn_ids.len(),
+            recovered_turn_ids,
+        })
+    }
+
+    pub async fn replay_turn(&self, source_turn_id: &str) -> Result<TurnOutcome, RuntimeError> {
+        let source_turn = self
+            .get_turn(source_turn_id)
+            .await?
+            .ok_or_else(|| RuntimeError::TurnNotFound(source_turn_id.to_string()))?;
+        let thread = self
+            .get_thread(&source_turn.thread_id)
+            .await?
+            .ok_or_else(|| RuntimeError::ThreadNotFound(source_turn.thread_id.clone()))?;
+        self.handle_inbound_internal(
+            InboundEvent {
+                agent_id: thread.agent_id.clone(),
+                channel: thread.channel.clone(),
+                external_thread_id: thread.external_thread_id.clone(),
+                content: source_turn.user_message,
+                received_at: Utc::now(),
+            },
+            Some(source_turn_id.to_string()),
+        )
+        .await
+    }
+
     pub async fn handle_inbound(&self, event: InboundEvent) -> Result<TurnOutcome, RuntimeError> {
+        self.handle_inbound_internal(event, None).await
+    }
+
+    async fn handle_inbound_internal(
+        &self,
+        event: InboundEvent,
+        replay_source_turn_id: Option<String>,
+    ) -> Result<TurnOutcome, RuntimeError> {
         let thread = self
             .resolve_thread(&event.agent_id, &event.channel, &event.external_thread_id)
             .await?;
@@ -238,6 +315,18 @@ impl Runtime {
             json!({ "thread_id": thread.id, "external_thread_id": thread.external_thread_id }),
         )
         .await?;
+        if let Some(source_turn_id) = replay_source_turn_id.clone() {
+            self.append_event_and_publish(
+                &turn.id,
+                &thread.id,
+                EventKind::ReplayRequested,
+                json!({
+                    "source_turn_id": source_turn_id,
+                    "requested_at": Utc::now(),
+                }),
+            )
+            .await?;
+        }
 
         let mut conversation = self
             .build_conversation_history(&thread, &turn, &settings)
@@ -782,6 +871,7 @@ mod tests {
     use crate::db::Db;
     use crate::event::EventKind;
     use crate::model::strip_reasoning_tags;
+    use crate::turn::TurnStatus;
 
     #[tokio::test]
     async fn thread_resolution_is_stable() {
@@ -869,5 +959,68 @@ mod tests {
         let turns = runtime.list_thread_turns("thread-1").await.unwrap();
         let assistant = turns[0].assistant_message.clone().unwrap();
         assert_eq!(assistant, strip_reasoning_tags(&assistant));
+    }
+
+    #[tokio::test]
+    async fn replay_turn_creates_a_fresh_turn_with_replay_event() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("replay.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let original = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-replay",
+                "hello replay",
+            ))
+            .await
+            .unwrap();
+        let replayed = runtime.replay_turn(&original.turn_id).await.unwrap();
+
+        assert_eq!(replayed.thread.id, original.thread.id);
+        assert_ne!(replayed.turn_id, original.turn_id);
+
+        let timeline = runtime
+            .list_thread_timeline(&original.thread.id)
+            .await
+            .unwrap();
+        assert!(timeline.iter().any(|event| {
+            event.turn_id == replayed.turn_id && event.kind == EventKind::ReplayRequested
+        }));
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_marks_running_turns_failed() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("recovery.db");
+        let db = Db::open(&db_path).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let thread = runtime
+            .create_web_thread(Some("Recovery".to_string()))
+            .await
+            .unwrap();
+        let turn = runtime
+            .db()
+            .create_turn(&thread.id, "stuck message")
+            .await
+            .unwrap();
+        drop(runtime);
+
+        let db = Db::open(&db_path).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let recovered = runtime.get_turn(&turn.id).await.unwrap().unwrap();
+        assert_eq!(recovered.status, TurnStatus::Failed);
+        assert!(
+            recovered
+                .error
+                .unwrap()
+                .contains("Recovered abandoned running turn")
+        );
+        let timeline = runtime.list_thread_timeline(&thread.id).await.unwrap();
+        assert!(
+            timeline.iter().any(|event| {
+                event.turn_id == turn.id && event.kind == EventKind::TurnRecovered
+            })
+        );
     }
 }

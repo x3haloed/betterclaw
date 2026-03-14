@@ -27,12 +27,14 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
             "/api/settings/runtime",
             get(get_runtime_settings).put(update_runtime_settings),
         )
+        .route("/api/runtime/recover", post(recover_runtime))
         .route("/api/threads", get(list_threads).post(create_thread))
         .route("/api/threads/{thread_id}", get(get_thread))
         .route("/api/threads/{thread_id}/messages", post(post_message))
         .route("/api/threads/{thread_id}/stream", get(stream_thread))
         .route("/api/threads/{thread_id}/timeline", get(get_timeline))
         .route("/api/turns/{turn_id}/traces", get(get_turn_traces))
+        .route("/api/turns/{turn_id}/replay", post(replay_turn))
         .route("/api/traces/{trace_id}", get(get_trace))
         .with_state(runtime)
 }
@@ -93,6 +95,12 @@ async fn update_runtime_settings(
         updated_at: current.updated_at,
     };
     Ok(Json(runtime.update_runtime_settings(updated).await?))
+}
+
+async fn recover_runtime(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<crate::runtime::RecoveryReport>, ApiError> {
+    Ok(Json(runtime.recover_incomplete_turns().await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +194,27 @@ async fn get_turn_traces(
     Path(turn_id): Path<String>,
 ) -> Result<Json<Vec<crate::model::ModelTrace>>, ApiError> {
     Ok(Json(runtime.list_turn_traces(&turn_id).await?))
+}
+
+#[derive(Debug, Serialize)]
+struct ReplayTurnResponse {
+    thread_id: String,
+    turn_id: String,
+    response: String,
+    trace_id: String,
+}
+
+async fn replay_turn(
+    State(runtime): State<Arc<Runtime>>,
+    Path(turn_id): Path<String>,
+) -> Result<Json<ReplayTurnResponse>, ApiError> {
+    let outcome = runtime.replay_turn(&turn_id).await?;
+    Ok(Json(ReplayTurnResponse {
+        thread_id: outcome.thread.id,
+        turn_id: outcome.turn_id,
+        response: outcome.response,
+        trace_id: outcome.trace_id,
+    }))
 }
 
 async fn get_trace(

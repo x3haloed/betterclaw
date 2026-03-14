@@ -6,6 +6,8 @@ pub enum RuntimeError {
     AgentNotFound(String),
     #[error("thread not found: {0}")]
     ThreadNotFound(String),
+    #[error("turn not found: {0}")]
+    TurnNotFound(String),
     #[error("tool not found: {0}")]
     ToolNotFound(String),
     #[error("workspace not found: {0}")]

@@ -18,6 +18,8 @@ pub struct Event {
 pub enum EventKind {
     InboundMessage,
     ThreadResolved,
+    ReplayRequested,
+    TurnRecovered,
     ContextAssembled,
     ModelRequest,
     ModelResponse,

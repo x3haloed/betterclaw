@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use tokio::fs;
 
 use crate::context::JobContext;
-use crate::tools::builtin::path_utils::validate_path;
+use crate::tools::builtin::path_utils::normalize_lexical;
 use crate::tools::tool::{
     ApprovalRequirement, Tool, ToolDomain, ToolError, ToolOutput, require_str,
 };
@@ -26,10 +26,26 @@ const MAX_DIR_ENTRIES: usize = 500;
 
 fn resolve_tool_path(
     path_str: &str,
-    base_dir: Option<&Path>,
+    _base_dir: Option<&Path>,
     ctx: &JobContext,
 ) -> Result<PathBuf, ToolError> {
-    validate_path(path_str, base_dir.or(ctx.working_dir.as_deref()))
+    let path = PathBuf::from(path_str);
+
+    let resolved = if path.is_absolute() {
+        path.canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(&path))
+    } else {
+        let joined = ctx
+            .working_dir
+            .as_deref()
+            .unwrap_or_else(|| Path::new("."))
+            .join(&path);
+        joined
+            .canonicalize()
+            .unwrap_or_else(|_| normalize_lexical(&joined))
+    };
+
+    Ok(resolved)
 }
 
 /// Read file contents tool.
@@ -593,7 +609,7 @@ impl Tool for ApplyPatchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::path_utils::normalize_lexical;
+    use crate::tools::builtin::path_utils::{normalize_lexical, validate_path};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -752,6 +768,28 @@ mod tests {
 
         let content = result.result.get("content").unwrap().as_str().unwrap();
         assert!(content.contains("hello from workdir"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_allows_absolute_paths_outside_workdir() {
+        let workdir = TempDir::new().unwrap();
+        let other_dir = TempDir::new().unwrap();
+        let file_path = other_dir.path().join("outside.md");
+        std::fs::write(&file_path, "hello from outside\n").unwrap();
+
+        let tool = ReadFileTool::new();
+        let ctx = JobContext::default().with_working_dir(workdir.path());
+
+        let result = tool
+            .execute(
+                serde_json::json!({"path": file_path.to_str().unwrap()}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = result.result.get("content").unwrap().as_str().unwrap();
+        assert!(content.contains("hello from outside"));
     }
 
     #[tokio::test]

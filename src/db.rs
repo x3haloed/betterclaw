@@ -14,13 +14,19 @@ use crate::agent::Agent;
 use crate::channel::{ChannelCursor, OutboundMessage};
 use crate::event::{Event, EventKind};
 use crate::model::{ModelTrace, TraceBlob, TraceDetail};
-use crate::settings::RuntimeSettings;
+use crate::settings::{RetentionSettings, RuntimeSettings};
 use crate::thread::Thread;
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
 
 pub struct Db {
     database: Database,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TraceBlobPruneReport {
+    pub pruned_blob_count: usize,
+    pub reclaimed_bytes: i64,
 }
 
 impl Db {
@@ -137,6 +143,12 @@ impl Db {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS retention_settings (
+                agent_id TEXT PRIMARY KEY,
+                trace_blob_retention_days INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         "#,
         )
         .await?;
@@ -184,6 +196,21 @@ impl Db {
         Ok(())
     }
 
+    pub async fn seed_retention_settings(&self, settings: &RetentionSettings) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO retention_settings (agent_id, trace_blob_retention_days, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            params![
+                settings.agent_id.clone(),
+                settings.trace_blob_retention_days as i64,
+                settings.created_at.to_rfc3339(),
+                settings.updated_at.to_rfc3339(),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn load_runtime_settings(&self, agent_id: &str) -> Result<Option<RuntimeSettings>> {
         let conn = self.connect()?;
         let mut rows = conn
@@ -210,6 +237,29 @@ impl Db {
         })
     }
 
+    pub async fn load_retention_settings(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<RetentionSettings>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT agent_id, trace_blob_retention_days, created_at, updated_at FROM retention_settings WHERE agent_id = ?",
+                params![agent_id.to_string()],
+            )
+            .await?;
+        Ok(if let Some(row) = rows.next().await? {
+            Some(RetentionSettings {
+                agent_id: row.get(0)?,
+                trace_blob_retention_days: row.get::<i64>(1)? as u32,
+                created_at: parse_datetime(&row.get::<String>(2)?)?,
+                updated_at: parse_datetime(&row.get::<String>(3)?)?,
+            })
+        } else {
+            None
+        })
+    }
+
     pub async fn update_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
@@ -223,6 +273,22 @@ impl Db {
                 if settings.stream { 1 } else { 0 },
                 if settings.allow_tools { 1 } else { 0 },
                 settings.max_history_turns as i64,
+                settings.agent_id.clone(),
+                settings.created_at.to_rfc3339(),
+                settings.updated_at.to_rfc3339(),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn update_retention_settings(&self, settings: &RetentionSettings) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO retention_settings (agent_id, trace_blob_retention_days, created_at, updated_at) VALUES (?, ?, COALESCE((SELECT created_at FROM retention_settings WHERE agent_id = ?), ?), ?)",
+            params![
+                settings.agent_id.clone(),
+                settings.trace_blob_retention_days as i64,
                 settings.agent_id.clone(),
                 settings.created_at.to_rfc3339(),
                 settings.updated_at.to_rfc3339(),
@@ -603,6 +669,67 @@ impl Db {
         Ok(serde_json::from_slice(&decompress_bytes(&body)?)?)
     }
 
+    pub async fn prune_trace_blobs_older_than(
+        &self,
+        cutoff: DateTime<Utc>,
+        pruned_at: DateTime<Utc>,
+    ) -> Result<TraceBlobPruneReport> {
+        const PRUNED_CONTENT_TYPE: &str = "application/vnd.betterclaw.pruned+json";
+
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT id, encoding, content_type, body, created_at FROM trace_blobs WHERE created_at < ? AND content_type != ?",
+                params![cutoff.to_rfc3339(), PRUNED_CONTENT_TYPE.to_string()],
+            )
+            .await?;
+
+        let mut blobs = Vec::new();
+        while let Some(row) = rows.next().await? {
+            blobs.push((
+                row.get::<String>(0)?,
+                row.get::<String>(1)?,
+                row.get::<String>(2)?,
+                row.get::<Vec<u8>>(3)?,
+                row.get::<String>(4)?,
+            ));
+        }
+
+        let mut report = TraceBlobPruneReport {
+            pruned_blob_count: 0,
+            reclaimed_bytes: 0,
+        };
+
+        for (blob_id, encoding, content_type, body, created_at) in blobs {
+            let original_bytes = body.len() as i64;
+            let placeholder = serde_json::json!({
+                "pruned": true,
+                "reason": "retention_policy",
+                "pruned_at": pruned_at,
+                "original_encoding": encoding,
+                "original_content_type": content_type,
+                "original_created_at": created_at,
+                "original_size_bytes": original_bytes,
+            });
+            let replacement = compress_bytes(placeholder.to_string().as_bytes())?;
+            let replacement_bytes = replacement.len() as i64;
+            conn.execute(
+                "UPDATE trace_blobs SET encoding = ?, content_type = ?, body = ? WHERE id = ?",
+                params![
+                    "gzip".to_string(),
+                    PRUNED_CONTENT_TYPE.to_string(),
+                    replacement,
+                    blob_id,
+                ],
+            )
+            .await?;
+            report.pruned_blob_count += 1;
+            report.reclaimed_bytes += (original_bytes - replacement_bytes).max(0);
+        }
+
+        Ok(report)
+    }
+
     pub async fn record_model_trace(&self, trace: &ModelTrace) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
@@ -758,6 +885,16 @@ impl Db {
         .await?;
         Ok(())
     }
+
+    pub async fn backdate_all_trace_blobs(&self, created_at: DateTime<Utc>) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "UPDATE trace_blobs SET created_at = ?",
+            params![created_at.to_rfc3339()],
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 fn turn_status_string(status: &TurnStatus) -> String {
@@ -833,8 +970,10 @@ fn redact_json(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_json;
+    use super::{Db, redact_json};
+    use chrono::{Duration, Utc};
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn redacts_secret_keys() {
@@ -858,5 +997,22 @@ mod tests {
         let redacted = redact_json(&value);
         assert_eq!(redacted["max_tokens"], 512);
         assert_eq!(redacted["prompt_tokens"], 128);
+    }
+
+    #[tokio::test]
+    async fn prune_trace_blobs_replaces_body_with_placeholder() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("prune.db")).await.unwrap();
+        let blob = db
+            .store_trace_blob_json(&json!({"hello":"world"}))
+            .await
+            .unwrap();
+        let report = db
+            .prune_trace_blobs_older_than(Utc::now() + Duration::days(1), Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(report.pruned_blob_count, 1);
+        let payload = db.fetch_trace_blob_json(&blob.id).await.unwrap();
+        assert_eq!(payload["pruned"], true);
     }
 }

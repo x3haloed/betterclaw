@@ -50,6 +50,20 @@
             </div>
           </form>
         </section>
+        <section class="settings-panel">
+          <div class="settings-header">Retention</div>
+          <form id="retention-form" class="settings-form">
+            <label class="settings-field">
+              <span>Trace Blob Retention Days</span>
+              <input id="retention-trace-blob-days" type="number" min="0" step="1" />
+            </label>
+            <div class="settings-actions">
+              <button type="submit">Save Retention</button>
+              <button id="prune-traces" type="button">Prune Now</button>
+            </div>
+            <span id="retention-status" class="settings-status"></span>
+          </form>
+        </section>
         <div id="thread-list" class="thread-list"></div>
       </aside>
       <main class="main">

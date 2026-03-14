@@ -27,7 +27,12 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
             "/api/settings/runtime",
             get(get_runtime_settings).put(update_runtime_settings),
         )
+        .route(
+            "/api/settings/retention",
+            get(get_retention_settings).put(update_retention_settings),
+        )
         .route("/api/runtime/recover", post(recover_runtime))
+        .route("/api/runtime/prune-traces", post(prune_trace_blobs))
         .route("/api/threads", get(list_threads).post(create_thread))
         .route("/api/threads/{thread_id}", get(get_thread))
         .route("/api/threads/{thread_id}/messages", post(post_message))
@@ -97,10 +102,41 @@ async fn update_runtime_settings(
     Ok(Json(runtime.update_runtime_settings(updated).await?))
 }
 
+async fn get_retention_settings(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<crate::settings::RetentionSettings>, ApiError> {
+    Ok(Json(runtime.get_retention_settings("default").await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateRetentionSettingsRequest {
+    trace_blob_retention_days: u32,
+}
+
+async fn update_retention_settings(
+    State(runtime): State<Arc<Runtime>>,
+    Json(payload): Json<UpdateRetentionSettingsRequest>,
+) -> Result<Json<crate::settings::RetentionSettings>, ApiError> {
+    let current = runtime.get_retention_settings("default").await?;
+    let updated = crate::settings::RetentionSettings {
+        agent_id: current.agent_id,
+        trace_blob_retention_days: payload.trace_blob_retention_days,
+        created_at: current.created_at,
+        updated_at: current.updated_at,
+    };
+    Ok(Json(runtime.update_retention_settings(updated).await?))
+}
+
 async fn recover_runtime(
     State(runtime): State<Arc<Runtime>>,
 ) -> Result<Json<crate::runtime::RecoveryReport>, ApiError> {
     Ok(Json(runtime.recover_incomplete_turns().await?))
+}
+
+async fn prune_trace_blobs(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<crate::runtime::TracePruneReport>, ApiError> {
+    Ok(Json(runtime.prune_trace_blobs("default").await?))
 }
 
 #[derive(Debug, Deserialize)]

@@ -11,11 +11,15 @@ use betterclaw::runtime::Runtime;
 use betterclaw::web;
 
 async fn app() -> axum::Router {
+    app_with_runtime().await.0
+}
+
+async fn app_with_runtime() -> (axum::Router, Arc<Runtime>) {
     let dir = tempdir().unwrap();
     let root = dir.keep();
     let db = Db::open(&root.join("test.db")).await.unwrap();
     let runtime = Arc::new(Runtime::new(db).await.unwrap());
-    web::app(runtime)
+    (web::app(runtime.clone()), runtime)
 }
 
 #[tokio::test]
@@ -398,4 +402,103 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
         trace["request_body"]["messages"][0]["content"],
         "Be extremely concise."
     );
+}
+
+#[tokio::test]
+async fn retention_settings_and_prune_endpoint_replace_old_blobs() {
+    let (app, runtime) = app_with_runtime().await;
+
+    let updated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/settings/retention")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"trace_blob_retention_days":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/threads")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"Retention"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(create.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let thread: Value = serde_json::from_slice(&body).unwrap();
+    let thread_id = thread["id"].as_str().unwrap();
+
+    let posted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/threads/{thread_id}/messages"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"content":"retention test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(posted.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let posted: Value = serde_json::from_slice(&body).unwrap();
+
+    runtime
+        .db()
+        .backdate_all_trace_blobs(chrono::Utc::now() - chrono::Duration::days(2))
+        .await
+        .unwrap();
+
+    let prune = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/runtime/prune-traces")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prune.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(prune.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&body).unwrap();
+    assert!(report["pruned_blob_count"].as_u64().unwrap() >= 2);
+
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/traces/{}",
+                    posted["trace_id"].as_str().unwrap()
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(detail.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(detail["request_body"]["pruned"], true);
 }

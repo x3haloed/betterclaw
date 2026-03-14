@@ -32,3 +32,23 @@ impl RuntimeSettings {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetentionSettings {
+    pub agent_id: String,
+    pub trace_blob_retention_days: u32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl RetentionSettings {
+    pub fn with_defaults(agent_id: impl Into<String>) -> Self {
+        let now = Utc::now();
+        Self {
+            agent_id: agent_id.into(),
+            trace_blob_retention_days: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}

@@ -5,6 +5,7 @@ const state = {
   stream: null,
   refreshTimer: null,
   runtimeSettings: null,
+  retentionSettings: null,
 };
 
 async function request(path, options = {}) {
@@ -127,6 +128,14 @@ function renderSettings(settings) {
 async function loadSettings() {
   const settings = await request("/api/settings/runtime");
   renderSettings(settings);
+  const retention = await request("/api/settings/retention");
+  renderRetentionSettings(retention);
+}
+
+function renderRetentionSettings(settings) {
+  state.retentionSettings = settings;
+  document.getElementById("retention-trace-blob-days").value =
+    settings.trace_blob_retention_days;
 }
 
 function scheduleThreadRefresh() {
@@ -282,6 +291,38 @@ document.getElementById("settings-form").onsubmit = async (event) => {
   setTimeout(() => {
     if (status.textContent === "Saved") status.textContent = "";
   }, 1500);
+};
+
+document.getElementById("retention-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const status = document.getElementById("retention-status");
+  status.textContent = "Saving...";
+  const retention = await request("/api/settings/retention", {
+    method: "PUT",
+    body: JSON.stringify({
+      trace_blob_retention_days: Number(
+        document.getElementById("retention-trace-blob-days").value,
+      ),
+    }),
+  });
+  renderRetentionSettings(retention);
+  status.textContent = "Saved";
+  setTimeout(() => {
+    if (status.textContent === "Saved") status.textContent = "";
+  }, 1500);
+};
+
+document.getElementById("prune-traces").onclick = async () => {
+  const status = document.getElementById("retention-status");
+  status.textContent = "Pruning...";
+  const report = await request("/api/runtime/prune-traces", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  status.textContent = `Pruned ${report.pruned_blob_count} blobs, reclaimed ${report.reclaimed_bytes} bytes`;
+  if (state.selectedThreadId) {
+    await selectThread(state.selectedThreadId, { preserveTrace: true });
+  }
 };
 
 Promise.all([loadSettings(), loadThreads()]).catch((error) => {

@@ -17,6 +17,7 @@ use crate::model::{
     ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsConfig, OpenAiChatCompletionsEngine,
     ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome, strip_reasoning_tags,
 };
+use crate::settings::RetentionSettings;
 use crate::settings::RuntimeSettings;
 use crate::thread::Thread;
 use crate::tool::{ToolInvocation, ToolRegistry, ToolResult};
@@ -61,6 +62,13 @@ pub struct RecoveryReport {
     pub recovered_turn_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TracePruneReport {
+    pub retention_days: u32,
+    pub pruned_blob_count: usize,
+    pub reclaimed_bytes: i64,
+}
+
 impl Runtime {
     pub async fn new(db: Db) -> Result<Self, RuntimeError> {
         Self::with_model_engine(db, ModelEngine::stub(StubModelEngine), "local-debug-model").await
@@ -91,10 +99,14 @@ impl Runtime {
         );
         let agent = Agent::new("default", "Default Agent", workspace.id.clone());
         let default_settings = RuntimeSettings::with_defaults("default", model_name.into());
+        let default_retention = RetentionSettings::with_defaults("default");
         db.seed_default_agent(&agent, &workspace)
             .await
             .map_err(RuntimeError::from)?;
         db.seed_runtime_settings(&default_settings)
+            .await
+            .map_err(RuntimeError::from)?;
+        db.seed_retention_settings(&default_retention)
             .await
             .map_err(RuntimeError::from)?;
 
@@ -140,6 +152,39 @@ impl Runtime {
         settings.updated_at = Utc::now();
         self.db
             .update_runtime_settings(&settings)
+            .await
+            .map_err(RuntimeError::from)?;
+        Ok(settings)
+    }
+
+    pub async fn get_retention_settings(
+        &self,
+        agent_id: &str,
+    ) -> Result<RetentionSettings, RuntimeError> {
+        self.db
+            .load_retention_settings(agent_id)
+            .await
+            .map_err(RuntimeError::from)?
+            .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.to_string()))
+    }
+
+    pub async fn update_retention_settings(
+        &self,
+        mut settings: RetentionSettings,
+    ) -> Result<RetentionSettings, RuntimeError> {
+        let existing = self
+            .db
+            .load_retention_settings(&settings.agent_id)
+            .await
+            .map_err(RuntimeError::from)?;
+        let created_at = existing
+            .as_ref()
+            .map(|item| item.created_at)
+            .unwrap_or(settings.created_at);
+        settings.created_at = created_at;
+        settings.updated_at = Utc::now();
+        self.db
+            .update_retention_settings(&settings)
             .await
             .map_err(RuntimeError::from)?;
         Ok(settings)
@@ -256,6 +301,32 @@ impl Runtime {
         Ok(RecoveryReport {
             recovered_turn_count: recovered_turn_ids.len(),
             recovered_turn_ids,
+        })
+    }
+
+    pub async fn prune_trace_blobs(
+        &self,
+        agent_id: &str,
+    ) -> Result<TracePruneReport, RuntimeError> {
+        let settings = self.get_retention_settings(agent_id).await?;
+        if settings.trace_blob_retention_days == 0 {
+            return Ok(TracePruneReport {
+                retention_days: 0,
+                pruned_blob_count: 0,
+                reclaimed_bytes: 0,
+            });
+        }
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::days(settings.trace_blob_retention_days as i64);
+        let report = self
+            .db
+            .prune_trace_blobs_older_than(cutoff, now)
+            .await
+            .map_err(RuntimeError::from)?;
+        Ok(TracePruneReport {
+            retention_days: settings.trace_blob_retention_days,
+            pruned_blob_count: report.pruned_blob_count,
+            reclaimed_bytes: report.reclaimed_bytes,
         })
     }
 

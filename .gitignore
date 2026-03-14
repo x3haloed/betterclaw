@@ -1,31 +1,3 @@
-
-.env
-.env.local
-.env.*
-!.env.example
-
-# Claude Code worktrees and lock files
-.claude/worktrees/
-.claude/scheduled_tasks.lock
-
-# Sidecar tool data
-.sidecar/
-.todos/
-
-target/
-
-# Benchmark results (local runs, not committed)
-bench-results/
-
-# Coverage reports (local runs, not committed)
-/coverage/
-
-# WASM build artifacts (loaded from disk, not bundled)
-*.wasm
-
-# Traces
-trace_*.json
-
-# Local Claude Code settings (machine-specific, should not be committed)
-.claude/settings.local.json
-.worktrees/
+/target
+Cargo.lock
+.DS_Store

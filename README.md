@@ -1,143 +1,279 @@
 # BetterClaw
 
-**BetterClaw** is a secure, local-first personal AI assistant you run yourself that **learns continuously**.
+BetterClaw is a host-native, event-driven agent runtime for real work.
 
-BetterClaw agents learn and grow over time via:
-- Identity externalization
-- Attention lensing via early invariant exposure
-- RAG with provenance
+It is being rebuilt from scratch around a few simple ideas:
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg)](#license)
+- Agents should have one stable identity.
+- Workspaces should behave like normal directories.
+- Tools should be explicit, typed, and easy to debug.
+- Channels should be thin adapters, not miniature operating systems.
+- Logs should make failures obvious instead of mysterious.
 
----
+This project exists because too many agent systems make basic behavior hard to reason about. They hide important state behind layers of fallback logic, sandbox indirection, and magical recovery paths that turn simple bugs into archaeology.
 
-## What BetterClaw Is
+BetterClaw is the opposite kind of system.
 
-BetterClaw is an agent runtime + product surface:
+## What We Are Building
 
-- **Channels:** terminal REPL, web gateway, native Discord + Signal, optional HTTP webhooks, plus WASM channels (Telegram/Slack/etc).
-- **Tools:** built-in tools + **WASM tools**, installable via `betterclaw tool …` and `betterclaw registry …`.
-- **Security boundaries:** secrets encryption, allowlists/pairing for messaging channels, and tool sandboxing (WASM + optional Docker worker jobs).
-- **Durability:** everything important is captured into a **ledger**; background loops build **wake packs** and **recall indexes**.
+BetterClaw is a runtime for long-lived agents that:
 
-It is **not** a hosted service. It’s meant to run on your machine (or your server) with your data.
+- receive events from channels like web chat, Telegram, Tidepool, and local automation
+- maintain durable threads and workspace state
+- call normal host tools directly
+- produce clear outbound replies and actions
+- emit excellent structured logs for every important step
 
----
+At a high level:
 
-## What Makes It Different From Other “-Claw” Agents
+1. A channel receives or polls an inbound event.
+2. The event is normalized into an agent turn.
+3. The runtime assembles context for the thread and workspace.
+4. The model either responds directly or issues explicit tool calls.
+5. Tools execute on the host with predictable inputs and outputs.
+6. Results are recorded to the thread timeline.
+7. The channel sends the final reply or action.
 
-BetterClaw’s north star is *durable continuity without turning the model into a historian*:
+## Design Principles
 
-- **Ledger-first memory:** conversations, tool calls/results, and derived artifacts are events in an append-only ledger (libSQL/SQLite).
-- **Two-phase context:** (1) a `wake_pack.v0` snapshot derived by the compressor, then (2) **per-turn ledger recall** injected as *candidate evidence* (with event IDs for citation).
-- **Background indexing:** a built-in indexer chunks + embeds new ledger events into `ledger_event_chunks` for hybrid FTS + vector recall.
-- **Channel + extension emphasis:** native Discord/Signal for “always-on” usage, and WASM channels/tools for everything else.
+### 1. Host-Native By Default
 
-Historically this repo started as a fork of IronClaw and borrows patterns from ZeroClaw, but it has diverged substantially in the data plane (ledger + compressor + recall) and channel story.
+Tools run on the host as normal programs and services.
 
----
+We do not want complicated WASM packaging, hidden sidecar runtimes, or sandbox theater unless there is a very specific reason to add one later.
 
-## Quick Start
+If a tool is available, it should be visible, callable, and debuggable with ordinary developer workflows.
 
-### 1) Build
+### 2. Explicit Tool Calls Only
 
-```bash
-cargo build
-```
+A tool call is either valid or invalid.
 
-Tip: run `cargo install --path .` to put `betterclaw` on your `$PATH`. Otherwise use `./target/debug/betterclaw` in the examples below.
+We do not silently coerce malformed calls into `{}`.
+We do not invent missing arguments.
+We do not pretend a tool invocation happened when it did not.
 
-### 2) Run the setup wizard
+If the model emits invalid JSON or incomplete parameters, the runtime should say exactly what was wrong and where parsing failed.
 
-```bash
-./target/debug/betterclaw onboard
-```
+### 3. One Identity Model
 
-### 3) Run the agent
+An agent should not become a different being depending on which channel or domain woke it up.
 
-```bash
-./target/debug/betterclaw run
-```
+Thread routing, channel targeting, and workspace selection should all be explicit and separable, but the underlying agent identity should remain stable.
 
-Useful commands:
+### 4. One Workspace Model
 
-```bash
-./target/debug/betterclaw --help
-./target/debug/betterclaw doctor
-./target/debug/betterclaw status
-./target/debug/betterclaw --cli-only
-./target/debug/betterclaw --message "Hello!"
-```
+Files should resolve the same way across tools.
 
----
+If the agent is working in a directory, every file tool should agree on what relative paths mean. No split brain between shell cwd, file tools, and hidden internal roots.
 
-## Channels
+### 5. Channels Are Adapters
 
-Built-in channels (in this repo):
+A channel should do only a few things:
 
-- **CLI REPL** (always enabled)
-- **Web gateway** (default: `127.0.0.1:3000`, token-auth; includes SSE/WS + OpenAI-compatible surfaces)
-- **Discord** (native gateway websocket integration; allowlists + optional “mention-only” mode)
-- **Signal** (via `signal-cli` daemon HTTP API; pairing/allowlist policies)
-- **HTTP webhook server** (optional; for inbound webhook-based channels and integrations)
+- authenticate
+- poll or receive inbound events
+- persist cursors/checkpoints
+- translate events into runtime messages
+- send replies back out
 
-WASM channels (installable, sandboxed):
+Channels should not own agent identity, hidden business logic, or mystery state transitions.
 
-- Telegram, Slack, WhatsApp, etc. (see `docs/BUILDING_CHANNELS.md` and `docs/TELEGRAM_SETUP.md`)
+### 6. Logging Is A Product Feature
 
----
+The logs should answer:
 
-## Extensions (Tools, Channels, MCP)
+- What woke the agent up?
+- What thread did this map to?
+- What exact payload did we send to the model provider?
+- What exact payload did the model provider return?
+- What tool was called with what parameters?
+- What failed?
+- What got retried?
+- What cursor advanced?
+- What message was sent out?
 
-- **WASM tools:** `betterclaw tool install`, `betterclaw tool list`, `betterclaw tool remove`
-- **Registry:** `betterclaw registry …` for browsing/installing extensions
-- **MCP:** `betterclaw mcp …` for connecting hosted tool providers
+If a human cannot reconstruct a failure from the logs, the logging is not good enough.
 
----
+The most important record in the system is the model loop itself.
 
-## Durability: Ledger, Recall, Wake Packs
+Every request to the model provider should be logged in full, and every response from the model provider should be logged in full. That is the core debugging artifact for agent behavior.
 
-BetterClaw maintains three complementary layers:
+The challenge is not whether to log it. The challenge is how to store it responsibly:
 
-1. **Ledger (source of truth):** append-only events (turns, tool calls, notes, derived artifacts).
-2. **Wake pack (`wake_pack.v0`):** a compact snapshot produced by the compressor to anchor the next turn.
-3. **Ledger recall (`<ledger_recall …>`):** per-turn candidate evidence, injected after the wake pack; if used, the agent must cite `event_id`.
+- structured metadata for indexing and filtering
+- full payload capture for replay and diagnosis
+- compression and retention policies so logs do not consume the machine
+- clear separation between hot operational logs and archived trace data
 
-For debugging and experimentation:
+## Non-Goals
 
-```bash
-./target/debug/betterclaw compressor run-once --window-events 5
-./target/debug/betterclaw compressor run-once --window-events 5 --commit
-./target/debug/betterclaw compressor reset --dry-run
-```
+BetterClaw is intentionally not trying to be:
 
----
+- a general-purpose sandbox platform
+- a WASM extension host
+- a magical self-healing tool interpreter
+- a framework that hides state transitions behind “smart” abstractions
 
-## Hacking Guide
+We want a runtime that is boring in the best possible way: direct, inspectable, and reliable.
 
-Start here:
+## Core Concepts
 
-- Agent loop, recall/indexing: `src/agent/`
-- Compressor + wake packs: `src/compressor/`
-- Channels (native + web gateway): `src/channels/`
-- WASM boundaries (WIT + runtimes): `wit/`, `src/tools/`, `src/channels/wasm/`
-- Database + ledger: `src/db/`, `src/ledger/`
+### Agent
 
----
+A long-lived identity with configuration, memory, and access to one or more threads and tools.
 
-## Credits
+### Thread
 
-- IronClaw (upstream inspiration / ancestry): <https://github.com/nearai/ironclaw>
-- ZeroClaw (Discord patterns + edge cases): <https://github.com/zeroclaw-labs/zeroclaw>
-- OpenClaw (workspace inspiration): <https://github.com/openclaw/openclaw>
+A durable conversation timeline. Threads are where messages, tool calls, tool results, and system events are recorded.
 
----
+### Workspace
 
-## License
+A filesystem root attached to an agent or thread. It is where file-based work happens.
 
-Licensed under either of:
+### Tool
 
-- Apache License, Version 2.0 (`LICENSE-APACHE`)
-- MIT License (`LICENSE-MIT`)
+A named capability with:
 
-at your option.
+- a description
+- a parameter schema
+- a normal execution implementation
+- a typed result or typed error
+
+### Channel
+
+An inbound/outbound adapter that connects the runtime to an external surface.
+
+### Event
+
+A normalized runtime record for something that happened:
+
+- inbound message
+- model response
+- tool call
+- tool result
+- cursor update
+- outbound reply
+- error
+
+## Initial Architecture
+
+The first version should stay small.
+
+### Runtime
+
+Owns:
+
+- agent registry
+- thread store
+- tool registry
+- channel registry
+- event log
+
+### LLM Layer
+
+Responsible for:
+
+- prompt assembly
+- model invocation
+- parsing structured tool calls
+- returning plain responses or explicit tool calls
+
+It should not mutate channel state or invent missing tool inputs.
+
+### Tool Layer
+
+Responsible for:
+
+- validating parameters
+- executing host-native actions
+- returning structured outputs
+- emitting clear failures
+
+### Channel Layer
+
+Responsible for:
+
+- external API integration
+- polling/webhooks
+- cursor persistence
+- routing outbound messages
+
+### Observability Layer
+
+Responsible for:
+
+- structured logs
+- per-turn traces
+- durable event history
+- debugging views
+- full model request/response capture with retention controls
+
+## First Milestones
+
+### Milestone 1: Skeleton Runtime
+
+- basic project structure
+- structured logger
+- event model
+- thread model
+- minimal agent loop
+
+### Milestone 2: Local Tools
+
+- shell
+- read_file
+- write_file
+- list_dir
+- apply_patch
+
+All with consistent workspace semantics and clear errors.
+
+### Milestone 3: One Channel
+
+Start with a single channel and make it excellent.
+
+Tidepool is a strong candidate because it exercises:
+
+- polling
+- cursors
+- routing
+- durable thread state
+- structured outbound replies
+
+### Milestone 4: Usable Debugging
+
+- per-turn timeline output
+- channel cursor inspection
+- tool-call inspection
+- raw model response capture
+- replay for failed turns
+
+## Implementation Taste
+
+We should prefer:
+
+- simple data models
+- obvious boundaries
+- typed errors
+- append-only event thinking where practical
+- fewer abstractions, not more
+
+We should avoid:
+
+- invisible fallbacks
+- duplicated state namespaces
+- implicit path remapping
+- hidden recovery behavior
+- “smart” abstractions that erase cause and effect
+
+## Status
+
+This repository is intentionally at zero.
+
+That is a feature, not a problem.
+
+We are using the clean slate to keep the best ideas from earlier systems while refusing the assumptions that made them painful to operate.
+
+## Working Motto
+
+Build the agent runtime you can actually debug at 2am.

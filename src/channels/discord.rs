@@ -213,7 +213,11 @@ impl DiscordChannel {
             }
         };
 
-        if outcome.outbound_messages.iter().all(|content| content.trim().is_empty()) {
+        if outcome
+            .outbound_messages
+            .iter()
+            .all(|content| content.trim().is_empty())
+        {
             return Ok(());
         }
 

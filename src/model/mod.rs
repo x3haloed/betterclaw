@@ -1,8 +1,8 @@
 mod accumulator;
 mod copilot_session;
 mod events;
-mod openai_compat;
 mod openai_chatcompletions;
+mod openai_compat;
 mod openai_responses;
 mod qwen_agent;
 mod reasoning;

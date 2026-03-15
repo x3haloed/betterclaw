@@ -1,10 +1,12 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use chrono::Utc;
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
 };
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
+use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleConfig {
@@ -67,5 +69,102 @@ impl OpenAiCompatibleConfig {
             .or_else(|| headers.get("x-lmstudio-request-id"))
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string)
+    }
+
+    pub fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+        let header_value = headers.get("retry-after")?.to_str().ok()?.trim();
+        if let Ok(seconds) = header_value.parse::<u64>() {
+            return Some(Duration::from_secs(seconds));
+        }
+
+        let retry_at = chrono::DateTime::parse_from_rfc2822(header_value)
+            .ok()?
+            .with_timezone(&Utc);
+        let delay = retry_at.signed_duration_since(Utc::now());
+        (delay.num_milliseconds() > 0)
+            .then(|| Duration::from_millis(delay.num_milliseconds() as u64))
+    }
+
+    pub fn rate_limit_message(status: Option<StatusCode>, body: &Value) -> Option<String> {
+        let error = body.get("error").unwrap_or(body);
+        let code = error
+            .get("code")
+            .and_then(Value::as_str)
+            .map(|value| value.to_ascii_lowercase());
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .or_else(|| body.get("body").and_then(Value::as_str))
+            .map(ToString::to_string);
+
+        let status_is_rate_limit = status == Some(StatusCode::TOO_MANY_REQUESTS);
+        let code_is_rate_limit = code
+            .as_deref()
+            .map(Self::looks_like_rate_limit_text)
+            .unwrap_or(false);
+        let message_is_rate_limit = message
+            .as_deref()
+            .map(Self::looks_like_rate_limit_text)
+            .unwrap_or(false);
+
+        if !(status_is_rate_limit || code_is_rate_limit || message_is_rate_limit) {
+            return None;
+        }
+
+        Some(
+            message
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "rate limit exceeded".to_string()),
+        )
+    }
+
+    pub fn looks_like_rate_limit_text(text: &str) -> bool {
+        let normalized = text.to_ascii_lowercase();
+        normalized.contains("rate limit")
+            || normalized.contains("rate-limit")
+            || normalized.contains("rate_limit")
+            || normalized.contains("too many requests")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use reqwest::StatusCode;
+    use reqwest::header::{HeaderMap, HeaderValue};
+    use serde_json::json;
+
+    use super::OpenAiCompatibleConfig;
+
+    #[test]
+    fn parses_retry_after_seconds() {
+        let mut headers = HeaderMap::new();
+        headers.insert("retry-after", HeaderValue::from_static("12"));
+        assert_eq!(
+            OpenAiCompatibleConfig::retry_after(&headers),
+            Some(std::time::Duration::from_secs(12))
+        );
+    }
+
+    #[test]
+    fn parses_retry_after_http_date() {
+        let retry_at = (Utc::now() + ChronoDuration::seconds(30)).to_rfc2822();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "retry-after",
+            HeaderValue::from_str(&retry_at).expect("valid header"),
+        );
+        let delay = OpenAiCompatibleConfig::retry_after(&headers).expect("delay");
+        assert!(delay.as_secs() <= 30);
+        assert!(delay.as_secs() >= 28);
+    }
+
+    #[test]
+    fn detects_rate_limit_from_body_code() {
+        let message = OpenAiCompatibleConfig::rate_limit_message(
+            Some(StatusCode::BAD_REQUEST),
+            &json!({ "error": { "code": "rate_limit_exceeded", "message": "slow down" } }),
+        );
+        assert_eq!(message.as_deref(), Some("slow down"));
     }
 }

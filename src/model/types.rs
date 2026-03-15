@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -82,6 +83,12 @@ pub struct ModelExchangeResult {
 
 #[derive(Debug, Error)]
 pub enum ModelEngineError {
+    #[error("rate limited: {message}")]
+    RateLimited {
+        message: String,
+        retry_after: Option<Duration>,
+        exchange: Box<ModelExchangeResult>,
+    },
     #[error("transport failure: {message}")]
     TransportFailure {
         message: String,
@@ -98,9 +105,16 @@ pub enum ModelEngineError {
 impl ModelEngineError {
     pub fn exchange(&self) -> &ModelExchangeResult {
         match self {
-            Self::TransportFailure { exchange, .. } | Self::HttpFailure { exchange, .. } => {
-                exchange.as_ref()
-            }
+            Self::RateLimited { exchange, .. }
+            | Self::TransportFailure { exchange, .. }
+            | Self::HttpFailure { exchange, .. } => exchange.as_ref(),
+        }
+    }
+
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::RateLimited { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 }

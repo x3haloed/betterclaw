@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
-use reqwest::header::CONTENT_TYPE;
 use reqwest::StatusCode;
+use reqwest::header::CONTENT_TYPE;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -187,7 +187,8 @@ impl OpenAiResponsesEngine {
             AccumulationMode::DeltaPlusFinal,
             reasoning_mode,
         );
-        let mut accumulator = self.new_accumulator(&request.model, AccumulationMode::DeltaPlusFinal);
+        let mut accumulator =
+            self.new_accumulator(&request.model, AccumulationMode::DeltaPlusFinal);
         let mut events = vec![ModelEvent::ExchangeStarted];
         accumulator.push(&events[0]);
 
@@ -265,7 +266,11 @@ impl OpenAiResponsesEngine {
             }
         }
 
-        if !saw_done && !events.iter().any(|event| matches!(event, ModelEvent::Completed { .. })) {
+        if !saw_done
+            && !events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::Completed { .. }))
+        {
             let event = ModelEvent::Completed {
                 finish_reason: None,
             };
@@ -317,11 +322,37 @@ impl ModelRunner for OpenAiResponsesEngine {
         };
 
         let provider_request_id = OpenAiCompatibleConfig::provider_request_id(response.headers());
+        let retry_after = OpenAiCompatibleConfig::retry_after(response.headers());
         if response.status() != StatusCode::OK {
+            let status_code = response.status();
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
             let body_json =
                 serde_json::from_str(&body_text).unwrap_or_else(|_| json!({ "body": body_text }));
+            if let Some(rate_limit_message) =
+                OpenAiCompatibleConfig::rate_limit_message(Some(status_code), &body_json)
+            {
+                let message = format!(
+                    "{} rate limited: {}",
+                    self.config.provider_name, rate_limit_message
+                );
+                let exchange = self.reduced_error_result(
+                    &request,
+                    started_at,
+                    payload,
+                    provider_request_id,
+                    TransportKind::HttpJson,
+                    message.clone(),
+                    Some(body_json),
+                    AccumulationMode::FullSnapshot,
+                    ReasoningMode::Unknown,
+                );
+                return Err(ModelEngineError::RateLimited {
+                    message,
+                    retry_after,
+                    exchange: Box::new(exchange),
+                });
+            }
             let exchange = self.reduced_error_result(
                 &request,
                 started_at,
@@ -341,8 +372,34 @@ impl ModelRunner for OpenAiResponsesEngine {
         }
 
         if request.stream {
-            self.decode_sse_response(&request, started_at, payload, provider_request_id, response)
-                .await
+            let exchange = self
+                .decode_sse_response(&request, started_at, payload, provider_request_id, response)
+                .await?;
+            if let Some(rate_limit_message) = exchange
+                .raw_trace
+                .raw_frames
+                .iter()
+                .find_map(|frame| OpenAiCompatibleConfig::rate_limit_message(None, &frame.data))
+                .or_else(|| {
+                    exchange
+                        .error_summary
+                        .as_deref()
+                        .filter(|message| {
+                            OpenAiCompatibleConfig::looks_like_rate_limit_text(message)
+                        })
+                        .map(ToString::to_string)
+                })
+            {
+                return Err(ModelEngineError::RateLimited {
+                    message: format!(
+                        "{} rate limited: {}",
+                        self.config.provider_name, rate_limit_message
+                    ),
+                    retry_after,
+                    exchange: Box::new(exchange),
+                });
+            }
+            Ok(exchange)
         } else {
             let response_body: Value =
                 response
@@ -362,6 +419,30 @@ impl ModelRunner for OpenAiResponsesEngine {
                             ReasoningMode::Unknown,
                         )),
                     })?;
+            if let Some(rate_limit_message) =
+                OpenAiCompatibleConfig::rate_limit_message(None, &response_body)
+            {
+                let message = format!(
+                    "{} rate limited: {}",
+                    self.config.provider_name, rate_limit_message
+                );
+                let exchange = self.reduced_error_result(
+                    &request,
+                    started_at,
+                    payload,
+                    provider_request_id,
+                    TransportKind::HttpJson,
+                    message.clone(),
+                    Some(response_body),
+                    AccumulationMode::FullSnapshot,
+                    ReasoningMode::Unknown,
+                );
+                return Err(ModelEngineError::RateLimited {
+                    message,
+                    retry_after,
+                    exchange: Box::new(exchange),
+                });
+            }
             Ok(self.decode_json_response(
                 &request,
                 started_at,
@@ -484,7 +565,10 @@ fn convert_tool_definition(tool: &Value) -> Value {
     tool.clone()
 }
 
-fn decode_responses_json(response_body: &Value, reasoning_mode: &mut ReasoningMode) -> Vec<ModelEvent> {
+fn decode_responses_json(
+    response_body: &Value,
+    reasoning_mode: &mut ReasoningMode,
+) -> Vec<ModelEvent> {
     let mut events = Vec::new();
 
     if let Some(error_message) = response_body
@@ -548,7 +632,10 @@ fn decode_responses_stream_frame(
         });
     }
 
-    let kind = frame.get("type").and_then(Value::as_str).unwrap_or_default();
+    let kind = frame
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     match kind {
         "response.output_text.delta" => {
             if let Some(delta) = frame.get("delta").and_then(Value::as_str) {
@@ -678,7 +765,11 @@ fn append_output_item_events(
                 .get("id")
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
-                .or_else(|| item.get("call_id").and_then(Value::as_str).map(ToString::to_string))
+                .or_else(|| {
+                    item.get("call_id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })
                 .unwrap_or_else(|| "function_call".to_string());
             events.push(ModelEvent::ToolCallStarted {
                 key: key.clone(),
@@ -730,11 +821,15 @@ fn append_message_item_events(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                if text.contains("<think") || text.contains("<thinking") || text.contains("<thought")
+                if text.contains("<think")
+                    || text.contains("<thinking")
+                    || text.contains("<thought")
                 {
                     *reasoning_mode = ReasoningMode::InlineTagged;
                 }
-                let previous = state.text_snapshots.insert(message_id.clone(), text.clone());
+                let previous = state
+                    .text_snapshots
+                    .insert(message_id.clone(), text.clone());
                 if previous.is_some() {
                     events.push(ModelEvent::TextFinal { text });
                 } else {
@@ -820,7 +915,9 @@ mod tests {
         convert_tool_definition, decode_responses_json, decode_responses_stream_frame,
         split_instructions_and_input,
     };
-    use crate::model::{ModelEvent, ModelMessage, ModelToolCallMessage, ModelToolFunctionMessage, ReasoningMode};
+    use crate::model::{
+        ModelEvent, ModelMessage, ModelToolCallMessage, ModelToolFunctionMessage, ReasoningMode,
+    };
 
     #[test]
     fn translates_messages_to_instructions_and_input() {

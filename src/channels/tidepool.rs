@@ -146,7 +146,9 @@ impl TidepoolChannel {
             );
             client
                 .post_message(message.domain_id, outbound, Some(message.message_id))
-                .with_context(|| format!("posting reply to Tidepool domain {}", message.domain_id))?;
+                .with_context(|| {
+                    format!("posting reply to Tidepool domain {}", message.domain_id)
+                })?;
         }
 
         self.runtime

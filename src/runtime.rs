@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use futures_util::future::join_all;
@@ -13,10 +14,10 @@ use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::{
-    ModelEngine, ModelExchangeRequest, ModelExchangeResult, ModelMessage, ModelToolCallMessage,
-    ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsEngine, OpenAiCompatibleConfig,
-    OpenAiResponsesEngine, ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome,
-    strip_reasoning_tags,
+    ModelEngine, ModelEngineError, ModelExchangeRequest, ModelExchangeResult, ModelMessage,
+    ModelToolCallMessage, ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsEngine,
+    OpenAiCompatibleConfig, OpenAiResponsesEngine, ReducedToolCall, StubModelEngine, TraceDetail,
+    TraceOutcome, strip_reasoning_tags,
 };
 use crate::settings::RetentionSettings;
 use crate::settings::RuntimeSettings;
@@ -30,6 +31,8 @@ pub struct Runtime {
     db: Arc<Db>,
     tools: ToolRegistry,
     model_engine: Arc<ModelEngine>,
+    provider_name: String,
+    provider_throttle: Arc<ProviderThrottle>,
     updates: broadcast::Sender<RuntimeUpdate>,
 }
 
@@ -73,6 +76,7 @@ pub struct TracePruneReport {
 struct ResolvedModelEngine {
     engine: ModelEngine,
     model_name: String,
+    provider_name: String,
 }
 
 struct ProviderPreset;
@@ -103,6 +107,7 @@ impl ProviderPreset {
         Ok(ResolvedModelEngine {
             engine: ModelEngine::openai_chat_completions(engine),
             model_name,
+            provider_name: "local-openai-compatible".to_string(),
         })
     }
 
@@ -139,7 +144,11 @@ impl ProviderPreset {
             }
             other => anyhow::bail!("unsupported OpenRouter mode '{other}'"),
         };
-        Ok(ResolvedModelEngine { engine, model_name })
+        Ok(ResolvedModelEngine {
+            engine,
+            model_name,
+            provider_name: "openrouter".to_string(),
+        })
     }
 
     fn codex_from_env() -> Result<ResolvedModelEngine, anyhow::Error> {
@@ -166,7 +175,80 @@ impl ProviderPreset {
         Ok(ResolvedModelEngine {
             engine: ModelEngine::openai_responses(engine),
             model_name,
+            provider_name: "codex".to_string(),
         })
+    }
+}
+
+#[derive(Debug)]
+struct ProviderThrottle {
+    base_backoff: Duration,
+    state: tokio::sync::Mutex<ProviderThrottleState>,
+}
+
+#[derive(Debug)]
+struct ProviderThrottleState {
+    blocked_until: Option<tokio::time::Instant>,
+    next_backoff: Duration,
+}
+
+impl ProviderThrottle {
+    fn new(base_backoff: Duration) -> Self {
+        Self {
+            base_backoff,
+            state: tokio::sync::Mutex::new(ProviderThrottleState {
+                blocked_until: None,
+                next_backoff: base_backoff,
+            }),
+        }
+    }
+
+    async fn current_wait(&self) -> Option<Duration> {
+        let mut state = self.state.lock().await;
+        let Some(blocked_until) = state.blocked_until else {
+            return None;
+        };
+        let now = tokio::time::Instant::now();
+        if blocked_until <= now {
+            state.blocked_until = None;
+            return None;
+        }
+        Some(blocked_until.duration_since(now))
+    }
+
+    async fn arm(&self, retry_after: Option<Duration>) -> Duration {
+        let mut state = self.state.lock().await;
+        let wait = match retry_after {
+            Some(wait) => {
+                state.next_backoff = self.base_backoff;
+                wait
+            }
+            None => {
+                let wait = state.next_backoff;
+                state.next_backoff = state.next_backoff.checked_mul(2).unwrap_or(Duration::MAX);
+                wait
+            }
+        };
+        let now = tokio::time::Instant::now();
+        let candidate = now + wait;
+        state.blocked_until = Some(match state.blocked_until {
+            Some(existing) if existing > candidate => existing,
+            _ => candidate,
+        });
+        state
+            .blocked_until
+            .map(|deadline| deadline.duration_since(now))
+            .unwrap_or(wait)
+    }
+
+    async fn note_success(&self) {
+        let mut state = self.state.lock().await;
+        state.next_backoff = self.base_backoff;
+        if let Some(blocked_until) = state.blocked_until
+            && blocked_until <= tokio::time::Instant::now()
+        {
+            state.blocked_until = None;
+        }
     }
 }
 
@@ -204,6 +286,13 @@ fn load_openai_codex_credentials(
     Ok((access_token.to_string(), account_id))
 }
 
+fn system_prompt_override_from_env() -> Option<String> {
+    std::env::var("BETTERCLAW_SYSTEM_PROMPT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 impl Runtime {
     fn parse_tool_control(output: &Value) -> Option<ToolControl> {
         let control = output
@@ -224,18 +313,49 @@ impl Runtime {
     }
 
     pub async fn new(db: Db) -> Result<Self, RuntimeError> {
-        Self::with_model_engine(db, ModelEngine::stub(StubModelEngine), "local-debug-model").await
+        Self::with_model_engine_and_backoff(
+            db,
+            ModelEngine::stub(StubModelEngine::default()),
+            "local-debug-model",
+            "stub",
+            Duration::from_secs(1),
+        )
+        .await
     }
 
     pub async fn from_env(db: Db) -> Result<Self, RuntimeError> {
         let resolved = ProviderPreset::from_env()?;
-        Self::with_model_engine(db, resolved.engine, resolved.model_name).await
+        Self::with_model_engine_and_backoff(
+            db,
+            resolved.engine,
+            resolved.model_name,
+            resolved.provider_name,
+            Duration::from_secs(1),
+        )
+        .await
     }
 
     pub async fn with_model_engine(
         db: Db,
         model_engine: ModelEngine,
         model_name: impl Into<String>,
+    ) -> Result<Self, RuntimeError> {
+        Self::with_model_engine_and_backoff(
+            db,
+            model_engine,
+            model_name,
+            "custom",
+            Duration::from_secs(1),
+        )
+        .await
+    }
+
+    async fn with_model_engine_and_backoff(
+        db: Db,
+        model_engine: ModelEngine,
+        model_name: impl Into<String>,
+        provider_name: impl Into<String>,
+        base_backoff: Duration,
     ) -> Result<Self, RuntimeError> {
         let db = Arc::new(db);
         let (updates, _) = broadcast::channel(512);
@@ -260,10 +380,37 @@ impl Runtime {
             db,
             tools: ToolRegistry::with_defaults(),
             model_engine: Arc::new(model_engine),
+            provider_name: provider_name.into(),
+            provider_throttle: Arc::new(ProviderThrottle::new(base_backoff)),
             updates,
         };
+        runtime.apply_startup_setting_overrides("default").await?;
         runtime.recover_incomplete_turns().await?;
         Ok(runtime)
+    }
+
+    async fn apply_startup_setting_overrides(&self, agent_id: &str) -> Result<(), RuntimeError> {
+        let Some(system_prompt) = system_prompt_override_from_env() else {
+            return Ok(());
+        };
+        let Some(mut settings) = self
+            .db
+            .load_runtime_settings(agent_id)
+            .await
+            .map_err(RuntimeError::from)?
+        else {
+            return Ok(());
+        };
+        if settings.system_prompt == system_prompt {
+            return Ok(());
+        }
+        settings.system_prompt = system_prompt;
+        settings.updated_at = Utc::now();
+        self.db
+            .update_runtime_settings(&settings)
+            .await
+            .map_err(RuntimeError::from)?;
+        Ok(())
     }
 
     pub fn db(&self) -> Arc<Db> {
@@ -773,34 +920,92 @@ impl Runtime {
         channel: &str,
         request: ModelExchangeRequest,
     ) -> Result<ModelExchangeResult, RuntimeError> {
-        match self.model_engine.run(request).await {
-            Ok(exchange) => {
-                self.append_model_events(turn, thread, &exchange).await?;
-                Ok(exchange)
-            }
-            Err(error) => {
-                self.record_trace(turn, thread, agent_id, channel, error.exchange())
+        let mut attempt = 0usize;
+        loop {
+            attempt += 1;
+            self.wait_for_provider_window(turn, thread, attempt).await?;
+            match self.model_engine.run(request.clone()).await {
+                Ok(exchange) => {
+                    self.provider_throttle.note_success().await;
+                    self.append_model_events(turn, thread, &exchange).await?;
+                    return Ok(exchange);
+                }
+                Err(ModelEngineError::RateLimited {
+                    message,
+                    retry_after,
+                    exchange,
+                }) => {
+                    let trace = self
+                        .record_trace(turn, thread, agent_id, channel, exchange.as_ref())
+                        .await?;
+                    self.append_model_events(turn, thread, exchange.as_ref())
+                        .await?;
+                    let wait = self.provider_throttle.arm(retry_after).await;
+                    self.append_event_and_publish(
+                        &turn.id,
+                        &thread.id,
+                        EventKind::RateLimited,
+                        json!({
+                            "provider": self.provider_name,
+                            "attempt": attempt,
+                            "message": message,
+                            "retry_after_ms": wait.as_millis() as u64,
+                            "trace_id": trace.id,
+                            "resumes_at": (Utc::now() + chrono::Duration::from_std(wait).unwrap_or(chrono::Duration::MAX)).to_rfc3339(),
+                        }),
+                    )
                     .await?;
-                self.append_model_events(turn, thread, error.exchange())
+                }
+                Err(error) => {
+                    self.record_trace(turn, thread, agent_id, channel, error.exchange())
+                        .await?;
+                    self.append_model_events(turn, thread, error.exchange())
+                        .await?;
+                    self.update_turn_and_publish(
+                        &thread.id,
+                        &turn.id,
+                        TurnStatus::Failed,
+                        None,
+                        error.exchange().error_summary.clone(),
+                    )
                     .await?;
-                self.update_turn_and_publish(
-                    &thread.id,
-                    &turn.id,
-                    TurnStatus::Failed,
-                    None,
-                    error.exchange().error_summary.clone(),
-                )
-                .await?;
-                self.append_event_and_publish(
-                    &turn.id,
-                    &thread.id,
-                    EventKind::Error,
-                    json!({ "message": error.to_string() }),
-                )
-                .await?;
-                Err(RuntimeError::ModelEngine(error))
+                    self.append_event_and_publish(
+                        &turn.id,
+                        &thread.id,
+                        EventKind::Error,
+                        json!({ "message": error.to_string() }),
+                    )
+                    .await?;
+                    return Err(RuntimeError::ModelEngine(error));
+                }
             }
         }
+    }
+
+    async fn wait_for_provider_window(
+        &self,
+        turn: &Turn,
+        thread: &Thread,
+        attempt: usize,
+    ) -> Result<(), RuntimeError> {
+        while let Some(wait) = self.provider_throttle.current_wait().await {
+            self.append_event_and_publish(
+                &turn.id,
+                &thread.id,
+                EventKind::RateLimited,
+                json!({
+                    "provider": self.provider_name,
+                    "attempt": attempt,
+                    "message": "waiting for shared provider backoff window",
+                    "retry_after_ms": wait.as_millis() as u64,
+                    "resumes_at": (Utc::now() + chrono::Duration::from_std(wait).unwrap_or(chrono::Duration::MAX)).to_rfc3339(),
+                    "shared_gate": true,
+                }),
+            )
+            .await?;
+            tokio::time::sleep(wait).await;
+        }
+        Ok(())
     }
 
     async fn append_model_events(
@@ -1165,6 +1370,7 @@ enum ToolControl {
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
 
     use tempfile::tempdir;
 
@@ -1172,7 +1378,7 @@ mod tests {
     use crate::channel::InboundEvent;
     use crate::db::Db;
     use crate::event::EventKind;
-    use crate::model::strip_reasoning_tags;
+    use crate::model::{ModelEngine, StubModelEngine, strip_reasoning_tags};
     use crate::turn::TurnStatus;
 
     fn env_mutex() -> &'static Mutex<()> {
@@ -1268,12 +1474,19 @@ mod tests {
 
         assert_eq!(outcome.status, TurnStatus::AwaitingUser);
         assert_eq!(outcome.response, "Which branch should I use?");
-        assert_eq!(outcome.outbound_messages, vec!["Which branch should I use?".to_string()]);
+        assert_eq!(
+            outcome.outbound_messages,
+            vec!["Which branch should I use?".to_string()]
+        );
         let timeline = runtime
             .list_thread_timeline(&outcome.thread.id)
             .await
             .unwrap();
-        assert!(timeline.iter().any(|event| event.kind == EventKind::AwaitingUser));
+        assert!(
+            timeline
+                .iter()
+                .any(|event| event.kind == EventKind::AwaitingUser)
+        );
     }
 
     #[tokio::test]
@@ -1356,6 +1569,134 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn rate_limited_turn_retries_after_retry_after_window() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("rate-limit.db")).await.unwrap();
+        let runtime = Runtime::with_model_engine_and_backoff(
+            db,
+            ModelEngine::stub(StubModelEngine::default()),
+            "stub-model",
+            "stub",
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-rate-limit",
+                "/rate-limit-once 25",
+            ))
+            .await
+            .unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(20));
+        assert!(outcome.response.contains("/rate-limit-once 25"));
+        let traces = runtime.list_turn_traces(&outcome.turn_id).await.unwrap();
+        assert_eq!(traces.len(), 2);
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        assert!(
+            timeline
+                .iter()
+                .any(|event| event.kind == EventKind::RateLimited)
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limit_gate_blocks_other_requests_until_retry_window() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("rate-limit-gate.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::with_model_engine_and_backoff(
+            db,
+            ModelEngine::stub(StubModelEngine::default()),
+            "stub-model",
+            "stub",
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+
+        let first_runtime = runtime.clone();
+        let first = tokio::spawn(async move {
+            first_runtime
+                .handle_inbound(InboundEvent::web(
+                    "default",
+                    "thread-rate-limit-gate-a",
+                    "/rate-limit-once 40",
+                ))
+                .await
+                .unwrap()
+        });
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        let second_started = Instant::now();
+        let second = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-rate-limit-gate-b",
+                "hello while blocked",
+            ))
+            .await
+            .unwrap();
+        let first = first.await.unwrap();
+
+        assert!(second_started.elapsed() >= Duration::from_millis(30));
+        assert!(first.response.contains("/rate-limit-once 40"));
+        assert!(second.response.contains("hello while blocked"));
+
+        let second_timeline = runtime
+            .list_thread_timeline(&second.thread.id)
+            .await
+            .unwrap();
+        assert!(second_timeline.iter().any(|event| {
+            event.kind == EventKind::RateLimited
+                && event
+                    .payload
+                    .get("shared_gate")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        }));
+    }
+
+    #[tokio::test]
+    async fn missing_retry_after_uses_exponential_backoff_base() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("rate-limit-backoff.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::with_model_engine_and_backoff(
+            db,
+            ModelEngine::stub(StubModelEngine::default()),
+            "stub-model",
+            "stub",
+            Duration::from_millis(15),
+        )
+        .await
+        .unwrap();
+
+        let started = Instant::now();
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-rate-limit-backoff",
+                "/rate-limit-backoff-once",
+            ))
+            .await
+            .unwrap();
+
+        assert!(started.elapsed() >= Duration::from_millis(12));
+        assert!(outcome.response.contains("/rate-limit-backoff-once"));
+    }
+
     #[test]
     fn provider_selection_defaults_to_local_chat_completions() {
         let _guard = env_mutex().lock().unwrap();
@@ -1411,6 +1752,30 @@ mod tests {
             std::env::remove_var("BETTERCLAW_PROVIDER");
             std::env::remove_var("OPENAI_CODEX_AUTH_PATH");
             std::env::remove_var("OPENAI_CODEX_MODEL");
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_system_prompt_override_updates_runtime_settings() {
+        let _guard = env_mutex().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("prompt-override.db"))
+            .await
+            .unwrap();
+        unsafe {
+            std::env::set_var(
+                "BETTERCLAW_SYSTEM_PROMPT",
+                "You are QwenScout, the repo-mapper.",
+            );
+        }
+        let runtime = Runtime::new(db).await.unwrap();
+        let settings = runtime.get_runtime_settings("default").await.unwrap();
+        assert_eq!(
+            settings.system_prompt,
+            "You are QwenScout, the repo-mapper."
+        );
+        unsafe {
+            std::env::remove_var("BETTERCLAW_SYSTEM_PROMPT");
         }
     }
 }

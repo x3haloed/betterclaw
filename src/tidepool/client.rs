@@ -8,8 +8,8 @@ use spacetimedb_sdk::{DbContext as _, Table as _};
 use tokio::sync::mpsc;
 
 use crate::generated::tidepool::{
-    DbConnection, MyAccountTableAccess, MySubscribedMessagesTableAccess, MySubscriptionsTableAccess,
-    post_message, subscribe_domain,
+    DbConnection, MyAccountTableAccess, MySubscribedMessagesTableAccess,
+    MySubscriptionsTableAccess, post_message, subscribe_domain,
 };
 
 const DEFAULT_BASE_URL: &str = "https://spacetimedb.com";
@@ -114,13 +114,11 @@ impl TidepoolClient {
 
         register_callbacks(&connection, &event_tx, config.emit_self_messages);
 
-        let _subscription = connection
-            .subscription_builder()
-            .subscribe([
-                "SELECT * FROM my_account",
-                "SELECT * FROM my_subscriptions",
-                "SELECT * FROM my_subscribed_messages",
-            ]);
+        let _subscription = connection.subscription_builder().subscribe([
+            "SELECT * FROM my_account",
+            "SELECT * FROM my_subscriptions",
+            "SELECT * FROM my_subscribed_messages",
+        ]);
 
         let run_connection = Arc::clone(&connection);
         let run_loop = tokio::spawn(async move { run_connection.run_async().await });
@@ -166,36 +164,40 @@ fn register_callbacks(
     emit_self_messages: bool,
 ) {
     let message_tx = event_tx.clone();
-    connection.db.my_subscribed_messages().on_insert(move |ctx, row| {
-        let account = ctx.db.my_account().iter().next();
-        if !emit_self_messages && account.as_ref().map(|item| item.account_id) == Some(row.author_account_id)
-        {
-            return;
-        }
+    connection
+        .db
+        .my_subscribed_messages()
+        .on_insert(move |ctx, row| {
+            let account = ctx.db.my_account().iter().next();
+            if !emit_self_messages
+                && account.as_ref().map(|item| item.account_id) == Some(row.author_account_id)
+            {
+                return;
+            }
 
-        let subscription = ctx
-            .db
-            .my_subscriptions()
-            .iter()
-            .find(|item| item.domain_id == row.domain_id);
-        let message = TidepoolInboundMessage {
-            domain_id: row.domain_id,
-            domain_title: subscription
-                .as_ref()
-                .map(|item| item.title.clone())
-                .unwrap_or_else(|| format!("Domain {}", row.domain_id)),
-            domain_slug: subscription
-                .as_ref()
-                .map(|item| item.slug.clone())
-                .unwrap_or_default(),
-            message_id: row.message_id,
-            domain_sequence: row.domain_sequence,
-            author_account_id: row.author_account_id,
-            body: row.body.clone(),
-            reply_to_message_id: row.reply_to_message_id,
-        };
-        let _ = message_tx.send(TidepoolClientEvent::Message(message));
-    });
+            let subscription = ctx
+                .db
+                .my_subscriptions()
+                .iter()
+                .find(|item| item.domain_id == row.domain_id);
+            let message = TidepoolInboundMessage {
+                domain_id: row.domain_id,
+                domain_title: subscription
+                    .as_ref()
+                    .map(|item| item.title.clone())
+                    .unwrap_or_else(|| format!("Domain {}", row.domain_id)),
+                domain_slug: subscription
+                    .as_ref()
+                    .map(|item| item.slug.clone())
+                    .unwrap_or_default(),
+                message_id: row.message_id,
+                domain_sequence: row.domain_sequence,
+                author_account_id: row.author_account_id,
+                body: row.body.clone(),
+                reply_to_message_id: row.reply_to_message_id,
+            };
+            let _ = message_tx.send(TidepoolClientEvent::Message(message));
+        });
 }
 
 async fn bootstrap_account(
@@ -222,7 +224,10 @@ async fn bootstrap_account(
         if subscribed_domain_ids.iter().any(|item| item == domain_id) {
             continue;
         }
-        tracing::info!(domain_id = *domain_id, "Subscribing Tidepool agent to seed domain");
+        tracing::info!(
+            domain_id = *domain_id,
+            "Subscribing Tidepool agent to seed domain"
+        );
         connection
             .reducers
             .subscribe_domain(*domain_id, config.batch_window_seconds)

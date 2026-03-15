@@ -155,25 +155,32 @@ fn require_string(params: &Value, tool: &str, field: &str) -> Result<String, Run
         .get(field)
         .and_then(Value::as_str)
         .map(ToString::to_string)
-        .ok_or_else(|| invalid_tool_parameters(tool, format!("missing or invalid string field '{field}'")))
+        .ok_or_else(|| {
+            invalid_tool_parameters(tool, format!("missing or invalid string field '{field}'"))
+        })
 }
 
-fn optional_string(params: &Value, tool: &str, field: &str) -> Result<Option<String>, RuntimeError> {
+fn optional_string(
+    params: &Value,
+    tool: &str,
+    field: &str,
+) -> Result<Option<String>, RuntimeError> {
     match params.get(field) {
         Some(value) => value
             .as_str()
             .map(|text| Some(text.to_string()))
-            .ok_or_else(|| invalid_tool_parameters(tool, format!("field '{field}' must be a string"))),
+            .ok_or_else(|| {
+                invalid_tool_parameters(tool, format!("field '{field}' must be a string"))
+            }),
         None => Ok(None),
     }
 }
 
 fn optional_bool(params: &Value, tool: &str, field: &str) -> Result<Option<bool>, RuntimeError> {
     match params.get(field) {
-        Some(value) => value
-            .as_bool()
-            .map(Some)
-            .ok_or_else(|| invalid_tool_parameters(tool, format!("field '{field}' must be a boolean"))),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+            invalid_tool_parameters(tool, format!("field '{field}' must be a boolean"))
+        }),
         None => Ok(None),
     }
 }
@@ -314,7 +321,8 @@ impl Tool for EchoTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "echo".to_string(),
-            description: "Return the provided message. Useful for testing the tool loop.".to_string(),
+            description: "Return the provided message. Useful for testing the tool loop."
+                .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -377,11 +385,19 @@ impl Tool for ShellTool {
             reason: error.to_string(),
         })?;
         let output = if let Some(timeout_secs) = timeout_secs {
-            match tokio::time::timeout(Duration::from_secs(timeout_secs as u64), child.wait_with_output()).await {
-                Ok(result) => (result.map_err(|error| RuntimeError::ToolExecution {
-                    tool: "shell".to_string(),
-                    reason: error.to_string(),
-                })?, false),
+            match tokio::time::timeout(
+                Duration::from_secs(timeout_secs as u64),
+                child.wait_with_output(),
+            )
+            .await
+            {
+                Ok(result) => (
+                    result.map_err(|error| RuntimeError::ToolExecution {
+                        tool: "shell".to_string(),
+                        reason: error.to_string(),
+                    })?,
+                    false,
+                ),
                 Err(_) => {
                     return Ok(json!({
                         "command": command,
@@ -393,10 +409,16 @@ impl Tool for ShellTool {
                 }
             }
         } else {
-            (child.wait_with_output().await.map_err(|error| RuntimeError::ToolExecution {
-                tool: "shell".to_string(),
-                reason: error.to_string(),
-            })?, false)
+            (
+                child
+                    .wait_with_output()
+                    .await
+                    .map_err(|error| RuntimeError::ToolExecution {
+                        tool: "shell".to_string(),
+                        reason: error.to_string(),
+                    })?,
+                false,
+            )
         };
 
         Ok(json!({
@@ -452,14 +474,11 @@ impl Tool for ReadFileTool {
         let start_index = offset.saturating_sub(1).min(total_lines);
         let end_index = (start_index + limit).min(total_lines);
         let selected = lines[start_index..end_index].join("\n");
-        let (truncated_content, byte_truncated) = truncate_text_by_bytes(&selected, DEFAULT_MAX_BYTES);
+        let (truncated_content, byte_truncated) =
+            truncate_text_by_bytes(&selected, DEFAULT_MAX_BYTES);
         let line_truncated = end_index < total_lines;
         let truncated = byte_truncated || line_truncated;
-        let next_offset = if truncated {
-            Some(end_index + 1)
-        } else {
-            None
-        };
+        let next_offset = if truncated { Some(end_index + 1) } else { None };
 
         Ok(json!({
             "path": path.display().to_string(),
@@ -591,7 +610,9 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit_file".to_string(),
-            description: "Edit a file by replacing exact text. Use this for precise, surgical changes.".to_string(),
+            description:
+                "Edit a file by replacing exact text. Use this for precise, surgical changes."
+                    .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -660,7 +681,9 @@ impl Tool for ListDirTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_dir".to_string(),
-            description: "List directory contents relative to the workspace root with structured entries.".to_string(),
+            description:
+                "List directory contents relative to the workspace root with structured entries."
+                    .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -679,7 +702,8 @@ impl Tool for ListDirTool {
     }
 
     async fn call(&self, params: Value, context: &ToolContext) -> Result<Value, RuntimeError> {
-        let raw_path = optional_string(&params, "list_dir", "path")?.unwrap_or_else(|| ".".to_string());
+        let raw_path =
+            optional_string(&params, "list_dir", "path")?.unwrap_or_else(|| ".".to_string());
         let limit = optional_usize(&params, "list_dir", "limit")?.unwrap_or(DEFAULT_LIST_LIMIT);
         let path = resolve_path(&context.workspace, &raw_path);
         let read_dir = fs::read_dir(&path).map_err(|error| RuntimeError::ToolExecution {
@@ -693,10 +717,12 @@ impl Tool for ListDirTool {
                 tool: "list_dir".to_string(),
                 reason: error.to_string(),
             })?;
-            let metadata = entry.metadata().map_err(|error| RuntimeError::ToolExecution {
-                tool: "list_dir".to_string(),
-                reason: error.to_string(),
-            })?;
+            let metadata = entry
+                .metadata()
+                .map_err(|error| RuntimeError::ToolExecution {
+                    tool: "list_dir".to_string(),
+                    reason: error.to_string(),
+                })?;
             entries.push((
                 entry.file_name().to_string_lossy().to_string(),
                 json!({
@@ -732,7 +758,9 @@ impl Tool for GrepTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "grep".to_string(),
-            description: "Search file contents for a pattern with line-numbered structured matches.".to_string(),
+            description:
+                "Search file contents for a pattern with line-numbered structured matches."
+                    .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -962,7 +990,8 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "Search the web for lightweight results with titles, urls, and snippets.".to_string(),
+            description: "Search the web for lightweight results with titles, urls, and snippets."
+                .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -983,7 +1012,8 @@ impl Tool for WebSearchTool {
 
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
         let query = require_string(&params, "web_search", "query")?;
-        let limit = optional_usize(&params, "web_search", "limit")?.unwrap_or(DEFAULT_WEB_SEARCH_LIMIT);
+        let limit =
+            optional_usize(&params, "web_search", "limit")?.unwrap_or(DEFAULT_WEB_SEARCH_LIMIT);
         let client = reqwest::Client::new();
         let response = client
             .get("https://html.duckduckgo.com/html/")
@@ -994,10 +1024,13 @@ impl Tool for WebSearchTool {
                 tool: "web_search".to_string(),
                 reason: error.to_string(),
             })?;
-        let body = response.text().await.map_err(|error| RuntimeError::ToolExecution {
-            tool: "web_search".to_string(),
-            reason: error.to_string(),
-        })?;
+        let body = response
+            .text()
+            .await
+            .map_err(|error| RuntimeError::ToolExecution {
+                tool: "web_search".to_string(),
+                reason: error.to_string(),
+            })?;
 
         let link_regex = regex::Regex::new(
             r#"<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="(?P<url>[^"]+)"[^>]*>(?P<title>.*?)</a>"#,
@@ -1010,8 +1043,14 @@ impl Tool for WebSearchTool {
 
         let snippets = snippet_regex
             .captures_iter(&body)
-            .filter_map(|captures| captures.name("snippet").or_else(|| captures.name("snippet_div")))
-            .map(|capture| normalize_whitespace(&decode_html_entities(&strip_tags(capture.as_str()))))
+            .filter_map(|captures| {
+                captures
+                    .name("snippet")
+                    .or_else(|| captures.name("snippet_div"))
+            })
+            .map(|capture| {
+                normalize_whitespace(&decode_html_entities(&strip_tags(capture.as_str())))
+            })
             .collect::<Vec<_>>();
 
         let mut results = Vec::new();
@@ -1047,7 +1086,8 @@ impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_fetch".to_string(),
-            description: "Fetch a URL and return normalized text content plus metadata.".to_string(),
+            description: "Fetch a URL and return normalized text content plus metadata."
+                .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1081,10 +1121,13 @@ impl Tool for WebFetchTool {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = response.text().await.map_err(|error| RuntimeError::ToolExecution {
-            tool: "web_fetch".to_string(),
-            reason: error.to_string(),
-        })?;
+        let body = response
+            .text()
+            .await
+            .map_err(|error| RuntimeError::ToolExecution {
+                tool: "web_fetch".to_string(),
+                reason: error.to_string(),
+            })?;
         let title = regex::Regex::new(r"(?is)<title>(?P<title>.*?)</title>")
             .unwrap()
             .captures(&body)
@@ -1156,7 +1199,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        CreateFileTool, EditFileTool, EchoTool, FindTool, GrepTool, ListDirTool, ReadFileTool,
+        CreateFileTool, EchoTool, EditFileTool, FindTool, GrepTool, ListDirTool, ReadFileTool,
         ShellTool, Tool, ToolContext, resolve_path,
     };
     use crate::db::Db;
@@ -1224,7 +1267,10 @@ mod tests {
         let context = test_context(root).await;
 
         let result = tool
-            .call(json!({"path":"sample.txt","offset":99,"limit":10}), &context)
+            .call(
+                json!({"path":"sample.txt","offset":99,"limit":10}),
+                &context,
+            )
             .await
             .unwrap();
 
@@ -1249,7 +1295,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(fs::read_to_string(root.join("sample.txt")).unwrap(), "hello\nthere\n");
+        assert_eq!(
+            fs::read_to_string(root.join("sample.txt")).unwrap(),
+            "hello\nthere\n"
+        );
         assert_eq!(result["replaced"], true);
         assert_eq!(result["occurrences_found"], 1);
         assert!(result["diff"].as_str().unwrap().contains("-world"));
@@ -1265,11 +1314,18 @@ mod tests {
         let context = test_context(root).await;
 
         let error = tool
-            .call(json!({"path":"sample.txt","old_text":"x","new_text":"z"}), &context)
+            .call(
+                json!({"path":"sample.txt","old_text":"x","new_text":"z"}),
+                &context,
+            )
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("Provide a more specific old_text"));
+        assert!(
+            error
+                .to_string()
+                .contains("Provide a more specific old_text")
+        );
     }
 
     #[tokio::test]
@@ -1335,8 +1391,16 @@ mod tests {
         let result = tool.call(json!({}), &context).await.unwrap();
         let entries = result["entries"].as_array().unwrap();
         assert!(result["entry_count"].as_u64().unwrap() >= 2);
-        assert!(entries.iter().any(|entry| entry["name"] == "nested" && entry["is_dir"] == true));
-        assert!(entries.iter().any(|entry| entry["name"] == "file.txt" && entry["is_dir"] == false));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["name"] == "nested" && entry["is_dir"] == true)
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["name"] == "file.txt" && entry["is_dir"] == false)
+        );
     }
 
     #[tokio::test]

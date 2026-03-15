@@ -23,6 +23,7 @@ pub enum EventKind {
     ContextAssembled,
     ModelRequest,
     ModelResponse,
+    RateLimited,
     ToolCall,
     ToolResult,
     AwaitingUser,

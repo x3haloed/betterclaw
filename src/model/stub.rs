@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::{Value, json};
@@ -9,7 +13,9 @@ use crate::model::{
 };
 
 #[derive(Debug, Default)]
-pub struct StubModelEngine;
+pub struct StubModelEngine {
+    attempts: Mutex<HashMap<String, usize>>,
+}
 
 #[async_trait]
 impl ModelRunner for StubModelEngine {
@@ -46,6 +52,77 @@ impl ModelRunner for StubModelEngine {
         accumulator.push(&events[0]);
 
         let mut response_body = json!({});
+        if let Some(rest) = last_message.strip_prefix("/rate-limit-once ") {
+            let retry_after = rest.trim().parse::<u64>().unwrap_or(1);
+            let mut attempts = self.attempts.lock().expect("stub attempts lock");
+            let seen = attempts.entry(last_message.clone()).or_insert(0);
+            *seen += 1;
+            if *seen == 1 {
+                let message = format!("simulated rate limit for {retry_after}ms");
+                response_body = json!({
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "message": message,
+                    }
+                });
+                let mut result = accumulator.build(
+                    started_at,
+                    Utc::now(),
+                    RawModelTrace {
+                        request_body: raw_request,
+                        response_body: Some(response_body),
+                        raw_frames: Vec::new(),
+                        provider_request_id: Some(Uuid::new_v4().to_string()),
+                        transport_kind: TransportKind::HttpJson,
+                        accumulation_mode: AccumulationMode::FullSnapshot,
+                        reasoning_mode: ReasoningMode::Unknown,
+                    },
+                    events,
+                );
+                result.outcome = TraceOutcome::TransportError;
+                result.error_summary = Some(message.clone());
+                return Err(ModelEngineError::RateLimited {
+                    message,
+                    retry_after: Some(Duration::from_millis(retry_after)),
+                    exchange: Box::new(result),
+                });
+            }
+        } else if last_message.starts_with("/rate-limit-backoff-once") {
+            let mut attempts = self.attempts.lock().expect("stub attempts lock");
+            let seen = attempts.entry(last_message.clone()).or_insert(0);
+            *seen += 1;
+            if *seen == 1 {
+                let message = "simulated rate limit without retry-after".to_string();
+                response_body = json!({
+                    "error": {
+                        "code": "rate_limit_exceeded",
+                        "message": message,
+                    }
+                });
+                let mut result = accumulator.build(
+                    started_at,
+                    Utc::now(),
+                    RawModelTrace {
+                        request_body: raw_request,
+                        response_body: Some(response_body),
+                        raw_frames: Vec::new(),
+                        provider_request_id: Some(Uuid::new_v4().to_string()),
+                        transport_kind: TransportKind::HttpJson,
+                        accumulation_mode: AccumulationMode::FullSnapshot,
+                        reasoning_mode: ReasoningMode::Unknown,
+                    },
+                    events,
+                );
+                result.outcome = TraceOutcome::TransportError;
+                result.error_summary = Some(message.clone());
+                return Err(ModelEngineError::RateLimited {
+                    message,
+                    retry_after: None,
+                    exchange: Box::new(result),
+                });
+            }
+        }
+
         if let Some(rest) = last_message.strip_prefix("/tool-batch ") {
             let parsed_calls: Vec<Value> = serde_json::from_str(rest).unwrap_or_default();
             let mut tool_events = Vec::new();

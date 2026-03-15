@@ -85,7 +85,7 @@ fi
 
 TOKEN_A=$(tr -d '\n' <"$AGENT_A_ROOT/tidepool_token")
 
-curl -fsS "$BASE_URL/v1/database/$DATABASE/reducer/post_message" \
+curl -fsS "$BASE_URL/v1/database/$DATABASE/call/post_message" \
   -H "Authorization: Bearer $TOKEN_A" \
   -H "Content-Type: application/json" \
   -d "[${DOMAIN_ID}, $(printf '%s' "$TASK_TEXT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), null]" \

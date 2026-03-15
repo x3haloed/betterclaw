@@ -24,6 +24,14 @@ Provider presets now infer the engine family:
 - `BETTERCLAW_PROVIDER=codex`
   Codex auth/header quirks on top of the shared Responses engine.
 
+Both OpenAI-compatible engines now also share one runtime-level rate-limit gate:
+
+- HTTP `429` and provider error bodies such as `rate_limit_exceeded` are treated as rate limits
+- `Retry-After` is honored when present
+- otherwise BetterClaw uses exponential backoff starting at 1 second
+- one rate-limit hit blocks all later requests for that runtime until the backoff window expires
+- each blocked or retried attempt still produces trace data, so replay/debugging remains intact
+
 SSE is one transport. The real architectural problem is how to normalize many different incremental response shapes into one internal event model.
 
 ## Why SSE Is Not Enough

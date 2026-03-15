@@ -26,7 +26,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 curl -fsS -D "$HEADER_FILE" \
-  "$BASE_URL/v1/database/$DATABASE/reducer/create_account" \
+  "$BASE_URL/v1/database/$DATABASE/call/create_account" \
   -H "Content-Type: application/json" \
   -d "$(printf '[%s]' "$(printf '%s' "$HANDLE" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')")" \
   >"$BODY_FILE"

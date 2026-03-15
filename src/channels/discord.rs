@@ -181,13 +181,12 @@ impl DiscordChannel {
                 }
                 0 => {
                     let event_type = payload.get("t").and_then(Value::as_str).unwrap_or_default();
-                    if event_type == "MESSAGE_CREATE" {
-                        if let Some(message) =
+                    if event_type == "MESSAGE_CREATE"
+                        && let Some(message) =
                             self.parse_inbound_message(payload.get("d"), &bot_user_id)
                         {
                             self.handle_message(message).await?;
                         }
-                    }
                 }
                 _ => {}
             }
@@ -250,8 +249,8 @@ impl DiscordChannel {
             .get("guild_id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        if let Some(guild_id) = guild_id.as_deref() {
-            if !self.config.allowed_guild_ids.is_empty()
+        if let Some(guild_id) = guild_id.as_deref()
+            && !self.config.allowed_guild_ids.is_empty()
                 && !self
                     .config
                     .allowed_guild_ids
@@ -260,7 +259,6 @@ impl DiscordChannel {
             {
                 return None;
             }
-        }
 
         let is_dm = guild_id.is_none();
         let allow_list = if is_dm {

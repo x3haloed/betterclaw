@@ -85,11 +85,10 @@ impl ExchangeAccumulator {
                     finished: false,
                 },
             );
-        } else if let Some(id) = id {
-            if let Some(call) = self.tool_calls.get_mut(key) {
+        } else if let Some(id) = id
+            && let Some(call) = self.tool_calls.get_mut(key) {
                 call.id = Some(id);
             }
-        }
         self.tool_calls
             .get_mut(key)
             .expect("tool call should exist")

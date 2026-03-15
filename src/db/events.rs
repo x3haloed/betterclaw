@@ -9,7 +9,6 @@ use crate::event::{Event, EventKind};
 use super::Db;
 use super::internal::*;
 
-
 impl Db {
     pub async fn append_event(
         &self,
@@ -77,5 +76,4 @@ impl Db {
         }
         Ok(events)
     }
-
 }

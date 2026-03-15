@@ -184,9 +184,9 @@ impl DiscordChannel {
                     if event_type == "MESSAGE_CREATE"
                         && let Some(message) =
                             self.parse_inbound_message(payload.get("d"), &bot_user_id)
-                        {
-                            self.handle_message(message).await?;
-                        }
+                    {
+                        self.handle_message(message).await?;
+                    }
                 }
                 _ => {}
             }
@@ -251,14 +251,14 @@ impl DiscordChannel {
             .map(ToOwned::to_owned);
         if let Some(guild_id) = guild_id.as_deref()
             && !self.config.allowed_guild_ids.is_empty()
-                && !self
-                    .config
-                    .allowed_guild_ids
-                    .iter()
-                    .any(|entry| entry == guild_id)
-            {
-                return None;
-            }
+            && !self
+                .config
+                .allowed_guild_ids
+                .iter()
+                .any(|entry| entry == guild_id)
+        {
+            return None;
+        }
 
         let is_dm = guild_id.is_none();
         let allow_list = if is_dm {

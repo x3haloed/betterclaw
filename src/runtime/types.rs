@@ -1,8 +1,8 @@
 use super::*;
-use serde_json::Value;
 use crate::event::EventKind;
-use crate::turn::TurnStatus;
 use crate::thread::Thread;
+use crate::turn::TurnStatus;
+use serde_json::Value;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -61,4 +61,3 @@ pub(crate) enum ToolControl {
     Message { content: String },
     AskUser { question: String },
 }
-

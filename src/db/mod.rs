@@ -1,23 +1,20 @@
-
-
-
-pub mod settings;
-pub mod threads;
 pub mod events;
-pub mod traces;
-pub mod memory;
 pub(crate) mod internal;
+pub mod memory;
+pub mod settings;
 #[cfg(test)]
 mod tests;
+pub mod threads;
+pub mod traces;
 
 pub use traces::TraceBlobPruneReport;
 
-use std::path::Path;
-use anyhow::Result;
-use chrono::Utc;
-use libsql::{Builder, Database, Connection, params};
 use crate::agent::Agent;
 use crate::workspace::Workspace;
+use anyhow::Result;
+use chrono::Utc;
+use libsql::{Builder, Connection, Database, params};
+use std::path::Path;
 
 pub struct Db {
     database: Database,
@@ -189,7 +186,7 @@ impl Db {
                 content
             );
 
-            "#
+            "#,
         )
         .await?;
         self.add_column_if_missing(&conn, "outbound_messages", "metadata_json", "TEXT")
@@ -223,7 +220,6 @@ impl Db {
         )
         .await?;
         Ok(())
-
     }
 
     async fn add_column_if_missing(

@@ -141,6 +141,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_distill_uses_model_driven_compressor_output() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("compressor.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-compressor",
+                "Please remember this behavior.",
+            ))
+            .await
+            .unwrap();
+
+        let wake_pack = runtime
+            .db()
+            .latest_memory_artifact("default", crate::memory::MemoryArtifactKind::WakePackV0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(wake_pack.content.contains("Stub compressor wake pack"));
+
+        let self_invariants = runtime
+            .db()
+            .list_memory_artifacts(
+                "default",
+                Some(crate::memory::MemoryArtifactKind::InvariantSelfV0),
+                10,
+            )
+            .await
+            .unwrap();
+        assert!(!self_invariants.is_empty());
+    }
+
+    #[tokio::test]
     async fn replay_turn_creates_a_fresh_turn_with_replay_event() {
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("replay.db")).await.unwrap();

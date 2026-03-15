@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::error::RuntimeError;
-use serde_json::{Value, json};
 use async_trait::async_trait;
+use serde_json::{Value, json};
 
 pub struct WebSearchTool;
 
@@ -167,4 +167,3 @@ impl Tool for WebFetchTool {
         }))
     }
 }
-

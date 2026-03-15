@@ -1,7 +1,5 @@
-
-
-use super::*;
 use super::internal::redact_json;
+use super::*;
 use chrono::{Duration, Utc};
 use serde_json::json;
 use tempfile::tempdir;

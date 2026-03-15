@@ -1,10 +1,16 @@
 use super::*;
-use serde_json::{Value, json};
 use crate::error::RuntimeError;
 use crate::model::*;
 use crate::settings::{ModelRole, ModelRoleConfig};
+use serde_json::{Value, json};
 
 pub(crate) struct ResolvedModelEngine {
+    pub(crate) engine: ModelEngine,
+    pub(crate) model_name: String,
+    pub(crate) provider_name: String,
+}
+
+pub(crate) struct ResolvedRoleEngine {
     pub(crate) engine: ModelEngine,
     pub(crate) model_name: String,
     pub(crate) provider_name: String,
@@ -199,6 +205,105 @@ impl EmbeddingClient {
     }
 }
 
+pub(crate) fn resolve_role_engine(
+    role: &ModelRoleConfig,
+) -> Result<ResolvedRoleEngine, anyhow::Error> {
+    let provider = role.provider.to_lowercase();
+    match provider.as_str() {
+        "stub" => Ok(ResolvedRoleEngine {
+            engine: ModelEngine::stub(StubModelEngine::default()),
+            model_name: role.model.clone(),
+            provider_name: "stub".to_string(),
+        }),
+        "local" | "lmstudio" | "openai_compatible" => {
+            let base_url = role
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:1234/v1".to_string());
+            let config = OpenAiCompatibleConfig {
+                base_url,
+                provider_name: "local-openai-compatible".to_string(),
+                extra_headers: role.extra_headers.clone(),
+                ..OpenAiCompatibleConfig::default()
+            };
+            let engine = match role.mode.as_deref() {
+                Some("responses") => {
+                    ModelEngine::openai_responses(OpenAiResponsesEngine::new(config)?)
+                }
+                _ => {
+                    ModelEngine::openai_chat_completions(OpenAiChatCompletionsEngine::new(config)?)
+                }
+            };
+            Ok(ResolvedRoleEngine {
+                engine,
+                model_name: role.model.clone(),
+                provider_name: "local-openai-compatible".to_string(),
+            })
+        }
+        "openrouter" => {
+            let mut extra_headers = role.extra_headers.clone();
+            if let Ok(referer) = std::env::var("OPENROUTER_HTTP_REFERER") {
+                extra_headers.push(("HTTP-Referer".to_string(), referer));
+            }
+            if let Ok(title) = std::env::var("OPENROUTER_X_TITLE") {
+                extra_headers.push(("X-Title".to_string(), title));
+            }
+            let config = OpenAiCompatibleConfig {
+                base_url: role
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
+                provider_name: "openrouter".to_string(),
+                bearer_token: role
+                    .api_key_env_var
+                    .as_ref()
+                    .and_then(|env_var| std::env::var(env_var).ok())
+                    .or_else(|| std::env::var("OPENROUTER_API_KEY").ok()),
+                extra_headers,
+                ..OpenAiCompatibleConfig::default()
+            };
+            let engine = match role.mode.as_deref() {
+                Some("responses") => {
+                    ModelEngine::openai_responses(OpenAiResponsesEngine::new(config)?)
+                }
+                _ => {
+                    ModelEngine::openai_chat_completions(OpenAiChatCompletionsEngine::new(config)?)
+                }
+            };
+            Ok(ResolvedRoleEngine {
+                engine,
+                model_name: role.model.clone(),
+                provider_name: "openrouter".to_string(),
+            })
+        }
+        "codex" => {
+            let auth_path = std::env::var("OPENAI_CODEX_AUTH_PATH")
+                .unwrap_or_else(|_| default_openai_codex_auth_path());
+            let (token, account_id) = load_openai_codex_credentials(&auth_path)?;
+            let mut extra_headers = role.extra_headers.clone();
+            if let Some(account_id) = account_id {
+                extra_headers.push(("ChatGPT-Account-Id".to_string(), account_id));
+            }
+            let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig {
+                base_url: role
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://chatgpt.com/backend-api/codex".to_string()),
+                provider_name: "codex".to_string(),
+                bearer_token: Some(token),
+                extra_headers,
+                ..OpenAiCompatibleConfig::default()
+            })?;
+            Ok(ResolvedRoleEngine {
+                engine: ModelEngine::openai_responses(engine),
+                model_name: role.model.clone(),
+                provider_name: "codex".to_string(),
+            })
+        }
+        other => anyhow::bail!("unsupported role provider '{other}'"),
+    }
+}
+
 pub(crate) fn default_openai_codex_auth_path() -> String {
     std::env::var("HOME")
         .map(PathBuf::from)
@@ -266,4 +371,3 @@ pub(crate) fn env_role(role: ModelRole) -> Option<ModelRoleConfig> {
         }
     }
 }
-

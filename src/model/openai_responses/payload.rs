@@ -1,6 +1,6 @@
+use crate::model::ModelMessage;
 use serde::Serialize;
 use serde_json::{Value, json};
-use crate::model::ModelMessage;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]

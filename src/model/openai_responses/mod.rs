@@ -1,16 +1,16 @@
-use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 use crate::model::openai_compat::OpenAiCompatibleConfig;
 use crate::model::{
     AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest,
-    ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace,
-    ReasoningMode, TraceOutcome, TransportKind,
+    ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace, ReasoningMode,
+    TraceOutcome, TransportKind,
 };
 
 pub(crate) mod decode;
@@ -68,11 +68,12 @@ impl OpenAiResponsesEngine {
             payload["text"] = json!({ "format": response_format });
         }
         if let Some(extra) = request.extra.as_object()
-            && let Some(target) = payload.as_object_mut() {
-                for (key, value) in extra {
-                    target.insert(key.clone(), value.clone());
-                }
+            && let Some(target) = payload.as_object_mut()
+        {
+            for (key, value) in extra {
+                target.insert(key.clone(), value.clone());
             }
+        }
         payload
     }
 
@@ -282,25 +283,26 @@ impl OpenAiResponsesEngine {
         }
 
         if !buffer.trim().is_empty()
-            && let Ok(frame_value) = serde_json::from_str::<Value>(buffer.trim()) {
-                raw_trace.raw_frames.push(RawFrame {
-                    sequence: frame_index,
-                    data: frame_value.clone(),
-                });
-                let frame_events = decode_responses_stream_frame(&frame_value, &mut reasoning_mode);
-                if frame_events.iter().any(|event| {
-                    matches!(
-                        event,
-                        ModelEvent::Completed { .. } | ModelEvent::Failed { .. }
-                    )
-                }) {
-                    saw_terminal_event = true;
-                }
-                for event in frame_events {
-                    accumulator.push(&event);
-                    events.push(event);
-                }
+            && let Ok(frame_value) = serde_json::from_str::<Value>(buffer.trim())
+        {
+            raw_trace.raw_frames.push(RawFrame {
+                sequence: frame_index,
+                data: frame_value.clone(),
+            });
+            let frame_events = decode_responses_stream_frame(&frame_value, &mut reasoning_mode);
+            if frame_events.iter().any(|event| {
+                matches!(
+                    event,
+                    ModelEvent::Completed { .. } | ModelEvent::Failed { .. }
+                )
+            }) {
+                saw_terminal_event = true;
             }
+            for event in frame_events {
+                accumulator.push(&event);
+                events.push(event);
+            }
+        }
 
         if !saw_done
             && !saw_terminal_event

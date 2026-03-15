@@ -463,7 +463,6 @@ async fn tool_collect_ledger_entries(
     Ok(entries)
 }
 
-
 mod tool_ledger;
 
 mod tool_core;
@@ -471,6 +470,5 @@ mod tool_core;
 mod tool_fs;
 
 mod tool_web;
-
 
 // Register function

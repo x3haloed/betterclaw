@@ -1,13 +1,12 @@
-use std::io::{Read, Write};
+use crate::memory::MemoryArtifactKind;
+use crate::turn::TurnStatus;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde_json::Value;
-use crate::turn::TurnStatus;
-use crate::memory::MemoryArtifactKind;
-
+use std::io::{Read, Write};
 
 pub(crate) fn turn_status_string(status: &TurnStatus) -> String {
     match status {

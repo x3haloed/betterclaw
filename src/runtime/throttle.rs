@@ -1,4 +1,4 @@
-use std::time::{Duration};
+use std::time::Duration;
 
 #[derive(Debug)]
 pub(crate) struct ProviderThrottle {
@@ -71,4 +71,3 @@ impl ProviderThrottle {
         }
     }
 }
-

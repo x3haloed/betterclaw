@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration};
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{Value, json};
@@ -12,32 +12,26 @@ use crate::channel::{InboundEvent, OutboundMessage};
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
-use crate::memory::{
-    MemoryArtifactKind, chunk_text,
-    cosine_similarity,
-};
+use crate::memory::{MemoryArtifactKind, chunk_text, cosine_similarity};
 use crate::model::{
-    ModelEngine, ModelMessage,
-    ModelTrace,
-    StubModelEngine, TraceDetail,
-    TraceOutcome, strip_reasoning_tags,
+    ModelEngine, ModelMessage, ModelTrace, StubModelEngine, TraceDetail, TraceOutcome,
+    strip_reasoning_tags,
 };
 use crate::settings::{ModelRole, RetentionSettings, RuntimeSettings};
 use crate::thread::Thread;
-use crate::tool::{ToolRegistry};
+use crate::tool::ToolRegistry;
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
 
-
-mod types;
 mod engine;
-mod throttle;
-mod memory;
 mod internal;
+mod memory;
+mod throttle;
+mod types;
 
-pub use types::*;
 use engine::*;
 use throttle::*;
+pub use types::*;
 
 #[cfg(test)]
 mod tests;
@@ -374,5 +368,4 @@ impl Runtime {
     pub async fn handle_inbound(&self, event: InboundEvent) -> Result<TurnOutcome, RuntimeError> {
         self.handle_inbound_internal(event, None).await
     }
-
 }

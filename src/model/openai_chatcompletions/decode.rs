@@ -1,5 +1,5 @@
-use serde_json::{Value};
-use crate::model::{ModelEvent, ModelUsage, ReasoningMode, ModelMessage};
+use crate::model::{ModelEvent, ModelMessage, ModelUsage, ReasoningMode};
+use serde_json::Value;
 
 pub(crate) fn serialize_chat_message(message: &ModelMessage) -> Value {
     let mut value = serde_json::to_value(message).expect("chat message should serialize");

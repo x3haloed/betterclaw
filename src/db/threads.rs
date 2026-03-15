@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use libsql::{params, Rows};
+use libsql::{Rows, params};
 use uuid::Uuid;
 
 use crate::thread::Thread;
@@ -8,7 +8,6 @@ use crate::turn::{Turn, TurnStatus};
 
 use super::Db;
 use super::internal::*;
-
 
 impl Db {
     pub async fn create_thread(
@@ -230,5 +229,4 @@ impl Db {
         }
         Ok(turns)
     }
-
 }

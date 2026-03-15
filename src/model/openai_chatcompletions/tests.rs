@@ -1,5 +1,5 @@
-use super::*;
 use super::decode::*;
+use super::*;
 
 #[cfg(test)]
 mod tests {

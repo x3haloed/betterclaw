@@ -52,7 +52,44 @@ impl ModelRunner for StubModelEngine {
         accumulator.push(&events[0]);
 
         let mut response_body = json!({});
-        if let Some(rest) = last_message.strip_prefix("/rate-limit-once ") {
+        if request.extra.get("betterclaw_role").and_then(Value::as_str) == Some("compressor") {
+            let text = json!({
+                "wake_pack": "Stub compressor wake pack: preserve recent user intent and tool outcomes.",
+                "invariant_self": [
+                    {
+                        "text": "BetterClaw should prefer tool-backed answers when tools materially help.",
+                        "citations": ["turn:stub:user"]
+                    }
+                ],
+                "invariant_user": [
+                    {
+                        "text": "The user is actively iterating on BetterClaw runtime behavior.",
+                        "citations": ["turn:stub:user"]
+                    }
+                ],
+                "invariant_relationship": [],
+                "drift_flags": [],
+                "drift_contradictions": [],
+                "drift_merges": [],
+                "summary": "Stub compressor distill complete."
+            })
+            .to_string();
+            response_body = json!({
+                "choices": [{
+                    "message": { "content": text },
+                    "finish_reason": "stop"
+                }]
+            });
+            for event in [
+                ModelEvent::TextSnapshot { text },
+                ModelEvent::Completed {
+                    finish_reason: Some("stop".to_string()),
+                },
+            ] {
+                accumulator.push(&event);
+                events.push(event);
+            }
+        } else if let Some(rest) = last_message.strip_prefix("/rate-limit-once ") {
             let retry_after = rest.trim().parse::<u64>().unwrap_or(1);
             let mut attempts = self.attempts.lock().expect("stub attempts lock");
             let seen = attempts.entry(last_message.clone()).or_insert(0);

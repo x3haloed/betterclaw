@@ -12,7 +12,6 @@ use crate::memory::{
 use super::Db;
 use super::internal::*;
 
-
 impl Db {
     pub async fn record_outbound_message(&self, outbound: &OutboundMessage) -> Result<()> {
         let conn = self.connect()?;
@@ -290,5 +289,4 @@ impl Db {
         .await?;
         Ok(())
     }
-
 }

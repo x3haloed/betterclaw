@@ -1,8 +1,8 @@
 use super::*;
 
 use crate::error::RuntimeError;
-use serde_json::{Value, json};
 use async_trait::async_trait;
+use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -215,9 +215,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::super::{Tool, ToolContext, resolve_path};
-    use crate::tool::tool_core::{EchoTool, ShellTool};
-    use crate::tool::tool_fs::{CreateFileTool, EditFileTool, FindTool, GrepTool, ListDirTool, ReadFileTool};
     use crate::db::Db;
+    use crate::tool::tool_core::{EchoTool, ShellTool};
+    use crate::tool::tool_fs::{
+        CreateFileTool, EditFileTool, FindTool, GrepTool, ListDirTool, ReadFileTool,
+    };
     use crate::workspace::Workspace;
 
     async fn test_context(root: &Path) -> ToolContext {
@@ -433,4 +435,3 @@ mod tests {
         assert_eq!(result["timed_out"], true);
     }
 }
-

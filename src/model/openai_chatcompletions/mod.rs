@@ -1,16 +1,16 @@
-use std::time::Duration;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
+use std::time::Duration;
 
 use crate::model::openai_compat::OpenAiCompatibleConfig;
 use crate::model::{
     AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest,
-    ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace,
-    ReasoningMode, TraceOutcome, TransportKind,
+    ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace, ReasoningMode,
+    TraceOutcome, TransportKind,
 };
 
 pub(crate) mod decode;
@@ -56,11 +56,12 @@ impl OpenAiChatCompletionsEngine {
             payload["response_format"] = response_format.clone();
         }
         if let Some(extra) = request.extra.as_object()
-            && let Some(target) = payload.as_object_mut() {
-                for (key, value) in extra {
-                    target.insert(key.clone(), value.clone());
-                }
+            && let Some(target) = payload.as_object_mut()
+        {
+            for (key, value) in extra {
+                target.insert(key.clone(), value.clone());
             }
+        }
         payload
     }
 

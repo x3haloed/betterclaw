@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use serde_json::Value;
 use crate::model::{ModelEvent, ModelUsage, ReasoningMode};
+use serde_json::Value;
+use std::collections::HashMap;
 
 pub(crate) fn decode_responses_json(
     response_body: &Value,

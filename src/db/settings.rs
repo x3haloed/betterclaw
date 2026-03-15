@@ -6,7 +6,6 @@ use crate::settings::{RetentionSettings, RuntimeSettings};
 use super::Db;
 use super::internal::*;
 
-
 impl Db {
     pub async fn seed_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
@@ -140,5 +139,4 @@ impl Db {
         .await?;
         Ok(())
     }
-
 }

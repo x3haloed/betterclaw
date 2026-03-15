@@ -1,17 +1,17 @@
+use super::memory::default_memory_namespace;
 use super::*;
-use std::time::{Duration, Instant};
-use chrono::Utc;
-use serde_json::{Value, json};
 use crate::error::RuntimeError;
 use crate::event::EventKind;
-use crate::turn::{Turn, TurnStatus};
-use crate::thread::Thread;
-use crate::workspace::Workspace;
 use crate::model::*;
+use crate::thread::Thread;
 use crate::tool::*;
-use uuid::Uuid;
+use crate::turn::{Turn, TurnStatus};
+use crate::workspace::Workspace;
+use chrono::Utc;
 use futures_util::future::join_all;
-use super::memory::default_memory_namespace;
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 impl Runtime {
     pub(crate) fn parse_tool_control(output: &Value) -> Option<ToolControl> {
@@ -32,7 +32,10 @@ impl Runtime {
         }
     }
 
-    pub(crate) async fn apply_startup_setting_overrides(&self, agent_id: &str) -> Result<(), RuntimeError> {
+    pub(crate) async fn apply_startup_setting_overrides(
+        &self,
+        agent_id: &str,
+    ) -> Result<(), RuntimeError> {
         let Some(system_prompt) = system_prompt_override_from_env() else {
             return Ok(());
         };
@@ -332,14 +335,14 @@ impl Runtime {
                     query_hint.unwrap_or(&settings.system_prompt),
                 )
                 .await?
-            {
-                messages.push(ModelMessage {
-                    role: "system".to_string(),
-                    content: Some(recall_block),
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
-            }
+        {
+            messages.push(ModelMessage {
+                role: "system".to_string(),
+                content: Some(recall_block),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
         Ok(messages)
     }
 
@@ -584,7 +587,10 @@ impl Runtime {
             .map_err(RuntimeError::from)
     }
 
-    pub(crate) async fn workspace_for_agent(&self, agent_id: &str) -> Result<Workspace, RuntimeError> {
+    pub(crate) async fn workspace_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Workspace, RuntimeError> {
         let agent = self
             .db
             .load_agent(agent_id)
@@ -900,4 +906,3 @@ pub(crate) fn build_fts_query(query: &str) -> String {
         .collect::<Vec<_>>()
         .join(" OR ")
 }
-

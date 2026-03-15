@@ -9,7 +9,6 @@ use crate::model::{ModelTrace, TraceBlob, TraceDetail};
 use super::Db;
 use super::internal::*;
 
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TraceBlobPruneReport {
     pub pruned_blob_count: usize,
@@ -252,5 +251,4 @@ impl Db {
         .await?;
         Ok(())
     }
-
 }

@@ -57,6 +57,8 @@ impl TidepoolChannel {
             token_path = %bootstrap.token_path.display(),
             "Tidepool bootstrap complete"
         );
+        self.seed_attach_cursors(client.attach_baseline_sequences())
+            .await?;
 
         while let Some(event) = client.recv().await {
             let inbound = event?;
@@ -164,6 +166,45 @@ impl TidepoolChannel {
 
         Ok(())
     }
+
+    async fn seed_attach_cursors(
+        &self,
+        attach_baseline_sequences: &std::collections::HashMap<u64, u64>,
+    ) -> Result<()> {
+        for (domain_id, baseline_sequence) in attach_baseline_sequences {
+            let cursor_key = domain_id.to_string();
+            let current_cursor = self
+                .runtime
+                .db()
+                .load_cursor("tidepool", &cursor_key)
+                .await
+                .context("loading Tidepool cursor during attach")?
+                .and_then(|cursor| cursor.cursor_value.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            if current_cursor >= *baseline_sequence {
+                continue;
+            }
+
+            tracing::info!(
+                domain_id = *domain_id,
+                baseline_sequence = *baseline_sequence,
+                current_cursor,
+                "Seeding Tidepool cursor from attach snapshot baseline"
+            );
+            self.runtime
+                .db()
+                .upsert_cursor(&ChannelCursor {
+                    channel: "tidepool".to_string(),
+                    cursor_key,
+                    cursor_value: baseline_sequence.to_string(),
+                    updated_at: Utc::now(),
+                })
+                .await
+                .context("upserting Tidepool cursor from attach baseline")?;
+        }
+        Ok(())
+    }
 }
 
 fn tidepool_thread_key(domain_id: u64) -> String {
@@ -173,9 +214,27 @@ fn tidepool_thread_key(domain_id: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::tidepool_thread_key;
+    use std::collections::HashMap;
 
     #[test]
     fn canonical_thread_key_uses_domain_id() {
         assert_eq!(tidepool_thread_key(42), "tidepool:domain:42");
+    }
+
+    #[test]
+    fn baseline_map_keeps_highest_sequence_per_domain() {
+        let mut baseline = HashMap::new();
+        for (domain_id, sequence) in [(7, 2), (7, 5), (8, 3), (7, 4)] {
+            baseline
+                .entry(domain_id)
+                .and_modify(|current| {
+                    if sequence > *current {
+                        *current = sequence;
+                    }
+                })
+                .or_insert(sequence);
+        }
+        assert_eq!(baseline.get(&7), Some(&5));
+        assert_eq!(baseline.get(&8), Some(&3));
     }
 }

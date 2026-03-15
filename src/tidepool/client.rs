@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -88,6 +89,7 @@ pub struct TidepoolClient {
     receiver: mpsc::UnboundedReceiver<TidepoolClientEvent>,
     _run_loop: tokio::task::JoinHandle<spacetimedb_sdk::Result<()>>,
     bootstrap: TidepoolBootstrapOutcome,
+    attach_baseline_sequences: HashMap<u64, u64>,
 }
 
 impl TidepoolClient {
@@ -124,17 +126,23 @@ impl TidepoolClient {
         let run_loop = tokio::spawn(async move { run_connection.run_async().await });
 
         let bootstrap = bootstrap_account(&connection, &config).await?;
+        let attach_baseline_sequences = current_attach_baseline(&connection);
 
         Ok(Self {
             connection,
             receiver: event_rx,
             _run_loop: run_loop,
             bootstrap,
+            attach_baseline_sequences,
         })
     }
 
     pub fn bootstrap_outcome(&self) -> &TidepoolBootstrapOutcome {
         &self.bootstrap
+    }
+
+    pub fn attach_baseline_sequences(&self) -> &HashMap<u64, u64> {
+        &self.attach_baseline_sequences
     }
 
     pub async fn recv(&mut self) -> Option<Result<TidepoolInboundMessage>> {
@@ -198,6 +206,21 @@ fn register_callbacks(
             };
             let _ = message_tx.send(TidepoolClientEvent::Message(message));
         });
+}
+
+fn current_attach_baseline(connection: &Arc<DbConnection>) -> HashMap<u64, u64> {
+    let mut baseline = HashMap::new();
+    for row in connection.db.my_subscribed_messages().iter() {
+        baseline
+            .entry(row.domain_id)
+            .and_modify(|sequence| {
+                if row.domain_sequence > *sequence {
+                    *sequence = row.domain_sequence;
+                }
+            })
+            .or_insert(row.domain_sequence);
+    }
+    baseline
 }
 
 async fn bootstrap_account(

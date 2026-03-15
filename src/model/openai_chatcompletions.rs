@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use crate::model::openai_compat::OpenAiCompatibleConfig;
 use crate::model::{
     AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest,
-    ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace, ReasoningMode,
-    TraceOutcome, TransportKind,
+    ModelExchangeResult, ModelMessage, ModelRunner, ModelUsage, RawFrame, RawModelTrace,
+    ReasoningMode, TraceOutcome, TransportKind,
 };
 
 #[derive(Debug)]
@@ -31,7 +31,7 @@ impl OpenAiChatCompletionsEngine {
     fn build_payload(&self, request: &ModelExchangeRequest) -> Value {
         let mut payload = json!({
             "model": request.model,
-            "messages": request.messages,
+            "messages": request.messages.iter().map(serialize_chat_message).collect::<Vec<_>>(),
             "stream": request.stream,
         });
         if !request.tools.is_empty() {
@@ -422,6 +422,18 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
     }
 }
 
+fn serialize_chat_message(message: &ModelMessage) -> Value {
+    let mut value = serde_json::to_value(message).expect("chat message should serialize");
+    if let Some(object) = value.as_object_mut()
+        && message.role == "assistant"
+        && message.tool_calls.is_some()
+        && !object.contains_key("content")
+    {
+        object.insert("content".to_string(), Value::Null);
+    }
+    value
+}
+
 fn decode_openai_response_json(
     response_body: &Value,
     reasoning_mode: &mut ReasoningMode,
@@ -656,10 +668,15 @@ fn parse_sse_data(block: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
-    use super::{decode_openai_response_json, decode_openai_stream_frame, parse_sse_data};
-    use crate::model::{ModelEvent, ReasoningMode};
+    use super::{
+        decode_openai_response_json, decode_openai_stream_frame, parse_sse_data,
+        serialize_chat_message,
+    };
+    use crate::model::{
+        ModelEvent, ModelMessage, ModelToolCallMessage, ModelToolFunctionMessage, ReasoningMode,
+    };
 
     #[test]
     fn decodes_non_streaming_tool_calls() {
@@ -777,6 +794,35 @@ mod tests {
             event,
             ModelEvent::TextSnapshot { text } if text == "<think>hidden</think>Visible"
         )));
+    }
+
+    #[test]
+    fn assistant_tool_call_messages_include_null_content() {
+        let value = serialize_chat_message(&ModelMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![ModelToolCallMessage {
+                id: "call-1".to_string(),
+                kind: "function".to_string(),
+                function: ModelToolFunctionMessage {
+                    name: "echo".to_string(),
+                    arguments: "{\"message\":\"hi\"}".to_string(),
+                },
+            }]),
+            tool_call_id: None,
+        });
+        assert_eq!(value.get("content"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn ordinary_messages_do_not_gain_null_content() {
+        let value = serialize_chat_message(&ModelMessage {
+            role: "assistant".to_string(),
+            content: Some("hello".to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        assert_eq!(value.get("content"), Some(&json!("hello")));
     }
 
     #[test]

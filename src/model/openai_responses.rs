@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -22,6 +23,8 @@ pub struct OpenAiResponsesEngine {
 }
 
 impl OpenAiResponsesEngine {
+    const TERMINAL_FRAME_GRACE: Duration = Duration::from_secs(1);
+
     pub fn new(config: OpenAiCompatibleConfig) -> Result<Self, anyhow::Error> {
         let client = config.build_client(true)?;
         Ok(Self { client, config })
@@ -196,7 +199,19 @@ impl OpenAiResponsesEngine {
         let mut buffer = String::new();
         let mut frame_index = 0usize;
         let mut saw_done = false;
-        while let Some(chunk) = stream.next().await {
+        let mut saw_terminal_event = false;
+        loop {
+            let next_chunk = if saw_terminal_event {
+                match tokio::time::timeout(Self::TERMINAL_FRAME_GRACE, stream.next()).await {
+                    Ok(chunk) => chunk,
+                    Err(_) => break,
+                }
+            } else {
+                stream.next().await
+            };
+            let Some(chunk) = next_chunk else {
+                break;
+            };
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(error) => {
@@ -246,7 +261,16 @@ impl OpenAiResponsesEngine {
                     data: frame_value.clone(),
                 });
                 frame_index += 1;
-                for event in decode_responses_stream_frame(&frame_value, &mut reasoning_mode) {
+                let frame_events = decode_responses_stream_frame(&frame_value, &mut reasoning_mode);
+                if frame_events.iter().any(|event| {
+                    matches!(
+                        event,
+                        ModelEvent::Completed { .. } | ModelEvent::Failed { .. }
+                    )
+                }) {
+                    saw_terminal_event = true;
+                }
+                for event in frame_events {
                     accumulator.push(&event);
                     events.push(event);
                 }
@@ -259,7 +283,16 @@ impl OpenAiResponsesEngine {
                     sequence: frame_index,
                     data: frame_value.clone(),
                 });
-                for event in decode_responses_stream_frame(&frame_value, &mut reasoning_mode) {
+                let frame_events = decode_responses_stream_frame(&frame_value, &mut reasoning_mode);
+                if frame_events.iter().any(|event| {
+                    matches!(
+                        event,
+                        ModelEvent::Completed { .. } | ModelEvent::Failed { .. }
+                    )
+                }) {
+                    saw_terminal_event = true;
+                }
+                for event in frame_events {
                     accumulator.push(&event);
                     events.push(event);
                 }
@@ -267,6 +300,7 @@ impl OpenAiResponsesEngine {
         }
 
         if !saw_done
+            && !saw_terminal_event
             && !events
                 .iter()
                 .any(|event| matches!(event, ModelEvent::Completed { .. }))

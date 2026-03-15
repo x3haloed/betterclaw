@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -19,6 +21,8 @@ pub struct OpenAiChatCompletionsEngine {
 }
 
 impl OpenAiChatCompletionsEngine {
+    const TERMINAL_FRAME_GRACE: Duration = Duration::from_secs(1);
+
     pub fn new(config: OpenAiCompatibleConfig) -> Result<Self, anyhow::Error> {
         let client = config.build_client(true)?;
         Ok(Self { client, config })
@@ -182,7 +186,19 @@ impl OpenAiChatCompletionsEngine {
         let mut buffer = String::new();
         let mut frame_index = 0usize;
         let mut saw_done = false;
-        while let Some(chunk) = stream.next().await {
+        let mut saw_terminal_event = false;
+        loop {
+            let next_chunk = if saw_terminal_event {
+                match tokio::time::timeout(Self::TERMINAL_FRAME_GRACE, stream.next()).await {
+                    Ok(chunk) => chunk,
+                    Err(_) => break,
+                }
+            } else {
+                stream.next().await
+            };
+            let Some(chunk) = next_chunk else {
+                break;
+            };
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(error) => {
@@ -232,14 +248,23 @@ impl OpenAiChatCompletionsEngine {
                     data: frame_value.clone(),
                 });
                 frame_index += 1;
-                for event in decode_openai_stream_frame(&frame_value, &mut reasoning_mode) {
+                let frame_events = decode_openai_stream_frame(&frame_value, &mut reasoning_mode);
+                if frame_events.iter().any(|event| {
+                    matches!(
+                        event,
+                        ModelEvent::Completed { .. } | ModelEvent::Failed { .. }
+                    )
+                }) {
+                    saw_terminal_event = true;
+                }
+                for event in frame_events {
                     accumulator.push(&event);
                     events.push(event);
                 }
             }
         }
 
-        if !saw_done {
+        if !saw_done && !saw_terminal_event {
             let event = ModelEvent::Completed {
                 finish_reason: None,
             };
@@ -668,14 +693,19 @@ fn parse_sse_data(block: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use serde_json::{Value, json};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     use super::{
-        decode_openai_response_json, decode_openai_stream_frame, parse_sse_data,
-        serialize_chat_message,
+        OpenAiChatCompletionsEngine, decode_openai_response_json, decode_openai_stream_frame,
+        parse_sse_data, serialize_chat_message,
     };
     use crate::model::{
-        ModelEvent, ModelMessage, ModelToolCallMessage, ModelToolFunctionMessage, ReasoningMode,
+        ModelEvent, ModelExchangeRequest, ModelMessage, ModelRunner, ModelToolCallMessage,
+        ModelToolFunctionMessage, OpenAiCompatibleConfig, ReasoningMode,
     };
 
     #[test]
@@ -872,5 +902,69 @@ mod tests {
             event,
             ModelEvent::Completed { finish_reason } if finish_reason.as_deref() == Some("error")
         )));
+    }
+
+    #[tokio::test]
+    async fn streaming_returns_after_terminal_frame_without_done() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request_buffer = [0_u8; 4096];
+            let _ = socket
+                .read(&mut request_buffer)
+                .await
+                .expect("read request");
+
+            let body = concat!(
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{\\\"path\\\":\\\"src\\\"}\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: keep-alive\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        });
+
+        let engine = OpenAiChatCompletionsEngine::new(OpenAiCompatibleConfig {
+            base_url: format!("http://{addr}/v1"),
+            timeout: std::time::Duration::from_secs(5),
+            provider_name: "test-provider".to_string(),
+            bearer_token: None,
+            extra_headers: Vec::new(),
+        })
+        .expect("engine");
+        let request = ModelExchangeRequest {
+            model: "test-model".to_string(),
+            messages: vec![ModelMessage {
+                role: "user".to_string(),
+                content: Some("hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            stream: true,
+            response_format: None,
+            extra: json!({}),
+        };
+
+        let started = Instant::now();
+        let result = engine.run(request).await.expect("streaming result");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert_eq!(result.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(result.tool_calls.len(), 1);
+
+        server.abort();
+        let _ = server.await;
     }
 }

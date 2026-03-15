@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -12,39 +10,22 @@ use crate::model::{
     ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace, ReasoningMode,
     TraceOutcome, TransportKind,
 };
-
-#[derive(Debug, Clone)]
-pub struct OpenAiChatCompletionsConfig {
-    pub base_url: String,
-    pub timeout: Duration,
-}
-
-impl Default for OpenAiChatCompletionsConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "http://localhost:1234/v1".to_string(),
-            timeout: Duration::from_secs(120),
-        }
-    }
-}
+use crate::model::openai_compat::OpenAiCompatibleConfig;
 
 #[derive(Debug)]
 pub struct OpenAiChatCompletionsEngine {
     client: Client,
-    config: OpenAiChatCompletionsConfig,
+    config: OpenAiCompatibleConfig,
 }
 
 impl OpenAiChatCompletionsEngine {
-    pub fn new(config: OpenAiChatCompletionsConfig) -> Result<Self, anyhow::Error> {
-        let client = Client::builder().timeout(config.timeout).build()?;
+    pub fn new(config: OpenAiCompatibleConfig) -> Result<Self, anyhow::Error> {
+        let client = config.build_client(true)?;
         Ok(Self { client, config })
     }
 
     fn endpoint(&self) -> String {
-        format!(
-            "{}/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        )
+        self.config.endpoint("chat/completions")
     }
 
     fn build_payload(&self, request: &ModelExchangeRequest) -> Value {
@@ -100,14 +81,6 @@ impl OpenAiChatCompletionsEngine {
             accumulation_mode,
             reasoning_mode,
         }
-    }
-
-    fn provider_request_id(headers: &reqwest::header::HeaderMap) -> Option<String> {
-        headers
-            .get("x-request-id")
-            .or_else(|| headers.get("x-lmstudio-request-id"))
-            .and_then(|value| value.to_str().ok())
-            .map(ToString::to_string)
     }
 
     fn reduced_error_result(
@@ -304,7 +277,7 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
                     payload,
                     None,
                     TransportKind::HttpJson,
-                    error.to_string(),
+                    format!("{} transport failure: {error}", self.config.provider_name),
                     None,
                     AccumulationMode::FullSnapshot,
                     ReasoningMode::Unknown,
@@ -316,7 +289,7 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
             }
         };
 
-        let provider_request_id = Self::provider_request_id(response.headers());
+        let provider_request_id = OpenAiCompatibleConfig::provider_request_id(response.headers());
         if response.status() != StatusCode::OK {
             let status = response.status().as_u16();
             let body_text = response.text().await.unwrap_or_default();
@@ -328,14 +301,14 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
                 payload,
                 provider_request_id,
                 TransportKind::HttpJson,
-                format!("provider returned HTTP {status}"),
+                format!("{} returned HTTP {status}", self.config.provider_name),
                 Some(body_json),
                 AccumulationMode::FullSnapshot,
                 ReasoningMode::Unknown,
             );
             return Err(ModelEngineError::HttpFailure {
                 status,
-                message: format!("provider returned HTTP {status}"),
+                message: format!("{} returned HTTP {status}", self.config.provider_name),
                 exchange: Box::new(exchange),
             });
         }
@@ -356,7 +329,7 @@ impl ModelRunner for OpenAiChatCompletionsEngine {
                             payload.clone(),
                             provider_request_id.clone(),
                             TransportKind::HttpJson,
-                            error.to_string(),
+                            format!("{} transport failure: {error}", self.config.provider_name),
                             None,
                             AccumulationMode::FullSnapshot,
                             ReasoningMode::Unknown,
@@ -473,6 +446,15 @@ fn decode_openai_stream_frame(
     reasoning_mode: &mut ReasoningMode,
 ) -> Vec<ModelEvent> {
     let mut events = Vec::new();
+    if let Some(error_message) = frame
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        events.push(ModelEvent::Failed {
+            message: error_message.to_string(),
+        });
+    }
     if let Some(usage) = frame.get("usage") {
         events.push(ModelEvent::UsageUpdated {
             usage: decode_usage(usage),
@@ -600,7 +582,7 @@ fn parse_sse_data(block: &str) -> Option<String> {
 mod tests {
     use serde_json::json;
 
-    use super::{decode_openai_response_json, decode_openai_stream_frame};
+    use super::{decode_openai_response_json, decode_openai_stream_frame, parse_sse_data};
     use crate::model::{ModelEvent, ReasoningMode};
 
     #[test]
@@ -739,6 +721,34 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             event,
             ModelEvent::ReasoningDelta { text } if text == "hidden"
+        )));
+    }
+
+    #[test]
+    fn ignores_sse_comment_frames() {
+        assert_eq!(parse_sse_data(": OPENROUTER PROCESSING"), None);
+    }
+
+    #[test]
+    fn decodes_midstream_error_payloads() {
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let events = decode_openai_stream_frame(
+            &json!({
+                "error": { "message": "Provider disconnected unexpectedly" },
+                "choices": [{
+                    "delta": { "content": "" },
+                    "finish_reason": "error"
+                }]
+            }),
+            &mut reasoning_mode,
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelEvent::Failed { message } if message == "Provider disconnected unexpectedly"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ModelEvent::Completed { finish_reason } if finish_reason.as_deref() == Some("error")
         )));
     }
 }

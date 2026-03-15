@@ -14,8 +14,9 @@ use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::{
     ModelEngine, ModelExchangeRequest, ModelExchangeResult, ModelMessage, ModelToolCallMessage,
-    ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsConfig, OpenAiChatCompletionsEngine,
-    ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome, strip_reasoning_tags,
+    ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsEngine, OpenAiCompatibleConfig,
+    OpenAiResponsesEngine, ReducedToolCall, StubModelEngine, TraceDetail, TraceOutcome,
+    strip_reasoning_tags,
 };
 use crate::settings::RetentionSettings;
 use crate::settings::RuntimeSettings;
@@ -69,6 +70,140 @@ pub struct TracePruneReport {
     pub reclaimed_bytes: i64,
 }
 
+struct ResolvedModelEngine {
+    engine: ModelEngine,
+    model_name: String,
+}
+
+struct ProviderPreset;
+
+impl ProviderPreset {
+    fn from_env() -> Result<ResolvedModelEngine, anyhow::Error> {
+        let provider = std::env::var("BETTERCLAW_PROVIDER")
+            .unwrap_or_else(|_| "local".to_string())
+            .to_lowercase();
+        match provider.as_str() {
+            "local" | "lmstudio" | "openai_compatible" => Self::local_from_env(),
+            "openrouter" => Self::openrouter_from_env(),
+            "codex" => Self::codex_from_env(),
+            other => anyhow::bail!("unsupported BETTERCLAW_PROVIDER '{other}'"),
+        }
+    }
+
+    fn local_from_env() -> Result<ResolvedModelEngine, anyhow::Error> {
+        let model_name =
+            std::env::var("BETTERCLAW_MODEL").unwrap_or_else(|_| "qwen/qwen3.5-9b".to_string());
+        let base_url = std::env::var("BETTERCLAW_MODEL_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
+        let engine = OpenAiChatCompletionsEngine::new(OpenAiCompatibleConfig {
+            base_url,
+            provider_name: "local-openai-compatible".to_string(),
+            ..OpenAiCompatibleConfig::default()
+        })?;
+        Ok(ResolvedModelEngine {
+            engine: ModelEngine::openai_chat_completions(engine),
+            model_name,
+        })
+    }
+
+    fn openrouter_from_env() -> Result<ResolvedModelEngine, anyhow::Error> {
+        let mode = std::env::var("BETTERCLAW_PROVIDER_MODE")
+            .or_else(|_| std::env::var("OPENROUTER_MODE"))
+            .unwrap_or_else(|_| "chat".to_string())
+            .to_lowercase();
+        let model_name = std::env::var("OPENROUTER_MODEL")
+            .or_else(|_| std::env::var("BETTERCLAW_MODEL"))
+            .unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+        let base_url = std::env::var("OPENROUTER_BASE_URL")
+            .or_else(|_| std::env::var("BETTERCLAW_MODEL_BASE_URL"))
+            .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string());
+        let api_key = std::env::var("OPENROUTER_API_KEY").ok();
+        let mut extra_headers = Vec::new();
+        if let Ok(referer) = std::env::var("OPENROUTER_HTTP_REFERER") {
+            extra_headers.push(("HTTP-Referer".to_string(), referer));
+        }
+        if let Ok(title) = std::env::var("OPENROUTER_X_TITLE") {
+            extra_headers.push(("X-Title".to_string(), title));
+        }
+        let config = OpenAiCompatibleConfig {
+            base_url,
+            provider_name: "openrouter".to_string(),
+            bearer_token: api_key,
+            extra_headers,
+            ..OpenAiCompatibleConfig::default()
+        };
+        let engine = match mode.as_str() {
+            "responses" => ModelEngine::openai_responses(OpenAiResponsesEngine::new(config)?),
+            "chat" | "chat_completions" => {
+                ModelEngine::openai_chat_completions(OpenAiChatCompletionsEngine::new(config)?)
+            }
+            other => anyhow::bail!("unsupported OpenRouter mode '{other}'"),
+        };
+        Ok(ResolvedModelEngine { engine, model_name })
+    }
+
+    fn codex_from_env() -> Result<ResolvedModelEngine, anyhow::Error> {
+        let auth_path = std::env::var("OPENAI_CODEX_AUTH_PATH")
+            .unwrap_or_else(|_| default_openai_codex_auth_path());
+        let (token, account_id) = load_openai_codex_credentials(&auth_path)?;
+        let model_name = std::env::var("OPENAI_CODEX_MODEL")
+            .or_else(|_| std::env::var("BETTERCLAW_MODEL"))
+            .unwrap_or_else(|_| "gpt-5-codex".to_string());
+        let base_url = std::env::var("OPENAI_CODEX_BASE_URL")
+            .or_else(|_| std::env::var("BETTERCLAW_MODEL_BASE_URL"))
+            .unwrap_or_else(|_| "https://chatgpt.com/backend-api/codex".to_string());
+        let mut extra_headers = Vec::new();
+        if let Some(account_id) = account_id {
+            extra_headers.push(("ChatGPT-Account-Id".to_string(), account_id));
+        }
+        let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig {
+            base_url,
+            provider_name: "codex".to_string(),
+            bearer_token: Some(token),
+            extra_headers,
+            ..OpenAiCompatibleConfig::default()
+        })?;
+        Ok(ResolvedModelEngine {
+            engine: ModelEngine::openai_responses(engine),
+            model_name,
+        })
+    }
+}
+
+fn default_openai_codex_auth_path() -> String {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(".codex")
+        .join("auth.json")
+        .display()
+        .to_string()
+}
+
+fn load_openai_codex_credentials(
+    auth_file: &str,
+) -> Result<(String, Option<String>), anyhow::Error> {
+    let contents = std::fs::read_to_string(auth_file)?;
+    let parsed: Value = serde_json::from_str(&contents)?;
+    let tokens = parsed
+        .get("tokens")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("Codex auth file is missing the 'tokens' object"))?;
+    let access_token = tokens
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Codex auth file is missing tokens.access_token"))?;
+    let account_id = tokens
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    Ok((access_token.to_string(), account_id))
+}
+
 impl Runtime {
     fn parse_tool_control(output: &Value) -> Option<ToolControl> {
         let control = output
@@ -93,15 +228,8 @@ impl Runtime {
     }
 
     pub async fn from_env(db: Db) -> Result<Self, RuntimeError> {
-        let model_name =
-            std::env::var("BETTERCLAW_MODEL").unwrap_or_else(|_| "qwen/qwen3.5-9b".to_string());
-        let base_url = std::env::var("BETTERCLAW_MODEL_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:1234/v1".to_string());
-        let engine = OpenAiChatCompletionsEngine::new(OpenAiChatCompletionsConfig {
-            base_url,
-            ..OpenAiChatCompletionsConfig::default()
-        })?;
-        Self::with_model_engine(db, ModelEngine::openai_chat_completions(engine), model_name).await
+        let resolved = ProviderPreset::from_env()?;
+        Self::with_model_engine(db, resolved.engine, resolved.model_name).await
     }
 
     pub async fn with_model_engine(
@@ -1036,14 +1164,21 @@ enum ToolControl {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use tempfile::tempdir;
 
-    use super::Runtime;
+    use super::{ProviderPreset, Runtime};
     use crate::channel::InboundEvent;
     use crate::db::Db;
     use crate::event::EventKind;
     use crate::model::strip_reasoning_tags;
     use crate::turn::TurnStatus;
+
+    fn env_mutex() -> &'static Mutex<()> {
+        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
 
     #[tokio::test]
     async fn thread_resolution_is_stable() {
@@ -1219,5 +1354,63 @@ mod tests {
                 event.turn_id == turn.id && event.kind == EventKind::TurnRecovered
             })
         );
+    }
+
+    #[test]
+    fn provider_selection_defaults_to_local_chat_completions() {
+        let _guard = env_mutex().lock().unwrap();
+        unsafe {
+            std::env::remove_var("BETTERCLAW_PROVIDER");
+            std::env::remove_var("BETTERCLAW_PROVIDER_MODE");
+            std::env::remove_var("BETTERCLAW_MODEL");
+            std::env::remove_var("BETTERCLAW_MODEL_BASE_URL");
+        }
+        let resolved = ProviderPreset::from_env().unwrap();
+        assert_eq!(resolved.engine.kind_name(), "openai_chat_completions");
+        assert_eq!(resolved.model_name, "qwen/qwen3.5-9b");
+    }
+
+    #[test]
+    fn provider_selection_supports_openrouter_responses() {
+        let _guard = env_mutex().lock().unwrap();
+        unsafe {
+            std::env::set_var("BETTERCLAW_PROVIDER", "openrouter");
+            std::env::set_var("BETTERCLAW_PROVIDER_MODE", "responses");
+            std::env::set_var("OPENROUTER_MODEL", "anthropic/claude-sonnet-4");
+            std::env::remove_var("OPENROUTER_API_KEY");
+        }
+        let resolved = ProviderPreset::from_env().unwrap();
+        assert_eq!(resolved.engine.kind_name(), "openai_responses");
+        assert_eq!(resolved.model_name, "anthropic/claude-sonnet-4");
+        unsafe {
+            std::env::remove_var("BETTERCLAW_PROVIDER");
+            std::env::remove_var("BETTERCLAW_PROVIDER_MODE");
+            std::env::remove_var("OPENROUTER_MODEL");
+        }
+    }
+
+    #[test]
+    fn provider_selection_supports_codex() {
+        let _guard = env_mutex().lock().unwrap();
+        let dir = tempdir().unwrap();
+        let auth_path = dir.path().join("auth.json");
+        std::fs::write(
+            &auth_path,
+            r#"{"tokens":{"access_token":"test-access-token","account_id":"acct_123"}}"#,
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("BETTERCLAW_PROVIDER", "codex");
+            std::env::set_var("OPENAI_CODEX_AUTH_PATH", &auth_path);
+            std::env::set_var("OPENAI_CODEX_MODEL", "gpt-5-codex");
+        }
+        let resolved = ProviderPreset::from_env().unwrap();
+        assert_eq!(resolved.engine.kind_name(), "openai_responses");
+        assert_eq!(resolved.model_name, "gpt-5-codex");
+        unsafe {
+            std::env::remove_var("BETTERCLAW_PROVIDER");
+            std::env::remove_var("OPENAI_CODEX_AUTH_PATH");
+            std::env::remove_var("OPENAI_CODEX_MODEL");
+        }
     }
 }

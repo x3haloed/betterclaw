@@ -1,6 +1,7 @@
 mod accumulator;
 mod copilot_session;
 mod events;
+mod openai_compat;
 mod openai_chatcompletions;
 mod openai_responses;
 mod qwen_agent;
@@ -12,7 +13,9 @@ mod types;
 
 pub use accumulator::ExchangeAccumulator;
 pub use events::ModelEvent;
-pub use openai_chatcompletions::{OpenAiChatCompletionsConfig, OpenAiChatCompletionsEngine};
+pub use openai_chatcompletions::OpenAiChatCompletionsEngine;
+pub use openai_compat::OpenAiCompatibleConfig;
+pub use openai_responses::OpenAiResponsesEngine;
 pub use reasoning::{split_inline_reasoning, strip_reasoning_tags};
 pub use stub::StubModelEngine;
 pub use trace::ModelTrace;

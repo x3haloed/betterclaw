@@ -24,6 +24,43 @@ See [`/Users/chad/Repos/betterclaw/docs/tidepool.md`](/Users/chad/Repos/bettercl
 - Tidepool runtime env/config
 - the two-agent Tidepool evaluation harness
 
+## Model Providers
+
+BetterClaw now supports provider selection by **wire family**:
+
+- OpenAI-compatible `/chat/completions`
+- OpenAI-compatible `/responses`
+
+Current presets:
+
+- `BETTERCLAW_PROVIDER=local`
+  Uses the local OpenAI-compatible chat-completions path. This is the default and keeps LM Studio working as before.
+- `BETTERCLAW_PROVIDER=openrouter`
+  Uses OpenRouter with `OPENROUTER_API_KEY`. By default this uses chat-completions; set `BETTERCLAW_PROVIDER_MODE=responses` to use the shared Responses engine instead.
+- `BETTERCLAW_PROVIDER=codex`
+  Uses the shared Responses engine with Codex auth loaded from `OPENAI_CODEX_AUTH_PATH` (default: `~/.codex/auth.json`).
+
+Common env:
+
+- `BETTERCLAW_MODEL`
+- `BETTERCLAW_MODEL_BASE_URL`
+
+OpenRouter-specific env:
+
+- `OPENROUTER_MODEL`
+- `OPENROUTER_BASE_URL`
+- `OPENROUTER_API_KEY`
+- `OPENROUTER_HTTP_REFERER`
+- `OPENROUTER_X_TITLE`
+
+Codex-specific env:
+
+- `OPENAI_CODEX_MODEL`
+- `OPENAI_CODEX_BASE_URL`
+- `OPENAI_CODEX_AUTH_PATH`
+
+See [`/Users/chad/Repos/betterclaw/docs/provider-engine.md`](/Users/chad/Repos/betterclaw/docs/provider-engine.md) for the architecture behind the provider split.
+
 ## What We Are Building
 
 BetterClaw is a runtime for long-lived agents that:

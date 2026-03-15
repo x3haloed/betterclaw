@@ -6,6 +6,24 @@ The key conclusion is:
 
 **The core abstraction should not be SSE.**
 
+## Current Implementation
+
+BetterClaw currently ships two OpenAI-compatible engine families:
+
+- `openai_chatcompletions`
+  For `/chat/completions` style providers such as LM Studio and OpenRouter chat mode.
+- `openai_responses`
+  For `/responses` style providers such as Codex and OpenRouter Responses mode.
+
+Provider presets now infer the engine family:
+
+- `BETTERCLAW_PROVIDER=local`
+  Local OpenAI-compatible chat-completions, preserving the existing LM Studio path.
+- `BETTERCLAW_PROVIDER=openrouter`
+  OpenRouter with `BETTERCLAW_PROVIDER_MODE=chat|responses`.
+- `BETTERCLAW_PROVIDER=codex`
+  Codex auth/header quirks on top of the shared Responses engine.
+
 SSE is one transport. The real architectural problem is how to normalize many different incremental response shapes into one internal event model.
 
 ## Why SSE Is Not Enough

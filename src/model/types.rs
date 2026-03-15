@@ -7,6 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::model::openai_chatcompletions::OpenAiChatCompletionsEngine;
+use crate::model::openai_responses::OpenAiResponsesEngine;
 use crate::model::stub::StubModelEngine;
 use crate::model::{ModelEvent, RawModelTrace, TraceOutcome};
 
@@ -115,6 +116,7 @@ pub trait ModelRunner: Send + Sync {
 #[derive(Clone)]
 pub enum ModelEngine {
     OpenAiChatCompletions(Arc<OpenAiChatCompletionsEngine>),
+    OpenAiResponses(Arc<OpenAiResponsesEngine>),
     Stub(Arc<StubModelEngine>),
 }
 
@@ -123,8 +125,20 @@ impl ModelEngine {
         Self::OpenAiChatCompletions(Arc::new(engine))
     }
 
+    pub fn openai_responses(engine: OpenAiResponsesEngine) -> Self {
+        Self::OpenAiResponses(Arc::new(engine))
+    }
+
     pub fn stub(engine: StubModelEngine) -> Self {
         Self::Stub(Arc::new(engine))
+    }
+
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::OpenAiChatCompletions(_) => "openai_chat_completions",
+            Self::OpenAiResponses(_) => "openai_responses",
+            Self::Stub(_) => "stub",
+        }
     }
 
     pub async fn run(
@@ -133,6 +147,7 @@ impl ModelEngine {
     ) -> Result<ModelExchangeResult, ModelEngineError> {
         match self {
             Self::OpenAiChatCompletions(engine) => engine.run(request).await,
+            Self::OpenAiResponses(engine) => engine.run(request).await,
             Self::Stub(engine) => engine.run(request).await,
         }
     }

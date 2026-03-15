@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures_util::future::join_all;
@@ -13,14 +13,17 @@ use crate::channel::{InboundEvent, OutboundMessage};
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
+use crate::memory::{
+    LedgerEntry, LedgerEntryKind, MemoryArtifactKind, NewMemoryArtifact, RecallHit, chunk_text,
+    cosine_similarity,
+};
 use crate::model::{
     ModelEngine, ModelEngineError, ModelExchangeRequest, ModelExchangeResult, ModelMessage,
     ModelToolCallMessage, ModelToolFunctionMessage, ModelTrace, OpenAiChatCompletionsEngine,
     OpenAiCompatibleConfig, OpenAiResponsesEngine, ReducedToolCall, StubModelEngine, TraceDetail,
     TraceOutcome, strip_reasoning_tags,
 };
-use crate::settings::RetentionSettings;
-use crate::settings::RuntimeSettings;
+use crate::settings::{ModelRole, ModelRoleConfig, RetentionSettings, RuntimeSettings};
 use crate::thread::Thread;
 use crate::tool::{ToolContext, ToolInvocation, ToolRegistry, ToolResult};
 use crate::turn::{Turn, TurnStatus};
@@ -33,6 +36,7 @@ pub struct Runtime {
     model_engine: Arc<ModelEngine>,
     provider_name: String,
     provider_throttle: Arc<ProviderThrottle>,
+    provider_request_gate: Arc<tokio::sync::Mutex<()>>,
     updates: broadcast::Sender<RuntimeUpdate>,
 }
 
@@ -80,6 +84,14 @@ struct ResolvedModelEngine {
 }
 
 struct ProviderPreset;
+
+#[derive(Clone)]
+struct EmbeddingClient {
+    client: reqwest::Client,
+    base_url: String,
+    provider_name: String,
+    model: String,
+}
 
 impl ProviderPreset {
     fn from_env() -> Result<ResolvedModelEngine, anyhow::Error> {
@@ -177,6 +189,86 @@ impl ProviderPreset {
             model_name,
             provider_name: "codex".to_string(),
         })
+    }
+}
+
+impl EmbeddingClient {
+    fn new(role: &ModelRoleConfig) -> Result<Self, anyhow::Error> {
+        let mut config = OpenAiCompatibleConfig {
+            base_url: role
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
+            provider_name: role.provider.clone(),
+            extra_headers: role.extra_headers.clone(),
+            ..OpenAiCompatibleConfig::default()
+        };
+        if let Some(env_var) = &role.api_key_env_var {
+            config.bearer_token = std::env::var(env_var).ok();
+        } else {
+            config.bearer_token = match role.provider.as_str() {
+                "openrouter" => std::env::var("OPENROUTER_API_KEY").ok(),
+                "codex" => std::env::var("OPENAI_API_KEY").ok(),
+                _ => std::env::var("BETTERCLAW_EMBEDDINGS_API_KEY").ok(),
+            };
+        }
+        Ok(Self {
+            client: config.build_client(false)?,
+            base_url: config.base_url,
+            provider_name: config.provider_name,
+            model: role.model.clone(),
+        })
+    }
+
+    async fn embed(&self, input: &str) -> Result<Vec<f32>, RuntimeError> {
+        let response = self
+            .client
+            .post(format!(
+                "{}/embeddings",
+                self.base_url.trim_end_matches('/')
+            ))
+            .json(&json!({
+                "model": self.model,
+                "input": input,
+            }))
+            .send()
+            .await
+            .map_err(|error| {
+                RuntimeError::ModelParse(format!(
+                    "{} embeddings transport failure: {error}",
+                    self.provider_name
+                ))
+            })?;
+        let status = response.status();
+        let body: Value = response.json().await.map_err(|error| {
+            RuntimeError::ModelParse(format!(
+                "{} embeddings decode failure: {error}",
+                self.provider_name
+            ))
+        })?;
+        if !status.is_success() {
+            return Err(RuntimeError::ModelParse(format!(
+                "{} embeddings returned HTTP {}",
+                self.provider_name,
+                status.as_u16()
+            )));
+        }
+        let embedding = body
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("embedding"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                RuntimeError::ModelParse(
+                    "embeddings response missing data[0].embedding".to_string(),
+                )
+            })?;
+        let mut values = Vec::with_capacity(embedding.len());
+        for value in embedding {
+            values.push(value.as_f64().unwrap_or_default() as f32);
+        }
+        Ok(values)
     }
 }
 
@@ -293,6 +385,66 @@ fn system_prompt_override_from_env() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn default_memory_namespace() -> String {
+    "default".to_string()
+}
+
+fn truncate_for_wake_pack(text: &str) -> String {
+    const MAX: usize = 180;
+    let mut output = String::new();
+    for ch in text.chars().take(MAX) {
+        output.push(ch);
+    }
+    if text.chars().count() > MAX {
+        output.push_str("...");
+    }
+    output.replace('\n', " ")
+}
+
+fn build_fts_query(query: &str) -> String {
+    query
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+        .filter(|token| !token.trim().is_empty())
+        .take(8)
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+fn env_role(role: ModelRole) -> Option<ModelRoleConfig> {
+    match role {
+        ModelRole::Agent => None,
+        ModelRole::Compressor => {
+            let provider = std::env::var("BETTERCLAW_COMPRESSOR_PROVIDER").ok()?;
+            Some(ModelRoleConfig {
+                role,
+                provider,
+                mode: std::env::var("BETTERCLAW_COMPRESSOR_MODE").ok(),
+                model: std::env::var("BETTERCLAW_COMPRESSOR_MODEL")
+                    .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+                base_url: std::env::var("BETTERCLAW_COMPRESSOR_BASE_URL").ok(),
+                api_key_env_var: std::env::var("BETTERCLAW_COMPRESSOR_API_KEY_ENV").ok(),
+                extra_headers: Vec::new(),
+                enabled: true,
+            })
+        }
+        ModelRole::Embeddings => {
+            let model = std::env::var("BETTERCLAW_EMBEDDINGS_MODEL").ok()?;
+            Some(ModelRoleConfig {
+                role,
+                provider: std::env::var("BETTERCLAW_EMBEDDINGS_PROVIDER")
+                    .unwrap_or_else(|_| "openai_compatible".to_string()),
+                mode: None,
+                model,
+                base_url: std::env::var("BETTERCLAW_EMBEDDINGS_BASE_URL").ok(),
+                api_key_env_var: std::env::var("BETTERCLAW_EMBEDDINGS_API_KEY_ENV").ok(),
+                extra_headers: Vec::new(),
+                enabled: true,
+            })
+        }
+    }
+}
+
 impl Runtime {
     fn parse_tool_control(output: &Value) -> Option<ToolControl> {
         let control = output
@@ -364,7 +516,13 @@ impl Runtime {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         );
         let agent = Agent::new("default", "Default Agent", workspace.id.clone());
-        let default_settings = RuntimeSettings::with_defaults("default", model_name.into());
+        let mut default_settings = RuntimeSettings::with_defaults("default", model_name.into());
+        if let Some(role) = env_role(ModelRole::Compressor) {
+            default_settings.model_roles.push(role);
+        }
+        if let Some(role) = env_role(ModelRole::Embeddings) {
+            default_settings.model_roles.push(role);
+        }
         let default_retention = RetentionSettings::with_defaults("default");
         db.seed_default_agent(&agent, &workspace)
             .await
@@ -382,6 +540,7 @@ impl Runtime {
             model_engine: Arc::new(model_engine),
             provider_name: provider_name.into(),
             provider_throttle: Arc::new(ProviderThrottle::new(base_backoff)),
+            provider_request_gate: Arc::new(tokio::sync::Mutex::new(())),
             updates,
         };
         runtime.apply_startup_setting_overrides("default").await?;
@@ -815,6 +974,12 @@ impl Runtime {
             None,
         )
         .await?;
+        let completed_turn = self
+            .get_turn(&turn.id)
+            .await?
+            .ok_or_else(|| RuntimeError::TurnNotFound(turn.id.clone()))?;
+        self.sync_memory_for_turn(&thread, &completed_turn, &settings)
+            .await?;
         if final_status == TurnStatus::AwaitingUser {
             self.append_event_and_publish(
                 &turn.id,
@@ -844,15 +1009,9 @@ impl Runtime {
         turn: &Turn,
         settings: &RuntimeSettings,
     ) -> Result<Vec<ModelMessage>, RuntimeError> {
-        let mut messages = Vec::new();
-        if !settings.system_prompt.trim().is_empty() {
-            messages.push(ModelMessage {
-                role: "system".to_string(),
-                content: Some(settings.system_prompt.clone()),
-                tool_calls: None,
-                tool_call_id: None,
-            });
-        }
+        let mut messages = self
+            .build_system_messages(settings, Some(&turn.user_message))
+            .await?;
         let prior_turns = self
             .list_thread_turns(&thread.id)
             .await?
@@ -890,6 +1049,76 @@ impl Runtime {
         Ok(messages)
     }
 
+    async fn build_system_messages(
+        &self,
+        settings: &RuntimeSettings,
+        query_hint: Option<&str>,
+    ) -> Result<Vec<ModelMessage>, RuntimeError> {
+        let mut messages = Vec::new();
+        if !settings.system_prompt.trim().is_empty() {
+            messages.push(ModelMessage {
+                role: "system".to_string(),
+                content: Some(settings.system_prompt.clone()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        let namespace = default_memory_namespace();
+        if settings.inject_wake_pack
+            && let Some(wake_pack) = self
+                .db
+                .latest_memory_artifact(&namespace, MemoryArtifactKind::WakePackV0)
+                .await
+                .map_err(RuntimeError::from)?
+        {
+            messages.push(ModelMessage {
+                role: "system".to_string(),
+                content: Some(format!("<wake_pack>\n{}\n</wake_pack>", wake_pack.content)),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        if settings.inject_ledger_recall {
+            if let Some(recall_block) = self
+                .build_ledger_recall_block(
+                    &namespace,
+                    query_hint.unwrap_or(&settings.system_prompt),
+                )
+                .await?
+            {
+                messages.push(ModelMessage {
+                    role: "system".to_string(),
+                    content: Some(recall_block),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        }
+        Ok(messages)
+    }
+
+    async fn build_ledger_recall_block(
+        &self,
+        namespace_id: &str,
+        query: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        let hits = self.search_recall(namespace_id, query, 6).await?;
+        if hits.is_empty() {
+            return Ok(None);
+        }
+        let mut block =
+            String::from("<ledger_recall>\nCandidate evidence from prior runtime history:\n");
+        for hit in hits {
+            block.push_str(&format!(
+                "- [{}] {}\n",
+                hit.citation.unwrap_or_else(|| hit.entry_id.clone()),
+                hit.content.replace('\n', " ")
+            ));
+        }
+        block.push_str("</ledger_recall>");
+        Ok(Some(block))
+    }
+
     fn build_model_request(
         &self,
         messages: Vec<ModelMessage>,
@@ -912,6 +1141,293 @@ impl Runtime {
         }
     }
 
+    async fn search_recall(
+        &self,
+        namespace_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<RecallHit>, RuntimeError> {
+        let mut scores = std::collections::HashMap::<String, RecallHit>::new();
+        let lexical_query = build_fts_query(query);
+        if !lexical_query.trim().is_empty() {
+            for hit in self
+                .db
+                .search_recall_chunks_keyword(namespace_id, &lexical_query, limit as i64 * 2)
+                .await
+                .map_err(RuntimeError::from)?
+            {
+                scores
+                    .entry(hit.entry_id.clone())
+                    .and_modify(|current| current.score += hit.score.max(0.1))
+                    .or_insert(hit);
+            }
+        }
+        if let Some(client) = self.embedding_client_for_namespace(namespace_id).await? {
+            let query_embedding = client.embed(query).await?;
+            for chunk in self
+                .db
+                .list_recall_chunks_with_embeddings(namespace_id, 256)
+                .await
+                .map_err(RuntimeError::from)?
+            {
+                let Some(embedding_json) = &chunk.embedding_json else {
+                    continue;
+                };
+                let Ok(values) = serde_json::from_str::<Vec<f32>>(embedding_json) else {
+                    continue;
+                };
+                let Some(score) = cosine_similarity(&query_embedding, &values) else {
+                    continue;
+                };
+                let hit = RecallHit {
+                    entry_id: chunk.entry_id.clone(),
+                    source_id: chunk.source_id.clone(),
+                    source_type: chunk.source_type.clone(),
+                    content: chunk.content.clone(),
+                    score,
+                    citation: Some(chunk.entry_id.clone()),
+                };
+                scores
+                    .entry(hit.entry_id.clone())
+                    .and_modify(|current| {
+                        if score > current.score {
+                            current.score = score;
+                            current.content = hit.content.clone();
+                            current.citation = hit.citation.clone();
+                        }
+                    })
+                    .or_insert(hit);
+            }
+        }
+        let mut hits = scores.into_values().collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        hits.truncate(limit);
+        Ok(hits)
+    }
+
+    async fn embedding_client_for_namespace(
+        &self,
+        _namespace_id: &str,
+    ) -> Result<Option<EmbeddingClient>, RuntimeError> {
+        let settings = self.get_runtime_settings("default").await?;
+        let role = settings
+            .model_roles
+            .iter()
+            .find(|role| role.role == ModelRole::Embeddings && role.enabled)
+            .cloned()
+            .or_else(|| env_role(ModelRole::Embeddings));
+        role.map(|role| EmbeddingClient::new(&role).map_err(RuntimeError::from))
+            .transpose()
+    }
+
+    async fn sync_memory_for_turn(
+        &self,
+        thread: &Thread,
+        turn: &Turn,
+        settings: &RuntimeSettings,
+    ) -> Result<(), RuntimeError> {
+        let namespace = default_memory_namespace();
+        let entries = self.normalized_entries_for_turn(thread, turn).await?;
+        let embedder = self.embedding_client_for_namespace(&namespace).await?;
+        for entry in entries {
+            let content = entry
+                .content
+                .clone()
+                .unwrap_or_else(|| entry.payload.to_string());
+            let chunks = chunk_text(&content, 1200);
+            let mut stored_chunks = Vec::new();
+            for chunk in chunks {
+                let embedding_json = match &embedder {
+                    Some(client) => Some(
+                        serde_json::to_string(&client.embed(&chunk).await?)
+                            .map_err(|error| RuntimeError::ModelParse(error.to_string()))?,
+                    ),
+                    None => None,
+                };
+                stored_chunks.push((chunk, embedding_json));
+            }
+            self.db
+                .replace_recall_chunks_for_source(
+                    &namespace,
+                    "ledger_entry",
+                    &entry.entry_id,
+                    &entry.entry_id,
+                    &stored_chunks,
+                )
+                .await
+                .map_err(RuntimeError::from)?;
+        }
+        if settings.enable_auto_distill {
+            self.auto_distill_namespace(&namespace).await?;
+        }
+        Ok(())
+    }
+
+    async fn auto_distill_namespace(&self, namespace_id: &str) -> Result<(), RuntimeError> {
+        let entries = self.normalized_entries_for_namespace(namespace_id).await?;
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let recent = entries.into_iter().rev().take(8).collect::<Vec<_>>();
+        let mut lines = Vec::new();
+        let mut citations = Vec::new();
+        for entry in recent.iter().rev() {
+            citations.push(entry.entry_id.clone());
+            match entry.kind {
+                LedgerEntryKind::UserTurn => {
+                    if let Some(content) = &entry.content {
+                        lines.push(format!("- User asked: {}", truncate_for_wake_pack(content)));
+                    }
+                }
+                LedgerEntryKind::AgentTurn => {
+                    if let Some(content) = &entry.content {
+                        lines.push(format!(
+                            "- Agent answered: {}",
+                            truncate_for_wake_pack(content)
+                        ));
+                    }
+                }
+                LedgerEntryKind::ToolResult => {
+                    lines.push(format!(
+                        "- Tool result observed: {}",
+                        truncate_for_wake_pack(&entry.payload.to_string())
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if lines.is_empty() {
+            return Ok(());
+        }
+        let content = format!("# Wake Pack (v0)\n\n{}\n", lines.join("\n"));
+        let prior = self
+            .db
+            .latest_memory_artifact(namespace_id, MemoryArtifactKind::WakePackV0)
+            .await
+            .map_err(RuntimeError::from)?;
+        let wake_pack = self
+            .db
+            .upsert_memory_artifact(&NewMemoryArtifact {
+                namespace_id: namespace_id.to_string(),
+                kind: MemoryArtifactKind::WakePackV0,
+                source: "compressor".to_string(),
+                content: content.clone(),
+                payload: json!({
+                    "line_count": lines.len(),
+                    "strategy": "deterministic_recent_runtime_summary",
+                }),
+                citations: citations.clone(),
+                supersedes_id: prior.as_ref().map(|artifact| artifact.id.clone()),
+            })
+            .await
+            .map_err(RuntimeError::from)?;
+        self.db
+            .upsert_memory_artifact(&NewMemoryArtifact {
+                namespace_id: namespace_id.to_string(),
+                kind: MemoryArtifactKind::DistillMicro,
+                source: "compressor".to_string(),
+                content: String::new(),
+                payload: json!({
+                    "wake_pack_id": wake_pack.id,
+                    "citations": citations,
+                }),
+                citations: prior.map(|artifact| vec![artifact.id]).unwrap_or_default(),
+                supersedes_id: None,
+            })
+            .await
+            .map_err(RuntimeError::from)?;
+        Ok(())
+    }
+
+    async fn normalized_entries_for_namespace(
+        &self,
+        namespace_id: &str,
+    ) -> Result<Vec<LedgerEntry>, RuntimeError> {
+        let mut entries = Vec::new();
+        for thread in self.db.list_threads().await.map_err(RuntimeError::from)? {
+            for turn in self
+                .db
+                .list_thread_turns(&thread.id)
+                .await
+                .map_err(RuntimeError::from)?
+            {
+                entries.extend(self.normalized_entries_for_turn(&thread, &turn).await?);
+            }
+        }
+        entries.sort_by_key(|entry| entry.created_at);
+        for entry in &mut entries {
+            entry.namespace_id = namespace_id.to_string();
+        }
+        Ok(entries)
+    }
+
+    async fn normalized_entries_for_turn(
+        &self,
+        thread: &Thread,
+        turn: &Turn,
+    ) -> Result<Vec<LedgerEntry>, RuntimeError> {
+        let mut entries = vec![LedgerEntry {
+            entry_id: format!("turn:{}:user", turn.id),
+            namespace_id: default_memory_namespace(),
+            turn_id: turn.id.clone(),
+            thread_id: thread.id.clone(),
+            kind: LedgerEntryKind::UserTurn,
+            source: thread.channel.clone(),
+            content: Some(turn.user_message.clone()),
+            payload: json!({ "thread_id": thread.id, "turn_id": turn.id }),
+            citation: format!("turn:{}", turn.id),
+            created_at: turn.created_at,
+        }];
+        if let Some(assistant_message) = &turn.assistant_message {
+            entries.push(LedgerEntry {
+                entry_id: format!("turn:{}:assistant", turn.id),
+                namespace_id: default_memory_namespace(),
+                turn_id: turn.id.clone(),
+                thread_id: thread.id.clone(),
+                kind: LedgerEntryKind::AgentTurn,
+                source: thread.channel.clone(),
+                content: Some(assistant_message.clone()),
+                payload: json!({ "thread_id": thread.id, "turn_id": turn.id }),
+                citation: format!("turn:{}", turn.id),
+                created_at: turn.updated_at,
+            });
+        }
+        let events = self
+            .db
+            .list_thread_events(&thread.id)
+            .await
+            .map_err(RuntimeError::from)?
+            .into_iter()
+            .filter(|event| event.turn_id == turn.id)
+            .collect::<Vec<_>>();
+        for event in events {
+            let kind = match event.kind {
+                EventKind::ToolCall => LedgerEntryKind::ToolCall,
+                EventKind::ToolResult => LedgerEntryKind::ToolResult,
+                EventKind::Error => LedgerEntryKind::Error,
+                _ => continue,
+            };
+            entries.push(LedgerEntry {
+                entry_id: format!("event:{}", event.id),
+                namespace_id: default_memory_namespace(),
+                turn_id: turn.id.clone(),
+                thread_id: thread.id.clone(),
+                kind,
+                source: "runtime_event".to_string(),
+                content: Some(event.payload.to_string()),
+                payload: event.payload.clone(),
+                citation: format!("event:{}", event.id),
+                created_at: event.created_at,
+            });
+        }
+        Ok(entries)
+    }
+
     async fn run_and_record_exchange(
         &self,
         turn: &Turn,
@@ -923,7 +1439,31 @@ impl Runtime {
         let mut attempt = 0usize;
         loop {
             attempt += 1;
-            self.wait_for_provider_window(turn, thread, attempt).await?;
+            if self.wait_for_provider_window(turn, thread, attempt).await? {
+                continue;
+            }
+            let gate_wait_started = Instant::now();
+            let _provider_gate = self.provider_request_gate.lock().await;
+            let gate_wait = gate_wait_started.elapsed();
+            if gate_wait >= Duration::from_millis(1) {
+                self.append_event_and_publish(
+                    &turn.id,
+                    &thread.id,
+                    EventKind::RateLimited,
+                    json!({
+                        "provider": self.provider_name,
+                        "attempt": attempt,
+                        "message": "waiting for shared provider gate",
+                        "retry_after_ms": gate_wait.as_millis() as u64,
+                        "resumes_at": Utc::now().to_rfc3339(),
+                        "shared_gate": true,
+                    }),
+                )
+                .await?;
+            }
+            if self.wait_for_provider_window(turn, thread, attempt).await? {
+                continue;
+            }
             match self.model_engine.run(request.clone()).await {
                 Ok(exchange) => {
                     self.provider_throttle.note_success().await;
@@ -955,6 +1495,32 @@ impl Runtime {
                         }),
                     )
                     .await?;
+                    let running_turns = self
+                        .db
+                        .list_running_turns()
+                        .await
+                        .map_err(RuntimeError::from)?;
+                    for running_turn in running_turns
+                        .into_iter()
+                        .filter(|running_turn| running_turn.id != turn.id)
+                    {
+                        self.append_event_and_publish(
+                            &running_turn.id,
+                            &running_turn.thread_id,
+                            EventKind::RateLimited,
+                            json!({
+                                "provider": self.provider_name,
+                                "attempt": attempt,
+                                "message": "waiting for shared provider backoff window",
+                                "retry_after_ms": wait.as_millis() as u64,
+                                "resumes_at": (Utc::now() + chrono::Duration::from_std(wait).unwrap_or(chrono::Duration::MAX)).to_rfc3339(),
+                                "shared_gate": true,
+                                "triggered_by_turn_id": turn.id,
+                                "trace_id": trace.id,
+                            }),
+                        )
+                        .await?;
+                    }
                 }
                 Err(error) => {
                     self.record_trace(turn, thread, agent_id, channel, error.exchange())
@@ -987,8 +1553,8 @@ impl Runtime {
         turn: &Turn,
         thread: &Thread,
         attempt: usize,
-    ) -> Result<(), RuntimeError> {
-        while let Some(wait) = self.provider_throttle.current_wait().await {
+    ) -> Result<bool, RuntimeError> {
+        if let Some(wait) = self.provider_throttle.current_wait().await {
             self.append_event_and_publish(
                 &turn.id,
                 &thread.id,
@@ -1004,8 +1570,9 @@ impl Runtime {
             )
             .await?;
             tokio::time::sleep(wait).await;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     async fn append_model_events(
@@ -1636,7 +2203,7 @@ mod tests {
                 .unwrap()
         });
 
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
 
         let second_started = Instant::now();
         let second = runtime

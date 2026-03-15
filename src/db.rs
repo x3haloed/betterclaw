@@ -13,6 +13,9 @@ use uuid::Uuid;
 use crate::agent::Agent;
 use crate::channel::{ChannelCursor, OutboundMessage};
 use crate::event::{Event, EventKind};
+use crate::memory::{
+    MemoryArtifact, MemoryArtifactKind, NewMemoryArtifact, RecallChunk, RecallHit,
+};
 use crate::model::{ModelTrace, TraceBlob, TraceDetail};
 use crate::settings::{RetentionSettings, RuntimeSettings};
 use crate::thread::Thread;
@@ -141,6 +144,10 @@ impl Db {
                 stream INTEGER NOT NULL,
                 allow_tools INTEGER NOT NULL,
                 max_history_turns INTEGER NOT NULL,
+                inject_wake_pack INTEGER NOT NULL DEFAULT 1,
+                inject_ledger_recall INTEGER NOT NULL DEFAULT 1,
+                enable_auto_distill INTEGER NOT NULL DEFAULT 1,
+                model_roles_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -150,11 +157,79 @@ impl Db {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS memory_artifacts (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT NOT NULL,
+                content TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                citations_json TEXT NOT NULL,
+                supersedes_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_state (
+                namespace_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(namespace_id, key)
+            );
+            CREATE TABLE IF NOT EXISTS memory_recall_chunks (
+                chunk_id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_type, source_id, chunk_index)
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_recall_chunks_fts USING fts5(
+                chunk_id UNINDEXED,
+                namespace_id UNINDEXED,
+                source_type UNINDEXED,
+                source_id UNINDEXED,
+                entry_id UNINDEXED,
+                content
+            );
         "#,
         )
         .await?;
         self.add_column_if_missing(&conn, "outbound_messages", "metadata_json", "TEXT")
             .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "inject_wake_pack",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "inject_ledger_recall",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "enable_auto_distill",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "model_roles_json",
+            "TEXT NOT NULL DEFAULT '[]'",
+        )
+        .await?;
         Ok(())
     }
 
@@ -202,7 +277,7 @@ impl Db {
     pub async fn seed_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT OR IGNORE INTO runtime_settings (agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO runtime_settings (agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 settings.agent_id.clone(),
                 settings.model.clone(),
@@ -212,6 +287,10 @@ impl Db {
                 if settings.stream { 1 } else { 0 },
                 if settings.allow_tools { 1 } else { 0 },
                 settings.max_history_turns as i64,
+                if settings.inject_wake_pack { 1 } else { 0 },
+                if settings.inject_ledger_recall { 1 } else { 0 },
+                if settings.enable_auto_distill { 1 } else { 0 },
+                serde_json::to_string(&settings.model_roles)?,
                 settings.created_at.to_rfc3339(),
                 settings.updated_at.to_rfc3339(),
             ],
@@ -239,7 +318,7 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
+                "SELECT agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, model_roles_json, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
                 params![agent_id.to_string()],
             )
             .await?;
@@ -253,8 +332,12 @@ impl Db {
                 stream: row.get::<i64>(5)? != 0,
                 allow_tools: row.get::<i64>(6)? != 0,
                 max_history_turns: row.get::<i64>(7)? as u32,
-                created_at: parse_datetime(&row.get::<String>(8)?)?,
-                updated_at: parse_datetime(&row.get::<String>(9)?)?,
+                inject_wake_pack: row.get::<i64>(8)? != 0,
+                inject_ledger_recall: row.get::<i64>(9)? != 0,
+                enable_auto_distill: row.get::<i64>(10)? != 0,
+                model_roles: serde_json::from_str(&row.get::<String>(11)?)?,
+                created_at: parse_datetime(&row.get::<String>(12)?)?,
+                updated_at: parse_datetime(&row.get::<String>(13)?)?,
             })
         } else {
             None
@@ -287,7 +370,7 @@ impl Db {
     pub async fn update_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT OR REPLACE INTO runtime_settings (agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
+            "INSERT OR REPLACE INTO runtime_settings (agent_id, model, system_prompt, temperature, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
             params![
                 settings.agent_id.clone(),
                 settings.model.clone(),
@@ -297,6 +380,10 @@ impl Db {
                 if settings.stream { 1 } else { 0 },
                 if settings.allow_tools { 1 } else { 0 },
                 settings.max_history_turns as i64,
+                if settings.inject_wake_pack { 1 } else { 0 },
+                if settings.inject_ledger_recall { 1 } else { 0 },
+                if settings.enable_auto_distill { 1 } else { 0 },
+                serde_json::to_string(&settings.model_roles)?,
                 settings.agent_id.clone(),
                 settings.created_at.to_rfc3339(),
                 settings.updated_at.to_rfc3339(),
@@ -896,6 +983,235 @@ impl Db {
         Ok(())
     }
 
+    pub async fn upsert_memory_artifact(
+        &self,
+        artifact: &NewMemoryArtifact,
+    ) -> Result<MemoryArtifact> {
+        let conn = self.connect()?;
+        let now = Utc::now();
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO memory_artifacts (id, namespace_id, kind, source, content, payload_json, citations_json, supersedes_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                id.clone(),
+                artifact.namespace_id.clone(),
+                artifact.kind.as_str().to_string(),
+                artifact.source.clone(),
+                artifact.content.clone(),
+                artifact.payload.to_string(),
+                serde_json::to_string(&artifact.citations)?,
+                artifact.supersedes_id.clone(),
+                now.to_rfc3339(),
+                now.to_rfc3339(),
+            ],
+        )
+        .await?;
+        Ok(MemoryArtifact {
+            id,
+            namespace_id: artifact.namespace_id.clone(),
+            kind: artifact.kind.clone(),
+            source: artifact.source.clone(),
+            content: artifact.content.clone(),
+            payload: artifact.payload.clone(),
+            citations: artifact.citations.clone(),
+            supersedes_id: artifact.supersedes_id.clone(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub async fn list_memory_artifacts(
+        &self,
+        namespace_id: &str,
+        kind: Option<MemoryArtifactKind>,
+        limit: i64,
+    ) -> Result<Vec<MemoryArtifact>> {
+        let conn = self.connect()?;
+        let kind_value = kind
+            .map(|item| item.as_str().to_string())
+            .unwrap_or_default();
+        let mut rows = conn
+            .query(
+                "SELECT id, namespace_id, kind, source, content, payload_json, citations_json, supersedes_id, created_at, updated_at FROM memory_artifacts WHERE namespace_id = ? AND (? = '' OR kind = ?) ORDER BY created_at DESC LIMIT ?",
+                params![namespace_id.to_string(), kind_value.clone(), kind_value, limit],
+            )
+            .await?;
+        let mut artifacts = Vec::new();
+        while let Some(row) = rows.next().await? {
+            artifacts.push(MemoryArtifact {
+                id: row.get(0)?,
+                namespace_id: row.get(1)?,
+                kind: memory_artifact_kind_from_str(&row.get::<String>(2)?),
+                source: row.get(3)?,
+                content: row.get(4)?,
+                payload: serde_json::from_str(&row.get::<String>(5)?)?,
+                citations: serde_json::from_str(&row.get::<String>(6)?)?,
+                supersedes_id: row.get(7)?,
+                created_at: parse_datetime(&row.get::<String>(8)?)?,
+                updated_at: parse_datetime(&row.get::<String>(9)?)?,
+            });
+        }
+        Ok(artifacts)
+    }
+
+    pub async fn latest_memory_artifact(
+        &self,
+        namespace_id: &str,
+        kind: MemoryArtifactKind,
+    ) -> Result<Option<MemoryArtifact>> {
+        Ok(self
+            .list_memory_artifacts(namespace_id, Some(kind), 1)
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    pub async fn set_memory_state(
+        &self,
+        namespace_id: &str,
+        key: &str,
+        value: &Value,
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_state (namespace_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
+            params![
+                namespace_id.to_string(),
+                key.to_string(),
+                value.to_string(),
+                Utc::now().to_rfc3339(),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_memory_state(&self, namespace_id: &str, key: &str) -> Result<Option<Value>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT value_json FROM memory_state WHERE namespace_id = ? AND key = ?",
+                params![namespace_id.to_string(), key.to_string()],
+            )
+            .await?;
+        Ok(if let Some(row) = rows.next().await? {
+            Some(serde_json::from_str(&row.get::<String>(0)?)?)
+        } else {
+            None
+        })
+    }
+
+    pub async fn replace_recall_chunks_for_source(
+        &self,
+        namespace_id: &str,
+        source_type: &str,
+        source_id: &str,
+        entry_id: &str,
+        chunks: &[(String, Option<String>)],
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM memory_recall_chunks WHERE namespace_id = ? AND source_type = ? AND source_id = ?",
+            params![namespace_id.to_string(), source_type.to_string(), source_id.to_string()],
+        )
+        .await?;
+        conn.execute(
+            "DELETE FROM memory_recall_chunks_fts WHERE namespace_id = ? AND source_type = ? AND source_id = ?",
+            params![namespace_id.to_string(), source_type.to_string(), source_id.to_string()],
+        )
+        .await?;
+        let now = Utc::now().to_rfc3339();
+        for (index, (content, embedding_json)) in chunks.iter().enumerate() {
+            let chunk_id = format!("{source_type}:{source_id}:{index}");
+            conn.execute(
+                "INSERT INTO memory_recall_chunks (chunk_id, namespace_id, source_type, source_id, entry_id, chunk_index, content, embedding_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    chunk_id.clone(),
+                    namespace_id.to_string(),
+                    source_type.to_string(),
+                    source_id.to_string(),
+                    entry_id.to_string(),
+                    index as i64,
+                    content.clone(),
+                    embedding_json.clone(),
+                    now.clone(),
+                    now.clone(),
+                ],
+            )
+            .await?;
+            conn.execute(
+                "INSERT INTO memory_recall_chunks_fts (chunk_id, namespace_id, source_type, source_id, entry_id, content) VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    chunk_id,
+                    namespace_id.to_string(),
+                    source_type.to_string(),
+                    source_id.to_string(),
+                    entry_id.to_string(),
+                    content.clone(),
+                ],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn search_recall_chunks_keyword(
+        &self,
+        namespace_id: &str,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<RecallHit>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT chunk_id, source_id, source_type, entry_id, content, bm25(memory_recall_chunks_fts) AS rank FROM memory_recall_chunks_fts WHERE namespace_id = ? AND memory_recall_chunks_fts MATCH ? ORDER BY rank ASC LIMIT ?",
+                params![namespace_id.to_string(), query.to_string(), limit],
+            )
+            .await?;
+        let mut hits = Vec::new();
+        while let Some(row) = rows.next().await? {
+            hits.push(RecallHit {
+                entry_id: row.get(3)?,
+                source_id: row.get(1)?,
+                source_type: row.get(2)?,
+                content: row.get(4)?,
+                score: -row.get::<f64>(5).unwrap_or(0.0),
+                citation: None,
+            });
+        }
+        Ok(hits)
+    }
+
+    pub async fn list_recall_chunks_with_embeddings(
+        &self,
+        namespace_id: &str,
+        limit: i64,
+    ) -> Result<Vec<RecallChunk>> {
+        let conn = self.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT chunk_id, namespace_id, source_type, source_id, entry_id, chunk_index, content, embedding_json, created_at, updated_at FROM memory_recall_chunks WHERE namespace_id = ? AND embedding_json IS NOT NULL ORDER BY updated_at DESC LIMIT ?",
+                params![namespace_id.to_string(), limit],
+            )
+            .await?;
+        let mut chunks = Vec::new();
+        while let Some(row) = rows.next().await? {
+            chunks.push(RecallChunk {
+                chunk_id: row.get(0)?,
+                namespace_id: row.get(1)?,
+                source_type: row.get(2)?,
+                source_id: row.get(3)?,
+                entry_id: row.get(4)?,
+                chunk_index: row.get(5)?,
+                content: row.get(6)?,
+                embedding_json: row.get(7)?,
+                created_at: parse_datetime(&row.get::<String>(8)?)?,
+                updated_at: parse_datetime(&row.get::<String>(9)?)?,
+            });
+        }
+        Ok(chunks)
+    }
+
     pub async fn load_cursor(
         &self,
         channel: &str,
@@ -964,6 +1280,20 @@ fn turn_status_from_string(value: &str) -> TurnStatus {
         "succeeded" => TurnStatus::Succeeded,
         "failed" => TurnStatus::Failed,
         _ => TurnStatus::Failed,
+    }
+}
+
+fn memory_artifact_kind_from_str(value: &str) -> MemoryArtifactKind {
+    match value {
+        "wake_pack.v0" => MemoryArtifactKind::WakePackV0,
+        "invariant.self.v0" => MemoryArtifactKind::InvariantSelfV0,
+        "invariant.user.v0" => MemoryArtifactKind::InvariantUserV0,
+        "invariant.relationship.v0" => MemoryArtifactKind::InvariantRelationshipV0,
+        "drift.flag.v0" => MemoryArtifactKind::DriftFlagV0,
+        "drift.contradiction.v0" => MemoryArtifactKind::DriftContradictionV0,
+        "drift.merge.v0" => MemoryArtifactKind::DriftMergeV0,
+        "distill.micro" => MemoryArtifactKind::DistillMicro,
+        _ => MemoryArtifactKind::DistillMicro,
     }
 }
 

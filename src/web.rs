@@ -13,6 +13,7 @@ use tokio_stream::wrappers::BroadcastStream;
 
 use crate::channel::InboundEvent;
 use crate::runtime::{Runtime, RuntimeUpdate};
+use crate::settings::ModelRoleConfig;
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
@@ -80,6 +81,14 @@ struct UpdateRuntimeSettingsRequest {
     stream: bool,
     allow_tools: bool,
     max_history_turns: u32,
+    #[serde(default)]
+    inject_wake_pack: Option<bool>,
+    #[serde(default)]
+    inject_ledger_recall: Option<bool>,
+    #[serde(default)]
+    enable_auto_distill: Option<bool>,
+    #[serde(default)]
+    model_roles: Option<Vec<ModelRoleConfig>>,
 }
 
 async fn update_runtime_settings(
@@ -96,6 +105,14 @@ async fn update_runtime_settings(
         stream: payload.stream,
         allow_tools: payload.allow_tools,
         max_history_turns: payload.max_history_turns,
+        inject_wake_pack: payload.inject_wake_pack.unwrap_or(current.inject_wake_pack),
+        inject_ledger_recall: payload
+            .inject_ledger_recall
+            .unwrap_or(current.inject_ledger_recall),
+        enable_auto_distill: payload
+            .enable_auto_distill
+            .unwrap_or(current.enable_auto_distill),
+        model_roles: payload.model_roles.unwrap_or(current.model_roles),
         created_at: current.created_at,
         updated_at: current.updated_at,
     };

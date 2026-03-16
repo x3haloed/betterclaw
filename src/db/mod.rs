@@ -1,6 +1,7 @@
 pub mod events;
 pub(crate) mod internal;
 pub mod memory;
+pub mod routines;
 pub mod settings;
 #[cfg(test)]
 mod tests;
@@ -184,6 +185,23 @@ impl Db {
                 entry_id UNINDEXED,
                 content
             );
+            CREATE TABLE IF NOT EXISTS observations (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                detail TEXT,
+                citations_json TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_observations_namespace_kind
+                ON observations(namespace_id, kind, resolved);
+            CREATE INDEX IF NOT EXISTS idx_observations_created
+                ON observations(namespace_id, created_at DESC);
 
             "#,
         )
@@ -220,6 +238,20 @@ impl Db {
         .await?;
         self.drop_column_if_exists(&conn, "runtime_settings", "temperature")
             .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "enable_observations",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "inject_observations",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
         Ok(())
     }
 

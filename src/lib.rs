@@ -9,6 +9,7 @@ pub mod logging;
 pub mod memory;
 pub mod model;
 pub mod runtime;
+pub mod routine;
 pub mod settings;
 pub mod thread;
 pub mod tidepool;

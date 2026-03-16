@@ -10,7 +10,7 @@ impl Db {
     pub async fn seed_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT OR IGNORE INTO runtime_settings (agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO runtime_settings (agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 settings.agent_id.clone(),
                 settings.model.clone(),
@@ -22,6 +22,8 @@ impl Db {
                 if settings.inject_wake_pack { 1 } else { 0 },
                 if settings.inject_ledger_recall { 1 } else { 0 },
                 if settings.enable_auto_distill { 1 } else { 0 },
+                if settings.enable_observations { 1 } else { 0 },
+                if settings.inject_observations { 1 } else { 0 },
                 serde_json::to_string(&settings.model_roles)?,
                 settings.created_at.to_rfc3339(),
                 settings.updated_at.to_rfc3339(),
@@ -49,7 +51,7 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, model_roles_json, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
+                "SELECT agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, COALESCE(enable_observations, 1), COALESCE(inject_observations, 1), model_roles_json, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
                 params![agent_id.to_string()],
             )
             .await?;
@@ -65,9 +67,11 @@ impl Db {
                 inject_wake_pack: row.get::<i64>(7)? != 0,
                 inject_ledger_recall: row.get::<i64>(8)? != 0,
                 enable_auto_distill: row.get::<i64>(9)? != 0,
-                model_roles: serde_json::from_str(&row.get::<String>(10)?)?,
-                created_at: parse_datetime(&row.get::<String>(11)?)?,
-                updated_at: parse_datetime(&row.get::<String>(12)?)?,
+                enable_observations: row.get::<i64>(10)? != 0,
+                inject_observations: row.get::<i64>(11)? != 0,
+                model_roles: serde_json::from_str(&row.get::<String>(12)?)?,
+                created_at: parse_datetime(&row.get::<String>(13)?)?,
+                updated_at: parse_datetime(&row.get::<String>(14)?)?,
             })
         } else {
             None
@@ -99,7 +103,7 @@ impl Db {
     pub async fn update_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT OR REPLACE INTO runtime_settings (agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
+            "INSERT OR REPLACE INTO runtime_settings (agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
             params![
                 settings.agent_id.clone(),
                 settings.model.clone(),
@@ -111,6 +115,8 @@ impl Db {
                 if settings.inject_wake_pack { 1 } else { 0 },
                 if settings.inject_ledger_recall { 1 } else { 0 },
                 if settings.enable_auto_distill { 1 } else { 0 },
+                if settings.enable_observations { 1 } else { 0 },
+                if settings.inject_observations { 1 } else { 0 },
                 serde_json::to_string(&settings.model_roles)?,
                 settings.agent_id.clone(),
                 settings.created_at.to_rfc3339(),

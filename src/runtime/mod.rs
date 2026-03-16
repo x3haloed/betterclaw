@@ -37,6 +37,7 @@ fn default_workspace_root() -> PathBuf {
 mod engine;
 mod internal;
 mod memory;
+mod routine;
 mod throttle;
 mod types;
 

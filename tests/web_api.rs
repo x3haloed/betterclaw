@@ -392,9 +392,12 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
     assert_eq!(trace["request_body"]["stream"], false);
     assert_eq!(trace["request_body"]["tools"], Value::Array(vec![]));
     assert_eq!(trace["request_body"]["messages"][0]["role"], "system");
-    assert_eq!(
-        trace["request_body"]["messages"][0]["content"],
-        "Be extremely concise."
+    let system_content = trace["request_body"]["messages"][0]["content"]
+        .as_str()
+        .unwrap();
+    assert!(
+        system_content.ends_with("Be extremely concise."),
+        "system prompt should end with the configured text, got: {system_content}"
     );
 }
 

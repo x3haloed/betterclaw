@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 use tokio::fs;
 use uuid::Uuid;
 
+const SYNTHETIC_TOOL_SUMMARY_PROMPT: &str = "Summarize what you just did for the user in one concise response. If you are done, call final_message with the user-facing summary.";
+
 impl Runtime {
     pub(crate) fn parse_tool_control(output: &Value) -> Option<ToolControl> {
         let control = output
@@ -130,6 +132,8 @@ impl Runtime {
         let mut request = initial_request;
         let mut outbound_messages = Vec::new();
         let mut visible_reply_segments = Vec::new();
+        let mut chain_ends_with_nonterminal_tool = false;
+        let mut synthetic_summary_prompt_sent = false;
         let (final_response, last_trace_id, final_status) = loop {
             let exchange = self
                 .run_and_record_exchange(&turn, &thread, &event.agent_id, &event.channel, request)
@@ -139,7 +143,11 @@ impl Runtime {
                 .await?;
             let trace_id = trace.id;
 
-            if let Some(content) = exchange.content.as_deref() {
+            let visible_exchange_content = exchange
+                .content
+                .as_deref()
+                .and_then(normalize_visible_reply_segment);
+            if let Some(content) = visible_exchange_content.as_deref() {
                 push_visible_reply_segment(&mut visible_reply_segments, content);
             }
 
@@ -171,6 +179,20 @@ impl Runtime {
             }
 
             if exchange.tool_calls.is_empty() {
+                if chain_ends_with_nonterminal_tool
+                    && visible_exchange_content.is_none()
+                    && !synthetic_summary_prompt_sent
+                {
+                    synthetic_summary_prompt_sent = true;
+                    conversation.push(ModelMessage {
+                        role: "user".to_string(),
+                        content: Some(SYNTHETIC_TOOL_SUMMARY_PROMPT.to_string()),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                    request = self.build_model_request(conversation.clone(), true, &settings);
+                    continue;
+                }
                 break (
                     compose_visible_reply(&visible_reply_segments, None),
                     trace_id,
@@ -228,6 +250,8 @@ impl Runtime {
                     TurnStatus::AwaitingUser,
                 );
             }
+            chain_ends_with_nonterminal_tool = true;
+            synthetic_summary_prompt_sent = false;
             conversation.extend(continuation_messages.continuation_messages);
             request = self.build_model_request(conversation.clone(), true, &settings);
         };
@@ -955,11 +979,18 @@ fn system_prompt_override_from_env() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn push_visible_reply_segment(segments: &mut Vec<String>, text: &str) {
+fn normalize_visible_reply_segment(text: &str) -> Option<String> {
     let sanitized = strip_reasoning_tags(text).trim().to_string();
     if sanitized.is_empty() {
-        return;
+        return None;
     }
+    Some(sanitized)
+}
+
+fn push_visible_reply_segment(segments: &mut Vec<String>, text: &str) {
+    let Some(sanitized) = normalize_visible_reply_segment(text) else {
+        return;
+    };
     if segments.last().is_some_and(|existing| existing == &sanitized) {
         return;
     }

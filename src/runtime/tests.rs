@@ -236,6 +236,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nonterminal_tool_chain_gets_synthetic_summary_followup() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("tool-summary-repair.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-tool-summary-repair",
+                "/tool-summary-repair",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status, TurnStatus::Succeeded);
+        assert!(outcome.response.contains("Summary:"));
+        assert!(outcome.response.contains("\"message\":\"hi\""));
+
+        let traces = runtime.list_turn_traces(&outcome.turn_id).await.unwrap();
+        assert_eq!(traces.len(), 3);
+
+        let final_trace = runtime
+            .get_trace_detail(&traces[2].id)
+            .await
+            .unwrap()
+            .expect("final trace detail");
+        let messages = final_trace.request_body["messages"]
+            .as_array()
+            .expect("request messages array");
+        assert!(messages.iter().any(|message| {
+            message.get("role").and_then(serde_json::Value::as_str) == Some("user")
+                && message.get("content").and_then(serde_json::Value::as_str)
+                    == Some("Summarize what you just did for the user in one concise response. If you are done, call final_message with the user-facing summary.")
+        }));
+    }
+
+    #[tokio::test]
     async fn assistant_messages_saved_without_reasoning_tags() {
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("history.db")).await.unwrap();

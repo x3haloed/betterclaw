@@ -35,6 +35,12 @@ impl ModelRunner for StubModelEngine {
             .filter(|message| message.role == "tool")
             .filter_map(|message| message.content.clone())
             .collect::<Vec<_>>();
+        let user_messages = request
+            .messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .filter_map(|message| message.content.clone())
+            .collect::<Vec<_>>();
         let raw_request = json!({
             "model": request.model,
             "messages": request.messages,
@@ -153,7 +159,48 @@ impl ModelRunner for StubModelEngine {
             }
         }
 
-        if let Some(rest) = last_message.strip_prefix("/tool-batch ") {
+        if last_message == "/tool-summary-repair" {
+            let key = "0".to_string();
+            let tool_id = Uuid::new_v4().to_string();
+            let args = json!({ "message": "hi" }).to_string();
+            let tool_events = vec![
+                ModelEvent::ToolCallStarted {
+                    key: key.clone(),
+                    id: Some(tool_id.clone()),
+                },
+                ModelEvent::ToolCallNameDelta {
+                    key: key.clone(),
+                    text: "echo".to_string(),
+                },
+                ModelEvent::ToolCallArgumentsDelta {
+                    key: key.clone(),
+                    text: args.clone(),
+                },
+                ModelEvent::ToolCallFinished { key },
+                ModelEvent::Completed {
+                    finish_reason: Some("tool_calls".to_string()),
+                },
+            ];
+            response_body = json!({
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "id": tool_id,
+                            "type": "function",
+                            "function": {
+                                "name": "echo",
+                                "arguments": args,
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            });
+            for event in tool_events {
+                accumulator.push(&event);
+                events.push(event);
+            }
+        } else if let Some(rest) = last_message.strip_prefix("/tool-batch ") {
             let parsed_calls: Vec<Value> = serde_json::from_str(rest).unwrap_or_default();
             let mut tool_events = Vec::new();
             let mut tool_call_payloads = Vec::new();
@@ -209,6 +256,65 @@ impl ModelRunner for StubModelEngine {
                 accumulator.push(&event);
                 events.push(event);
             }
+        } else if last_message
+            == "Summarize what you just did for the user in one concise response. If you are done, call final_message with the user-facing summary."
+            && !tool_messages.is_empty()
+        {
+            let key = "0".to_string();
+            let tool_id = Uuid::new_v4().to_string();
+            let summary = format!("Summary: {}", tool_messages.join("\n"));
+            let args = json!({ "content": summary }).to_string();
+            let tool_events = vec![
+                ModelEvent::ToolCallStarted {
+                    key: key.clone(),
+                    id: Some(tool_id.clone()),
+                },
+                ModelEvent::ToolCallNameDelta {
+                    key: key.clone(),
+                    text: "final_message".to_string(),
+                },
+                ModelEvent::ToolCallArgumentsDelta {
+                    key: key.clone(),
+                    text: args.clone(),
+                },
+                ModelEvent::ToolCallFinished { key },
+                ModelEvent::Completed {
+                    finish_reason: Some("tool_calls".to_string()),
+                },
+            ];
+            response_body = json!({
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "id": tool_id,
+                            "type": "function",
+                            "function": {
+                                "name": "final_message",
+                                "arguments": args,
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            });
+            for event in tool_events {
+                accumulator.push(&event);
+                events.push(event);
+            }
+        } else if user_messages.iter().any(|message| message == "/tool-summary-repair")
+            && !tool_messages.is_empty()
+        {
+            response_body = json!({
+                "choices": [{
+                    "message": {},
+                    "finish_reason": "stop"
+                }]
+            });
+            let event = ModelEvent::Completed {
+                finish_reason: Some("stop".to_string()),
+            };
+            accumulator.push(&event);
+            events.push(event);
         } else if let Some(rest) = last_message.strip_prefix("/final-message ") {
             let key = "0".to_string();
             let tool_id = Uuid::new_v4().to_string();

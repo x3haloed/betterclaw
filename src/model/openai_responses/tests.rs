@@ -10,7 +10,9 @@ mod tests {
         split_instructions_and_input,
     };
     use crate::model::{
-        ModelEvent, ModelMessage, ModelToolCallMessage, ModelToolFunctionMessage, ReasoningMode,
+        ModelEvent, ModelExchangeRequest, ModelMessage, ModelToolCallMessage,
+        ModelToolFunctionMessage, OpenAiCompatibleConfig, ReasoningMode,
+        OpenAiResponsesEngine,
     };
 
     #[test]
@@ -144,5 +146,31 @@ mod tests {
             event,
             ModelEvent::Completed { finish_reason } if finish_reason.is_none()
         )));
+    }
+
+    #[test]
+    fn copilot_responses_payload_omits_temperature() {
+        let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig {
+            provider_name: "copilot".to_string(),
+            ..OpenAiCompatibleConfig::default()
+        })
+        .expect("engine");
+        let payload = engine.build_payload(&ModelExchangeRequest {
+            model: "gpt-5-mini".to_string(),
+            messages: vec![ModelMessage {
+                role: "user".to_string(),
+                content: Some("hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            temperature: Some(0.2),
+            max_tokens: Some(128),
+            stream: true,
+            response_format: None,
+            extra: json!({}),
+        });
+
+        assert!(payload.get("temperature").is_none());
     }
 }

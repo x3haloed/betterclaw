@@ -9,9 +9,11 @@ use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use anyhow::anyhow;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::channel::InboundEvent;
+use crate::error::RuntimeError;
 use crate::runtime::{Runtime, RuntimeUpdate};
 use crate::settings::ModelRoleConfig;
 
@@ -242,9 +244,19 @@ async fn post_message(
     Path(thread_id): Path<String>,
     Json(payload): Json<PostMessageRequest>,
 ) -> Result<Json<PostMessageResponse>, ApiError> {
-    let outcome = runtime
-        .handle_inbound(InboundEvent::web("default", &thread_id, payload.content))
-        .await?;
+    let runtime_for_task = runtime.clone();
+    let thread_id_for_task = thread_id.clone();
+    let content = payload.content;
+    let outcome = tokio::spawn(async move {
+        runtime_for_task.handle_inbound(InboundEvent::web(
+            "default",
+            &thread_id_for_task,
+            content,
+        ))
+        .await
+    })
+    .await
+    .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
     Ok(Json(PostMessageResponse {
         thread_id: outcome.thread.id,
         turn_id: outcome.turn_id,
@@ -276,7 +288,11 @@ async fn replay_turn(
     State(runtime): State<Arc<Runtime>>,
     Path(turn_id): Path<String>,
 ) -> Result<Json<ReplayTurnResponse>, ApiError> {
-    let outcome = runtime.replay_turn(&turn_id).await?;
+    let runtime_for_task = runtime.clone();
+    let turn_id_for_task = turn_id.clone();
+    let outcome = tokio::spawn(async move { runtime_for_task.replay_turn(&turn_id_for_task).await })
+        .await
+        .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
     Ok(Json(ReplayTurnResponse {
         thread_id: outcome.thread.id,
         turn_id: outcome.turn_id,

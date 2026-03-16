@@ -27,6 +27,13 @@ struct ResponseContentItem {
     text: String,
 }
 
+fn response_content_kind(role: &str) -> &'static str {
+    match role {
+        "assistant" => "output_text",
+        _ => "input_text",
+    }
+}
+
 pub(crate) fn split_instructions_and_input(messages: &[ModelMessage]) -> (String, Vec<Value>) {
     let mut instructions = Vec::new();
     let mut input = Vec::new();
@@ -57,7 +64,7 @@ pub(crate) fn split_instructions_and_input(messages: &[ModelMessage]) -> (String
                         serde_json::to_value(ResponseInputItem::Message {
                             role: role.to_string(),
                             content: vec![ResponseContentItem {
-                                kind: "input_text",
+                                kind: response_content_kind(role),
                                 text: content.to_string(),
                             }],
                         })

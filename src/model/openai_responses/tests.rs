@@ -49,6 +49,31 @@ mod tests {
         assert_eq!(input.len(), 1);
         assert_eq!(input[0]["type"], "message");
         assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn translates_assistant_history_as_output_text() {
+        let (_instructions, input) = split_instructions_and_input(&[
+            ModelMessage {
+                role: "assistant".to_string(),
+                content: Some("already answered".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ModelMessage {
+                role: "user".to_string(),
+                content: Some("follow up".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ]);
+
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["role"], "assistant");
+        assert_eq!(input[0]["content"][0]["type"], "output_text");
+        assert_eq!(input[1]["role"], "user");
+        assert_eq!(input[1]["content"][0]["type"], "input_text");
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub struct ExchangeAccumulator {
     usage: ModelUsage,
     finish_reason: Option<String>,
     tool_order: Vec<String>,
+    tool_aliases: HashMap<String, String>,
     tool_calls: HashMap<String, PartialToolCall>,
     errors: Vec<String>,
 }
@@ -37,6 +38,7 @@ impl ExchangeAccumulator {
             usage: ModelUsage::default(),
             finish_reason: None,
             tool_order: Vec::new(),
+            tool_aliases: HashMap::new(),
             tool_calls: HashMap::new(),
             errors: Vec::new(),
         }
@@ -55,12 +57,13 @@ impl ExchangeAccumulator {
                 self.ensure_tool_call(key, id.clone());
             }
             ModelEvent::ToolCallNameDelta { key, text } => {
-                self.ensure_tool_call(key, None).name.push_str(text);
+                merge_tool_call_text(&mut self.ensure_tool_call(key, None).name, text);
             }
             ModelEvent::ToolCallArgumentsDelta { key, text } => {
-                self.ensure_tool_call(key, None)
-                    .arguments_text
-                    .push_str(text);
+                merge_tool_call_text(
+                    &mut self.ensure_tool_call(key, None).arguments_text,
+                    text,
+                );
             }
             ModelEvent::ToolCallFinished { key } => {
                 self.ensure_tool_call(key, None).finished = true;
@@ -74,10 +77,31 @@ impl ExchangeAccumulator {
     }
 
     fn ensure_tool_call(&mut self, key: &str, id: Option<String>) -> &mut PartialToolCall {
-        if !self.tool_calls.contains_key(key) {
-            self.tool_order.push(key.to_string());
+        let canonical_key = self
+            .tool_aliases
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| key.to_string());
+
+        if !self.tool_calls.contains_key(&canonical_key)
+            && let Some(id_value) = id.as_deref()
+            && let Some(existing_key) = self.tool_calls.iter().find_map(|(existing_key, call)| {
+                (call.id.as_deref() == Some(id_value)).then(|| existing_key.clone())
+            })
+        {
+            self.tool_aliases.insert(canonical_key.clone(), existing_key);
+        }
+
+        let canonical_key = self
+            .tool_aliases
+            .get(&canonical_key)
+            .cloned()
+            .unwrap_or(canonical_key);
+
+        if !self.tool_calls.contains_key(&canonical_key) {
+            self.tool_order.push(canonical_key.clone());
             self.tool_calls.insert(
-                key.to_string(),
+                canonical_key.clone(),
                 PartialToolCall {
                     id,
                     name: String::new(),
@@ -86,12 +110,12 @@ impl ExchangeAccumulator {
                 },
             );
         } else if let Some(id) = id
-            && let Some(call) = self.tool_calls.get_mut(key)
+            && let Some(call) = self.tool_calls.get_mut(&canonical_key)
         {
             call.id = Some(id);
         }
         self.tool_calls
-            .get_mut(key)
+            .get_mut(&canonical_key)
             .expect("tool call should exist")
     }
 
@@ -176,6 +200,25 @@ impl ExchangeAccumulator {
             error_summary: (!self.errors.is_empty()).then(|| self.errors.join("; ")),
         }
     }
+}
+
+fn merge_tool_call_text(current: &mut String, incoming: &str) {
+    if incoming.is_empty() {
+        return;
+    }
+    if current.is_empty() {
+        current.push_str(incoming);
+        return;
+    }
+    if current == incoming {
+        return;
+    }
+    if incoming.starts_with(current.as_str()) {
+        current.clear();
+        current.push_str(incoming);
+        return;
+    }
+    current.push_str(incoming);
 }
 
 #[cfg(test)]
@@ -390,5 +433,143 @@ mod tests {
             events,
         );
         assert_eq!(result.content.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn merges_tool_call_aliases_by_call_id() {
+        let mut accumulator = ExchangeAccumulator::new("test-model", AccumulationMode::Delta);
+        let events = vec![
+            ModelEvent::ToolCallStarted {
+                key: "output_index:1".to_string(),
+                id: None,
+            },
+            ModelEvent::ToolCallArgumentsDelta {
+                key: "output_index:1".to_string(),
+                text: "{\"path\":\"README.md\"}".to_string(),
+            },
+            ModelEvent::ToolCallStarted {
+                key: "output_index:1".to_string(),
+                id: Some("call-1".to_string()),
+            },
+            ModelEvent::ToolCallNameDelta {
+                key: "output_index:1".to_string(),
+                text: "read_file".to_string(),
+            },
+            ModelEvent::ToolCallStarted {
+                key: "call-1".to_string(),
+                id: Some("call-1".to_string()),
+            },
+            ModelEvent::ToolCallNameDelta {
+                key: "call-1".to_string(),
+                text: "read_file".to_string(),
+            },
+            ModelEvent::ToolCallStarted {
+                key: "other-key".to_string(),
+                id: Some("call-1".to_string()),
+            },
+            ModelEvent::ToolCallFinished {
+                key: "other-key".to_string(),
+            },
+            ModelEvent::Completed {
+                finish_reason: Some("tool_calls".to_string()),
+            },
+        ];
+        for event in &events {
+            accumulator.push(event);
+        }
+
+        let result = accumulator.build(
+            Utc::now(),
+            Utc::now(),
+            RawModelTrace {
+                request_body: json!({}),
+                response_body: None,
+                raw_frames: Vec::new(),
+                provider_request_id: None,
+                transport_kind: TransportKind::HttpSse,
+                accumulation_mode: AccumulationMode::Delta,
+                reasoning_mode: crate::model::ReasoningMode::Unknown,
+            },
+            events,
+        );
+
+        assert_eq!(result.outcome, TraceOutcome::Ok);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "call-1");
+        assert_eq!(result.tool_calls[0].name, "read_file");
+        assert_eq!(
+            result.tool_calls[0].arguments_json,
+            Some(json!({"path":"README.md"}))
+        );
+    }
+
+    #[test]
+    fn preserves_suffix_like_argument_deltas_before_final_snapshot() {
+        let mut accumulator = ExchangeAccumulator::new("test-model", AccumulationMode::Delta);
+        let events = vec![
+            ModelEvent::ToolCallStarted {
+                key: "output_index:1".to_string(),
+                id: Some("call-1".to_string()),
+            },
+            ModelEvent::ToolCallNameDelta {
+                key: "output_index:1".to_string(),
+                text: "read_file".to_string(),
+            },
+            ModelEvent::ToolCallArgumentsDelta {
+                key: "output_index:1".to_string(),
+                text: "{\"limit\":".to_string(),
+            },
+            ModelEvent::ToolCallArgumentsDelta {
+                key: "output_index:1".to_string(),
+                text: "100".to_string(),
+            },
+            ModelEvent::ToolCallArgumentsDelta {
+                key: "output_index:1".to_string(),
+                text: "00".to_string(),
+            },
+            ModelEvent::ToolCallArgumentsDelta {
+                key: "output_index:1".to_string(),
+                text: ",\"offset\":1}".to_string(),
+            },
+            ModelEvent::ToolCallArgumentsDelta {
+                key: "output_index:1".to_string(),
+                text: "{\"limit\":10000,\"offset\":1}".to_string(),
+            },
+            ModelEvent::ToolCallFinished {
+                key: "output_index:1".to_string(),
+            },
+            ModelEvent::Completed {
+                finish_reason: Some("tool_calls".to_string()),
+            },
+        ];
+        for event in &events {
+            accumulator.push(event);
+        }
+
+        let result = accumulator.build(
+            Utc::now(),
+            Utc::now(),
+            RawModelTrace {
+                request_body: json!({}),
+                response_body: None,
+                raw_frames: Vec::new(),
+                provider_request_id: None,
+                transport_kind: TransportKind::HttpSse,
+                accumulation_mode: AccumulationMode::Delta,
+                reasoning_mode: crate::model::ReasoningMode::Unknown,
+            },
+            events,
+        );
+
+        assert_eq!(result.outcome, TraceOutcome::Ok);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(
+            result.tool_calls[0].arguments_text,
+            "{\"limit\":10000,\"offset\":1}"
+        );
+        assert_eq!(
+            result.tool_calls[0].arguments_json,
+            Some(json!({"limit": 10000, "offset": 1}))
+        );
     }
 }

@@ -21,7 +21,7 @@ pub(crate) fn decode_responses_json(
     if let Some(output) = response_body.get("output").and_then(Value::as_array) {
         let mut state = ResponseDecodeState::default();
         for item in output {
-            append_output_item_events(item, &mut state, &mut events, reasoning_mode);
+            append_output_item_events(item, None, &mut state, &mut events, reasoning_mode);
         }
     } else if let Some(output_text) = response_body.get("output_text").and_then(Value::as_str) {
         events.push(ModelEvent::TextSnapshot {
@@ -90,13 +90,19 @@ pub(crate) fn decode_responses_stream_frame(
         }
         "response.output_item.added" | "response.output_item.done" => {
             if let Some(item) = frame.get("item") {
-                append_output_item_events(item, &mut state, &mut events, reasoning_mode);
+                append_output_item_events(
+                    item,
+                    stream_tool_call_key(frame, Some(item)),
+                    &mut state,
+                    &mut events,
+                    reasoning_mode,
+                );
             }
         }
         "response.function_call_arguments.delta" => {
-            if let Some(item_id) = frame.get("item_id").and_then(Value::as_str) {
+            if let Some(key) = stream_tool_call_key(frame, None) {
                 events.push(ModelEvent::ToolCallStarted {
-                    key: item_id.to_string(),
+                    key: key.clone(),
                     id: frame
                         .get("call_id")
                         .and_then(Value::as_str)
@@ -104,23 +110,21 @@ pub(crate) fn decode_responses_stream_frame(
                 });
                 if let Some(delta) = frame.get("delta").and_then(Value::as_str) {
                     events.push(ModelEvent::ToolCallArgumentsDelta {
-                        key: item_id.to_string(),
+                        key,
                         text: delta.to_string(),
                     });
                 }
             }
         }
         "response.function_call_arguments.done" => {
-            if let Some(item_id) = frame.get("item_id").and_then(Value::as_str) {
+            if let Some(key) = stream_tool_call_key(frame, None) {
                 if let Some(arguments) = frame.get("arguments").and_then(Value::as_str) {
                     events.push(ModelEvent::ToolCallArgumentsDelta {
-                        key: item_id.to_string(),
+                        key: key.clone(),
                         text: arguments.to_string(),
                     });
                 }
-                events.push(ModelEvent::ToolCallFinished {
-                    key: item_id.to_string(),
-                });
+                events.push(ModelEvent::ToolCallFinished { key });
             }
         }
         "response.completed" => {
@@ -132,7 +136,13 @@ pub(crate) fn decode_responses_stream_frame(
                 }
                 if let Some(output) = response.get("output").and_then(Value::as_array) {
                     for item in output {
-                        append_output_item_events(item, &mut state, &mut events, reasoning_mode);
+                        append_output_item_events(
+                            item,
+                            None,
+                            &mut state,
+                            &mut events,
+                            reasoning_mode,
+                        );
                     }
                 }
                 let finish_reason = response
@@ -162,8 +172,28 @@ struct ResponseDecodeState {
     reasoning_snapshots: HashMap<String, String>,
 }
 
+fn stream_tool_call_key(frame: &Value, item: Option<&Value>) -> Option<String> {
+    frame
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .map(|index| format!("output_index:{index}"))
+        .or_else(|| {
+            frame.get("call_id")
+                .or_else(|| item.and_then(|value| value.get("call_id")))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .or_else(|| {
+            frame.get("item_id")
+                .or_else(|| item.and_then(|value| value.get("id")))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+}
+
 fn append_output_item_events(
     item: &Value,
+    key_override: Option<String>,
     state: &mut ResponseDecodeState,
     events: &mut Vec<ModelEvent>,
     reasoning_mode: &mut ReasoningMode,
@@ -198,15 +228,13 @@ fn append_output_item_events(
             }
         }
         "function_call" => {
-            let key = item
-                .get("id")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
+            let key = key_override
                 .or_else(|| {
                     item.get("call_id")
                         .and_then(Value::as_str)
                         .map(ToString::to_string)
                 })
+                .or_else(|| item.get("id").and_then(Value::as_str).map(ToString::to_string))
                 .unwrap_or_else(|| "function_call".to_string());
             events.push(ModelEvent::ToolCallStarted {
                 key: key.clone(),

@@ -7,7 +7,7 @@ mod tests {
 
     use super::{
         convert_tool_definition, decode_responses_json, decode_responses_stream_frame,
-        split_instructions_and_input,
+        parse_sse_data, split_instructions_and_input, take_sse_block,
     };
     use crate::model::normalize_schema_strict;
     use crate::model::openai_responses::responses_text_format;
@@ -113,7 +113,7 @@ mod tests {
         );
         assert!(events.iter().any(|event| matches!(
             event,
-            ModelEvent::ToolCallArgumentsDelta { key, text } if key == "fc_1" && text == "{\"message\":\"hi\"}"
+            ModelEvent::ToolCallArgumentsDelta { key, text } if key == "call-1" && text == "{\"message\":\"hi\"}"
         )));
     }
 
@@ -160,6 +160,74 @@ mod tests {
             event,
             ModelEvent::Completed { finish_reason } if finish_reason.is_none()
         )));
+    }
+
+    #[test]
+    fn decodes_responses_sse_with_unstable_item_ids_using_output_index() {
+        let payload = concat!(
+            "event: response.output_item.added\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_initial\",\"call_id\":\"call_123\",\"name\":\"\",\"arguments\":\"\"}}\n\n",
+            "event: response.function_call_arguments.delta\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_delta_a\",\"delta\":\"{\\\"path\\\":\"}\n\n",
+            "event: response.function_call_arguments.delta\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc_delta_b\",\"delta\":\"\\\"README.md\\\"}\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"fc_done\",\"call_id\":\"call_123\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"id\":\"fc_completed\",\"call_id\":\"call_123\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}]}}\n\n"
+        );
+
+        let mut buffer = payload.to_string();
+        let mut reasoning_mode = ReasoningMode::Unknown;
+        let mut events = Vec::new();
+        while let Some((block, rest)) = take_sse_block(&buffer) {
+            buffer = rest;
+            let Some(data) = parse_sse_data(&block) else {
+                continue;
+            };
+            let frame: serde_json::Value = serde_json::from_str(&data).expect("frame json");
+            events.extend(decode_responses_stream_frame(&frame, &mut reasoning_mode));
+        }
+
+        let started_keys: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCallStarted { key, .. } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(started_keys.contains(&"output_index:1"));
+        assert!(!started_keys.contains(&"fc_delta_a"));
+        assert!(!started_keys.contains(&"fc_delta_b"));
+        assert!(!started_keys.contains(&"fc_done"));
+
+        let name_deltas: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCallNameDelta { key, text } => Some((key.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert!(name_deltas.contains(&("output_index:1", "read_file")));
+
+        let arg_deltas: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCallArgumentsDelta { key, text } => Some((key.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert!(arg_deltas.contains(&("output_index:1", "{\"path\":")));
+        assert!(arg_deltas.contains(&("output_index:1", "\"README.md\"}")));
+
+        let finished_keys: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelEvent::ToolCallFinished { key } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(finished_keys.contains(&"output_index:1"));
     }
 
     #[test]

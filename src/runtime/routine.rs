@@ -493,8 +493,8 @@ impl Runtime {
     async fn detect_contradictions(
         &self,
         namespace_id: &str,
-        entries: &[LedgerEntry],
-        config: &RoutineConfig,
+        _entries: &[LedgerEntry],
+        _config: &RoutineConfig,
     ) -> Result<Vec<Observation>, RuntimeError> {
         use crate::memory::MemoryArtifactKind;
         let mut observations = Vec::new();
@@ -561,7 +561,7 @@ impl Runtime {
 
     async fn store_observation(
         &self,
-        namespace_id: &str,
+        _namespace_id: &str,
         new: NewObservation,
     ) -> Result<Observation, RuntimeError> {
         self.db

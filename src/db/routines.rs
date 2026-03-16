@@ -3,7 +3,7 @@ use chrono::Utc;
 use libsql::params;
 use uuid::Uuid;
 
-use crate::routine::{NewObservation, Observation, ObservationKind, ObservationSummary, Severity};
+use crate::routine::{NewObservation, Observation, ObservationKind, ObservationSummary};
 
 use super::Db;
 

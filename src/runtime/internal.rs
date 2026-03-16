@@ -281,7 +281,9 @@ impl Runtime {
         }
         self.record_outbound_and_publish(&turn, &thread, &final_response, event.metadata.clone())
             .await?;
-        outbound_messages.push(final_response.clone());
+        if !final_response.trim().is_empty() {
+            outbound_messages.push(final_response.clone());
+        }
 
         Ok(TurnOutcome {
             thread,
@@ -875,6 +877,9 @@ impl Runtime {
         content: &str,
         metadata: Option<Value>,
     ) -> Result<(), RuntimeError> {
+        if content.trim().is_empty() {
+            return Ok(());
+        }
         let outbound = OutboundMessage {
             id: Uuid::new_v4().to_string(),
             turn_id: turn.id.clone(),

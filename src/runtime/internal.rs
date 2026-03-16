@@ -3,6 +3,7 @@ use super::*;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::*;
+use crate::routine::RoutineConfig;
 use crate::thread::Thread;
 use crate::tool::*;
 use crate::turn::{Turn, TurnStatus};
@@ -270,6 +271,14 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::TurnNotFound(turn.id.clone()))?;
         self.sync_memory_for_turn(&thread, &completed_turn, &settings)
             .await?;
+        if settings.enable_observations {
+            let _ = self
+                .run_observation_routines(
+                    &default_memory_namespace(),
+                    &RoutineConfig::default(),
+                )
+                .await;
+        }
         if final_status == TurnStatus::AwaitingUser {
             self.append_event_and_publish(
                 &turn.id,
@@ -384,6 +393,16 @@ impl Runtime {
             messages.push(ModelMessage {
                 role: "system".to_string(),
                 content: Some(recall_block),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        if settings.inject_observations
+            && let Some(obs_block) = self.build_observations_block(&namespace).await?
+        {
+            messages.push(ModelMessage {
+                role: "system".to_string(),
+                content: Some(obs_block),
                 tool_calls: None,
                 tool_call_id: None,
             });

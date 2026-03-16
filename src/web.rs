@@ -93,6 +93,10 @@ struct UpdateRuntimeSettingsRequest {
     #[serde(default)]
     enable_auto_distill: Option<bool>,
     #[serde(default)]
+    enable_observations: Option<bool>,
+    #[serde(default)]
+    inject_observations: Option<bool>,
+    #[serde(default)]
     model_roles: Option<Vec<ModelRoleConfig>>,
 }
 
@@ -116,6 +120,12 @@ async fn update_runtime_settings(
         enable_auto_distill: payload
             .enable_auto_distill
             .unwrap_or(current.enable_auto_distill),
+        enable_observations: payload
+            .enable_observations
+            .unwrap_or(current.enable_observations),
+        inject_observations: payload
+            .inject_observations
+            .unwrap_or(current.inject_observations),
         model_roles: payload.model_roles.unwrap_or(current.model_roles),
         created_at: current.created_at,
         updated_at: current.updated_at,

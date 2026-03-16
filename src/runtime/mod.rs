@@ -23,6 +23,16 @@ use crate::tool::ToolRegistry;
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
 
+/// Get the default workspace root path (~/.betterclaw/workspaces/default/files).
+///
+/// This emulates the old behavior where the agent's working directory for file
+/// tool resolution was always under the betterclaw home directory.
+fn default_workspace_root() -> PathBuf {
+    dirs::home_dir()
+        .map(|path| path.join(".betterclaw").join("workspaces").join("default").join("files"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 mod engine;
 mod internal;
 mod memory;
@@ -95,10 +105,7 @@ impl Runtime {
     ) -> Result<Self, RuntimeError> {
         let db = Arc::new(db);
         let (updates, _) = broadcast::channel(512);
-        let workspace = Workspace::new(
-            "default",
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        );
+        let workspace = Workspace::new("default", default_workspace_root());
         let agent = Agent::new("default", "Default Agent", workspace.id.clone());
         let mut default_settings = RuntimeSettings::with_defaults("default", model_name.into());
         if let Some(role) = env_role(ModelRole::Compressor) {

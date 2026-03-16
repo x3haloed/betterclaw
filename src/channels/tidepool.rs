@@ -7,7 +7,10 @@ use serde_json::json;
 
 use crate::channel::{ChannelCursor, InboundEvent};
 use crate::runtime::Runtime;
-use crate::tidepool::{TidepoolClient, TidepoolConfig, TidepoolInboundMessage};
+use crate::tidepool::{
+    TidepoolClient, TidepoolConfig, TidepoolInboundMessage, clear_shared_client,
+    connect_shared_client,
+};
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
@@ -31,6 +34,7 @@ impl TidepoolChannel {
     async fn run_forever(self) {
         loop {
             if let Err(error) = self.run_once().await {
+                clear_shared_client().await;
                 tracing::error!(error = %error, "Tidepool channel loop failed; reconnecting");
                 tokio::time::sleep(RECONNECT_DELAY).await;
             }
@@ -46,7 +50,7 @@ impl TidepoolChannel {
             "Starting Tidepool channel"
         );
 
-        let mut client = TidepoolClient::connect(self.config.clone())
+        let client = connect_shared_client(self.config.clone())
             .await
             .context("connecting Tidepool client")?;
         let bootstrap = client.bootstrap_outcome();

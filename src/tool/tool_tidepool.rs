@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use super::*;
 use crate::error::RuntimeError;
 use crate::generated::tidepool::SubscriptionLookup;
-use crate::tidepool::{TidepoolClient, TidepoolConfig};
+use crate::tidepool::require_shared_client;
 
 const DEFAULT_SUBSCRIBE_BATCH_WINDOW_SECONDS: u32 = 30;
 
@@ -29,20 +29,18 @@ impl Tool for TidepoolMyAccountTool {
     }
 
     async fn call(&self, _params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
-        let (config, client) = connect_tidepool("tidepool_my_account").await?;
+        let client = shared_tidepool_client("tidepool_my_account").await?;
         let account = client.account().ok_or_else(|| RuntimeError::ToolExecution {
             tool: "tidepool_my_account".to_string(),
-            reason: format!(
-                "Tidepool connection succeeded but no account was visible for handle '{}'",
-                config.handle
-            ),
+            reason: "Tidepool channel is active but no account is visible on the shared connection"
+                .to_string(),
         })?;
+        let bootstrap = client.bootstrap_outcome();
         Ok(json!({
             "account_id": account.account_id,
             "handle": account.handle,
-            "database": config.database,
-            "base_url": config.base_url,
-            "agent_id": config.agent_id,
+            "token_path": bootstrap.token_path,
+            "subscribed_domain_ids": bootstrap.subscribed_domain_ids,
         }))
     }
 }
@@ -68,11 +66,9 @@ impl Tool for TidepoolListSubscriptionsTool {
     }
 
     async fn call(&self, _params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
-        let (config, client) = connect_tidepool("tidepool_list_subscriptions").await?;
+        let client = shared_tidepool_client("tidepool_list_subscriptions").await?;
         let subscriptions = client.subscriptions();
         Ok(json!({
-            "database": config.database,
-            "base_url": config.base_url,
             "subscriptions": serialize_subscriptions(&subscriptions),
             "count": subscriptions.len(),
         }))
@@ -113,15 +109,13 @@ impl Tool for TidepoolSubscribeDomainTool {
             "batch_window_seconds",
         )?
         .unwrap_or(DEFAULT_SUBSCRIBE_BATCH_WINDOW_SECONDS);
-        let (config, client) = connect_tidepool("tidepool_subscribe_domain").await?;
+        let client = shared_tidepool_client("tidepool_subscribe_domain").await?;
         let subscriptions = client
             .subscribe_domain(domain_id, batch_window_seconds)
             .await
             .map_err(|error| tool_execution("tidepool_subscribe_domain", error))?;
         Ok(json!({
             "status": "subscribed",
-            "database": config.database,
-            "base_url": config.base_url,
             "domain_id": domain_id,
             "batch_window_seconds": batch_window_seconds,
             "subscriptions": serialize_subscriptions(&subscriptions),
@@ -155,15 +149,13 @@ impl Tool for TidepoolUnsubscribeDomainTool {
 
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
         let domain_id = require_u64(&params, "tidepool_unsubscribe_domain", "domain_id")?;
-        let (config, client) = connect_tidepool("tidepool_unsubscribe_domain").await?;
+        let client = shared_tidepool_client("tidepool_unsubscribe_domain").await?;
         let subscriptions = client
             .unsubscribe_domain(domain_id)
             .await
             .map_err(|error| tool_execution("tidepool_unsubscribe_domain", error))?;
         Ok(json!({
             "status": "unsubscribed",
-            "database": config.database,
-            "base_url": config.base_url,
             "domain_id": domain_id,
             "subscriptions": serialize_subscriptions(&subscriptions),
         }))
@@ -209,14 +201,12 @@ impl Tool for TidepoolPostMessageTool {
         let body = require_string(&params, "tidepool_post_message", "body")?;
         let reply_to_message_id =
             optional_u64(&params, "tidepool_post_message", "reply_to_message_id")?;
-        let (config, client) = connect_tidepool("tidepool_post_message").await?;
+        let client = shared_tidepool_client("tidepool_post_message").await?;
         client
             .post_message(domain_id, body.clone(), reply_to_message_id)
             .map_err(|error| tool_execution("tidepool_post_message", error))?;
         Ok(json!({
             "status": "posted",
-            "database": config.database,
-            "base_url": config.base_url,
             "domain_id": domain_id,
             "reply_to_message_id": reply_to_message_id,
             "body": body,
@@ -224,15 +214,10 @@ impl Tool for TidepoolPostMessageTool {
     }
 }
 
-async fn connect_tidepool(tool: &str) -> Result<(TidepoolConfig, TidepoolClient), RuntimeError> {
-    let config = TidepoolConfig::from_env().ok_or_else(|| RuntimeError::ToolExecution {
-        tool: tool.to_string(),
-        reason: "Tidepool is not configured. Set TIDEPOOL_DATABASE, TIDEPOOL_HANDLE, TIDEPOOL_BASE_URL, and TIDEPOOL_TOKEN_PATH in the BetterClaw environment.".to_string(),
-    })?;
-    let client = TidepoolClient::connect(config.clone())
+async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
+    require_shared_client()
         .await
-        .map_err(|error| tool_execution(tool, error))?;
-    Ok((config, client))
+        .map_err(|error| tool_execution(tool, error))
 }
 
 fn serialize_subscriptions(subscriptions: &[SubscriptionLookup]) -> Vec<Value> {

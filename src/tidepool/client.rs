@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use spacetimedb_sdk::{DbContext as _, Table as _};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::generated::tidepool::{
     AccountLookup, DbConnection, MyAccountTableAccess, MySubscribedMessagesTableAccess,
@@ -85,12 +85,17 @@ enum TidepoolClientEvent {
     Disconnected(String),
 }
 
-pub struct TidepoolClient {
+struct TidepoolClientInner {
     connection: Arc<DbConnection>,
-    receiver: mpsc::UnboundedReceiver<TidepoolClientEvent>,
-    run_loop: tokio::task::JoinHandle<spacetimedb_sdk::Result<()>>,
+    receiver: Mutex<mpsc::UnboundedReceiver<TidepoolClientEvent>>,
+    run_loop: Mutex<Option<tokio::task::JoinHandle<spacetimedb_sdk::Result<()>>>>,
     bootstrap: TidepoolBootstrapOutcome,
     attach_baseline_sequences: HashMap<u64, u64>,
+}
+
+#[derive(Clone)]
+pub struct TidepoolClient {
+    inner: Arc<TidepoolClientInner>,
 }
 
 impl TidepoolClient {
@@ -130,34 +135,43 @@ impl TidepoolClient {
         let attach_baseline_sequences = current_attach_baseline(&connection);
 
         Ok(Self {
-            connection,
-            receiver: event_rx,
-            run_loop,
-            bootstrap,
-            attach_baseline_sequences,
+            inner: Arc::new(TidepoolClientInner {
+                connection,
+                receiver: Mutex::new(event_rx),
+                run_loop: Mutex::new(Some(run_loop)),
+                bootstrap,
+                attach_baseline_sequences,
+            }),
         })
     }
 
     pub fn bootstrap_outcome(&self) -> &TidepoolBootstrapOutcome {
-        &self.bootstrap
+        &self.inner.bootstrap
     }
 
     pub fn attach_baseline_sequences(&self) -> &HashMap<u64, u64> {
-        &self.attach_baseline_sequences
+        &self.inner.attach_baseline_sequences
     }
 
     pub fn account(&self) -> Option<AccountLookup> {
-        self.connection.db.my_account().iter().next()
+        self.inner.connection.db.my_account().iter().next()
     }
 
     pub fn subscriptions(&self) -> Vec<SubscriptionLookup> {
-        let mut subscriptions = self.connection.db.my_subscriptions().iter().collect::<Vec<_>>();
+        let mut subscriptions = self
+            .inner
+            .connection
+            .db
+            .my_subscriptions()
+            .iter()
+            .collect::<Vec<_>>();
         subscriptions.sort_by_key(|item| item.domain_id);
         subscriptions
     }
 
-    pub async fn recv(&mut self) -> Option<Result<TidepoolInboundMessage>> {
-        match self.receiver.recv().await {
+    pub async fn recv(&self) -> Option<Result<TidepoolInboundMessage>> {
+        let mut receiver = self.inner.receiver.lock().await;
+        match receiver.recv().await {
             Some(TidepoolClientEvent::Message(message)) => Some(Ok(message)),
             Some(TidepoolClientEvent::Disconnected(reason)) => Some(Err(anyhow!(reason))),
             None => None,
@@ -170,7 +184,8 @@ impl TidepoolClient {
         body: impl Into<String>,
         reply_to_message_id: Option<u64>,
     ) -> Result<()> {
-        self.connection
+        self.inner
+            .connection
             .reducers
             .post_message(domain_id, body.into(), reply_to_message_id)
             .context("posting Tidepool message")
@@ -181,7 +196,8 @@ impl TidepoolClient {
         domain_id: u64,
         batch_window_seconds: u32,
     ) -> Result<Vec<SubscriptionLookup>> {
-        self.connection
+        self.inner
+            .connection
             .reducers
             .subscribe_domain(domain_id, batch_window_seconds)
             .with_context(|| format!("subscribing to Tidepool domain {domain_id}"))?;
@@ -190,7 +206,8 @@ impl TidepoolClient {
     }
 
     pub async fn unsubscribe_domain(&self, domain_id: u64) -> Result<Vec<SubscriptionLookup>> {
-        self.connection
+        self.inner
+            .connection
             .reducers
             .unsubscribe_domain(domain_id)
             .with_context(|| format!("unsubscribing from Tidepool domain {domain_id}"))?;
@@ -202,6 +219,7 @@ impl TidepoolClient {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let currently_present = self
+                .inner
                 .connection
                 .db
                 .my_subscriptions()
@@ -223,12 +241,12 @@ impl TidepoolClient {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
-}
 
-impl Drop for TidepoolClient {
-    fn drop(&mut self) {
-        let _ = self.connection.disconnect();
-        self.run_loop.abort();
+    pub async fn shutdown(&self) {
+        let _ = self.inner.connection.disconnect();
+        if let Some(run_loop) = self.inner.run_loop.lock().await.take() {
+            run_loop.abort();
+        }
     }
 }
 

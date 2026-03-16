@@ -1,0 +1,388 @@
+body {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  background: #f4f0e8;
+  color: #1e1f1c;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid #d8cfbf;
+  background: linear-gradient(180deg, #efe7d7 0%, #e6dccb 100%);
+  padding: 16px;
+}
+
+.settings-panel {
+  margin-top: 16px;
+  border: 1px solid #d8cfbf;
+  background: #fbf5e8;
+  padding: 12px;
+}
+
+.settings-header {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.settings-toggles {
+  display: flex;
+  flex-direction: column;
+  justify-content: end;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-status {
+  font-size: 12px;
+  color: #675843;
+}
+
+.sidebar-header,
+.panel-title,
+.composer,
+.message-meta,
+.compressor-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.thread-list,
+.trace-list,
+.timeline,
+.conversation,
+.compressor-home {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.thread-item,
+.trace-item,
+button {
+  border: 1px solid #7c6b4d;
+  background: #fdf7eb;
+  color: #1e1f1c;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.thread-item.active,
+.trace-item.active,
+.view-tab.active,
+.trace-chip.active {
+  background: #d8c7a5;
+}
+
+.main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.95fr);
+  gap: 16px;
+  padding: 16px;
+}
+
+.panel {
+  background: #fffaf0;
+  border: 1px solid #d8cfbf;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 32px);
+  min-width: 0;
+}
+
+.panel-heading {
+  align-items: flex-start;
+}
+
+.panel-subtitle {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #675843;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.conversation,
+.compressor-home,
+.trace-detail {
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.message-card {
+  max-width: min(760px, 92%);
+  border: 1px solid #d8cfbf;
+  background: #fffdf7;
+  padding: 14px 16px;
+  box-shadow: 0 8px 24px rgba(72, 57, 36, 0.06);
+}
+
+.message-card.user {
+  align-self: flex-end;
+  background: linear-gradient(180deg, #ead6b1 0%, #e2c594 100%);
+  border-color: #c9ab77;
+}
+
+.message-card.assistant {
+  align-self: flex-start;
+}
+
+.message-card.status {
+  align-self: center;
+  max-width: min(720px, 100%);
+  background: #f7f2e7;
+}
+
+.message-meta,
+.compressor-meta,
+.timeline-kind,
+.trace-step,
+.summary-label,
+.compressor-stat-label,
+.view-tab,
+.trace-chip-step {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #675843;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.message-role,
+.trace-primary,
+.summary-value,
+.compressor-title,
+.compressor-stat-value,
+.trace-chip-outcome {
+  font-weight: 700;
+}
+
+.message-body,
+.compressor-body {
+  line-height: 1.6;
+  font-size: 15px;
+}
+
+.message-body > :first-child,
+.compressor-body > :first-child {
+  margin-top: 0;
+}
+
+.message-body > :last-child,
+.compressor-body > :last-child {
+  margin-bottom: 0;
+}
+
+.message-body pre,
+.compressor-body pre,
+.trace-code {
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #d8cfbf;
+  background: #fbf5e8;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.message-body code,
+.compressor-body code,
+pre,
+textarea,
+input {
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.message-body :not(pre) > code,
+.compressor-body :not(pre) > code {
+  background: #f0e7d8;
+  padding: 0.12em 0.35em;
+}
+
+.empty-state,
+.trace-empty {
+  margin-top: 16px;
+  border: 1px dashed #b8ad99;
+  background: #f7f2e7;
+  padding: 16px;
+  color: #675843;
+}
+
+.inspector-panel {
+  overflow: hidden;
+}
+
+.inspector-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.view-switcher {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.compressor-card,
+.timeline-item,
+.summary-row,
+.compressor-stat,
+.trace-detail {
+  border: 1px solid #d8cfbf;
+  background: #fbf5e8;
+  padding: 12px;
+}
+
+.compressor-stats,
+.trace-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.compressor-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.trace-chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.trace-chain-arrow {
+  color: #675843;
+  font-weight: 700;
+}
+
+.trace-chip {
+  border: 1px solid #b8ad99;
+  background: #fbf5e8;
+  color: #1e1f1c;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.trace-chip-step,
+.trace-chip-outcome,
+.trace-primary,
+.trace-secondary,
+.trace-preview {
+  display: block;
+}
+
+.trace-preview,
+.trace-secondary {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #675843;
+}
+
+.live-indicator {
+  border: 1px solid #56714f;
+  background: #dceccf;
+  color: #2f4a28;
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+pre,
+textarea {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+textarea {
+  width: 100%;
+  min-height: 90px;
+  border: 1px solid #d8cfbf;
+  padding: 10px;
+  background: #fff;
+}
+
+input {
+  border: 1px solid #d8cfbf;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.trace-section + .trace-section {
+  margin-top: 16px;
+}
+
+.trace-section h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: "SF Mono", "JetBrains Mono", monospace;
+}
+
+.trace-code {
+  margin: 0;
+  max-height: 280px;
+}
+
+@media (max-width: 960px) {
+  .layout,
+  .main {
+    grid-template-columns: 1fr;
+  }
+
+  .panel {
+    min-height: auto;
+  }
+
+  .settings-row,
+  .trace-summary,
+  .compressor-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .message-card {
+    max-width: 100%;
+  }
+}

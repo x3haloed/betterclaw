@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetterClaw</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/marked@17.0.2/lib/marked.umd.min.js"></script>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>BetterClaw</h1>
+          <button id="new-thread">New Thread</button>
+        </div>
+        <section class="settings-panel">
+          <div class="settings-header">Runtime</div>
+          <form id="settings-form" class="settings-form">
+            <label class="settings-field">
+              <span>Model</span>
+              <input id="settings-model" type="text" />
+            </label>
+            <label class="settings-field">
+              <span>System Prompt</span>
+              <textarea id="settings-system-prompt"></textarea>
+            </label>
+            <div class="settings-row">
+              <label class="settings-field">
+                <span>Max Tokens</span>
+                <input id="settings-max-tokens" type="number" min="1" step="1" />
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-field">
+                <span>History Turns</span>
+                <input id="settings-max-history-turns" type="number" min="0" step="1" />
+              </label>
+              <div class="settings-toggles">
+                <label><input id="settings-stream" type="checkbox" /> Stream</label>
+                <label><input id="settings-allow-tools" type="checkbox" /> Allow tools</label>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <button type="submit">Save Settings</button>
+              <span id="settings-status" class="settings-status"></span>
+            </div>
+          </form>
+        </section>
+        <section class="settings-panel">
+          <div class="settings-header">Retention</div>
+          <form id="retention-form" class="settings-form">
+            <label class="settings-field">
+              <span>Trace Blob Retention Days</span>
+              <input id="retention-trace-blob-days" type="number" min="0" step="1" />
+            </label>
+            <div class="settings-actions">
+              <button type="submit">Save Retention</button>
+              <button id="prune-traces" type="button">Prune Now</button>
+            </div>
+            <span id="retention-status" class="settings-status"></span>
+          </form>
+        </section>
+        <div id="thread-list" class="thread-list"></div>
+      </aside>
+      <main class="main">
+        <section class="panel conversation-panel">
+          <div class="panel-title panel-heading">
+            <div>
+              <span id="thread-title">No thread selected</span>
+              <div id="thread-subtitle" class="panel-subtitle">Conversation</div>
+            </div>
+            <span id="live-indicator" class="live-indicator" hidden>Live</span>
+          </div>
+          <div id="conversation" class="conversation"></div>
+          <form id="composer" class="composer">
+            <textarea id="message-input" placeholder="Type a message or use /tool echo {&quot;message&quot;:&quot;hi&quot;}"></textarea>
+            <button type="submit">Send</button>
+          </form>
+        </section>
+        <section class="panel inspector-panel">
+          <div class="panel-title panel-heading">
+            <div>
+              <span>Thread Views</span>
+              <div class="panel-subtitle">Secondary live context</div>
+            </div>
+            <div class="view-switcher">
+              <button id="view-compressor" class="view-tab active" type="button" data-view="compressor">Compressor</button>
+              <button id="view-diagnostics" class="view-tab" type="button" data-view="diagnostics">Diagnostics</button>
+            </div>
+          </div>
+
+          <div id="compressor-view" class="inspector-view">
+            <div id="compressor-home" class="compressor-home"></div>
+          </div>
+
+          <div id="diagnostics-view" class="inspector-view" hidden>
+            <div id="trace-chain" class="trace-chain"></div>
+            <div id="trace-list" class="trace-list"></div>
+            <div id="timeline" class="timeline diagnostics-timeline"></div>
+            <div id="trace-empty" class="trace-empty">Select a trace to inspect the full exchange.</div>
+            <div id="trace-detail" class="trace-detail" hidden>
+              <section class="trace-section">
+                <h3>Summary</h3>
+                <div id="trace-summary" class="trace-summary"></div>
+              </section>
+              <section class="trace-section">
+                <h3>Reduced Result</h3>
+                <pre id="trace-reduced" class="trace-code"></pre>
+              </section>
+              <section class="trace-section">
+                <h3>Request</h3>
+                <pre id="trace-request" class="trace-code"></pre>
+              </section>
+              <section class="trace-section">
+                <h3>Response</h3>
+                <pre id="trace-response" class="trace-code"></pre>
+              </section>
+              <section class="trace-section">
+                <h3>Raw Frames</h3>
+                <pre id="trace-frames" class="trace-code"></pre>
+              </section>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

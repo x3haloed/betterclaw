@@ -73,12 +73,6 @@ impl ModelRunner for StubModelEngine {
                 "summary": "Stub compressor distill complete."
             })
             .to_string();
-            response_body = json!({
-                "choices": [{
-                    "message": { "content": text },
-                    "finish_reason": "stop"
-                }]
-            });
             for event in [
                 ModelEvent::TextSnapshot { text },
                 ModelEvent::Completed {

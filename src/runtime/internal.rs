@@ -29,6 +29,9 @@ impl Runtime {
             "ask_user" => Some(ToolControl::AskUser {
                 question: payload.get("question")?.as_str()?.to_string(),
             }),
+            "final_message" => Some(ToolControl::FinalMessage {
+                content: payload.get("content")?.as_str()?.to_string(),
+            }),
             _ => None,
         }
     }
@@ -126,6 +129,7 @@ impl Runtime {
 
         let mut request = initial_request;
         let mut outbound_messages = Vec::new();
+        let mut visible_reply_segments = Vec::new();
         let (final_response, last_trace_id, final_status) = loop {
             let exchange = self
                 .run_and_record_exchange(&turn, &thread, &event.agent_id, &event.channel, request)
@@ -134,6 +138,10 @@ impl Runtime {
                 .record_trace(&turn, &thread, &event.agent_id, &event.channel, &exchange)
                 .await?;
             let trace_id = trace.id;
+
+            if let Some(content) = exchange.content.as_deref() {
+                push_visible_reply_segment(&mut visible_reply_segments, content);
+            }
 
             if exchange.outcome != TraceOutcome::Ok {
                 let error = exchange
@@ -164,11 +172,7 @@ impl Runtime {
 
             if exchange.tool_calls.is_empty() {
                 break (
-                    exchange
-                        .content
-                        .as_deref()
-                        .map(strip_reasoning_tags)
-                        .unwrap_or_default(),
+                    compose_visible_reply(&visible_reply_segments, None),
                     trace_id,
                     TurnStatus::Succeeded,
                 );
@@ -210,8 +214,19 @@ impl Runtime {
                 }
                 outbound_messages.extend(continuation_messages.outbound_messages.clone());
             }
+            if let Some(content) = continuation_messages.final_message {
+                break (
+                    compose_visible_reply(&visible_reply_segments, Some(content)),
+                    trace_id,
+                    TurnStatus::Succeeded,
+                );
+            }
             if let Some(question) = continuation_messages.ask_user_question {
-                break (question, trace_id, TurnStatus::AwaitingUser);
+                break (
+                    compose_visible_reply(&visible_reply_segments, Some(question)),
+                    trace_id,
+                    TurnStatus::AwaitingUser,
+                );
             }
             conversation.extend(continuation_messages.continuation_messages);
             request = self.build_model_request(conversation.clone(), true, &settings);
@@ -404,7 +419,11 @@ impl Runtime {
             max_tokens: Some(settings.max_tokens),
             stream: settings.stream,
             response_format: None,
-            extra: json!({}),
+            extra: if allow_tools && settings.allow_tools {
+                json!({ "tool_choice": "required" })
+            } else {
+                json!({})
+            },
         }
     }
 
@@ -714,6 +733,7 @@ impl Runtime {
         let mut continuation_messages = Vec::new();
         let mut outbound_messages = Vec::new();
         let mut ask_user_question = None;
+        let mut final_message = None;
         let mut batch = Vec::new();
         let tool_context = ToolContext::new(
             workspace.clone(),
@@ -777,6 +797,11 @@ impl Runtime {
                             ask_user_question = Some(question);
                         }
                     }
+                    ToolControl::FinalMessage { content } => {
+                        if final_message.is_none() {
+                            final_message = Some(content);
+                        }
+                    }
                 }
             }
             let result = ToolResult {
@@ -815,6 +840,7 @@ impl Runtime {
             continuation_messages: messages,
             outbound_messages,
             ask_user_question,
+            final_message,
         })
     }
 
@@ -927,6 +953,30 @@ fn system_prompt_override_from_env() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn push_visible_reply_segment(segments: &mut Vec<String>, text: &str) {
+    let sanitized = strip_reasoning_tags(text).trim().to_string();
+    if sanitized.is_empty() {
+        return;
+    }
+    if segments.last().is_some_and(|existing| existing == &sanitized) {
+        return;
+    }
+    segments.push(sanitized);
+}
+
+fn compose_visible_reply(segments: &[String], terminal: Option<String>) -> String {
+    let terminal = terminal
+        .map(|text| strip_reasoning_tags(&text).trim().to_string())
+        .filter(|text| !text.is_empty());
+    let visible = segments.join("\n\n");
+    match terminal {
+        Some(text) if visible.is_empty() => text,
+        Some(text) if visible == text || text.starts_with(&visible) => text,
+        Some(text) => format!("{visible}\n\n{text}"),
+        None => visible,
+    }
 }
 
 pub(crate) fn truncate_for_wake_pack(text: &str) -> String {

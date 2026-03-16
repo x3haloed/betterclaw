@@ -204,6 +204,40 @@ impl Tool for MessageTool {
     }
 }
 
+pub struct FinalMessageTool;
+
+#[async_trait]
+impl Tool for FinalMessageTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "final_message".to_string(),
+            description: "Deliver the final user-facing response for the current turn. Use this instead of plain assistant text when no more tool work is needed.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string" }
+                },
+                "required": ["content"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_string(params, "final_message", "content")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let content = require_string(&params, "final_message", "content")?;
+        Ok(json!({
+            "content": content,
+            "status": "final",
+            "control": control_payload("final_message", json!({ "content": content }))
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

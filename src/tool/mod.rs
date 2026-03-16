@@ -105,6 +105,7 @@ impl ToolRegistry {
         registry.register(tool_fs::ListDirTool);
         registry.register(tool_fs::GrepTool);
         registry.register(tool_fs::FindTool);
+        registry.register(tool_core::FinalMessageTool);
         registry.register(tool_core::AskUserTool);
         registry.register(tool_web::WebSearchTool);
         registry.register(tool_web::WebFetchTool);

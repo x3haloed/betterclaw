@@ -5,6 +5,7 @@ mod tests {
     use std::fs;
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
+    use serde_json::json;
     use tokio::sync::Mutex;
 
     use tempfile::tempdir;
@@ -14,7 +15,8 @@ mod tests {
     use crate::db::Db;
     use crate::event::EventKind;
     use crate::model::{
-        ModelEngine, StubModelEngine, strip_reasoning_tags, validate_strict_schema,
+        ModelEngine, ModelMessage, StubModelEngine, strip_reasoning_tags,
+        validate_strict_schema,
     };
     use crate::turn::TurnStatus;
     use crate::workspace::Workspace;
@@ -125,6 +127,60 @@ mod tests {
                 .iter()
                 .any(|event| event.kind == EventKind::AwaitingUser)
         );
+    }
+
+    #[tokio::test]
+    async fn tool_enabled_requests_require_a_tool_choice_and_include_final_message() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("tool-choice.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let settings = runtime.get_runtime_settings("default").await.unwrap();
+
+        let request = runtime.build_model_request(
+            vec![ModelMessage {
+                role: "user".to_string(),
+                content: Some("hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            true,
+            &settings,
+        );
+
+        assert_eq!(request.extra["tool_choice"], json!("required"));
+        assert!(request.tools.iter().any(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str)
+                == Some("final_message")
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_message_tool_ends_turn_without_followup_model_call() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("final-message.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-final-message",
+                "/final-message Done reading the files.",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status, TurnStatus::Succeeded);
+        assert_eq!(outcome.response, "Done reading the files.");
+        let traces = runtime.list_turn_traces(&outcome.turn_id).await.unwrap();
+        assert_eq!(traces.len(), 1);
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        assert!(timeline.iter().any(|event| event.kind == EventKind::ToolCall));
+        assert!(timeline.iter().any(|event| event.kind == EventKind::ToolResult));
     }
 
     #[tokio::test]

@@ -61,6 +61,7 @@ pub fn default_system_prompt() -> String {
 - For code, use appropriate code blocks with language tags
 - ALWAYS call tools via tool_calls when they materially help — never just describe what you would do
 - If you say you will fetch, check, inspect, or search, include the actual tool call in the same response
+- When tools are available, do not end the turn with plain assistant text; call `final_message` for the user-facing reply instead
 - Do not narrate routine, low-risk tool calls; just call them
 - Narrate only when it helps: multi-step work, sensitive actions, or when the user asks
 - For multi-step tasks, call independent tools in parallel when possible

@@ -54,10 +54,12 @@ pub(crate) struct ToolExecutionOutcome {
     pub(crate) continuation_messages: Vec<ModelMessage>,
     pub(crate) outbound_messages: Vec<String>,
     pub(crate) ask_user_question: Option<String>,
+    pub(crate) final_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum ToolControl {
     Message { content: String },
     AskUser { question: String },
+    FinalMessage { content: String },
 }

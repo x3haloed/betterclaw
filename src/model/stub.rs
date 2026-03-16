@@ -215,6 +215,47 @@ impl ModelRunner for StubModelEngine {
                 accumulator.push(&event);
                 events.push(event);
             }
+        } else if let Some(rest) = last_message.strip_prefix("/final-message ") {
+            let key = "0".to_string();
+            let tool_id = Uuid::new_v4().to_string();
+            let args = json!({ "content": rest }).to_string();
+            let tool_events = vec![
+                ModelEvent::ToolCallStarted {
+                    key: key.clone(),
+                    id: Some(tool_id.clone()),
+                },
+                ModelEvent::ToolCallNameDelta {
+                    key: key.clone(),
+                    text: "final_message".to_string(),
+                },
+                ModelEvent::ToolCallArgumentsDelta {
+                    key: key.clone(),
+                    text: args.clone(),
+                },
+                ModelEvent::ToolCallFinished { key },
+                ModelEvent::Completed {
+                    finish_reason: Some("tool_calls".to_string()),
+                },
+            ];
+            response_body = json!({
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "id": tool_id,
+                            "type": "function",
+                            "function": {
+                                "name": "final_message",
+                                "arguments": args,
+                            }
+                        }]
+                    },
+                    "finish_reason": "tool_calls"
+                }]
+            });
+            for event in tool_events {
+                accumulator.push(&event);
+                events.push(event);
+            }
         } else if let Some(rest) = last_message.strip_prefix("/tool ") {
             let mut parts = rest.splitn(2, ' ');
             let tool_name = parts.next().unwrap_or_default();

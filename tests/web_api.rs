@@ -388,7 +388,6 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
     let trace: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(trace["trace"]["model"], "custom-model");
     assert_eq!(trace["request_body"]["model"], "custom-model");
-    let request_body_text = trace["request_body"].to_string();
     assert_eq!(trace["request_body"]["max_tokens"], 77);
     assert_eq!(trace["request_body"]["stream"], false);
     assert_eq!(trace["request_body"]["tools"], Value::Array(vec![]));

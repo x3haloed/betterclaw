@@ -15,12 +15,12 @@ const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
 const DISCORD_WS_BASE: &str = "wss://gateway.discord.gg";
 const DISCORD_MAX_MESSAGE_LEN: usize = 2000;
 const DISCORD_INTENTS: u64 = 1 | (1 << 9) | (1 << 12) | (1 << 15);
+const DEFAULT_AGENT_ID: &str = "default";
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct DiscordConfig {
     pub bot_token: String,
-    pub user_id: String,
     pub api_base: String,
     pub gateway_base: String,
     pub allowed_guild_ids: Vec<String>,
@@ -34,7 +34,6 @@ impl DiscordConfig {
         let bot_token = std::env::var("DISCORD_BOT_TOKEN").ok()?;
         Some(Self {
             bot_token,
-            user_id: std::env::var("DISCORD_USER_ID").unwrap_or_else(|_| "default".to_string()),
             api_base: std::env::var("DISCORD_API_BASE")
                 .unwrap_or_else(|_| DISCORD_API_BASE.to_string()),
             gateway_base: std::env::var("DISCORD_GATEWAY_BASE")
@@ -304,7 +303,7 @@ impl DiscordChannel {
         Some(DiscordInboundMessage {
             channel_id: channel_id.clone(),
             event: InboundEvent {
-                agent_id: self.config.user_id.clone(),
+                agent_id: inbound_agent_id().to_string(),
                 channel: "discord".to_string(),
                 external_thread_id: discord_thread_key(&channel_id, is_dm),
                 content,
@@ -492,10 +491,15 @@ fn split_for_discord(content: &str) -> Vec<String> {
         .collect()
 }
 
+fn inbound_agent_id() -> &'static str {
+    DEFAULT_AGENT_ID
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        append_attachment_lines, discord_thread_key, normalize_message_content, split_for_discord,
+        append_attachment_lines, discord_thread_key, inbound_agent_id, normalize_message_content,
+        split_for_discord,
     };
     use serde_json::json;
 
@@ -532,5 +536,10 @@ mod tests {
         let chunks = split_for_discord(&input);
         assert_eq!(chunks.len(), 3);
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 2000));
+    }
+
+    #[test]
+    fn discord_inbound_messages_always_target_default_agent() {
+        assert_eq!(inbound_agent_id(), "default");
     }
 }

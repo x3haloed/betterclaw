@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BetterClaw</title>
     <link rel="stylesheet" href="/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/marked@17.0.2/lib/marked.umd.min.js"></script>
   </head>
   <body>
     <div class="layout">
@@ -67,43 +68,63 @@
         <div id="thread-list" class="thread-list"></div>
       </aside>
       <main class="main">
-        <section class="panel chat-panel">
-          <div class="panel-title">
-            <span id="thread-title">No thread selected</span>
+        <section class="panel conversation-panel">
+          <div class="panel-title panel-heading">
+            <div>
+              <span id="thread-title">No thread selected</span>
+              <div id="thread-subtitle" class="panel-subtitle">Conversation</div>
+            </div>
             <span id="live-indicator" class="live-indicator" hidden>Live</span>
           </div>
-          <div id="timeline" class="timeline"></div>
+          <div id="conversation" class="conversation"></div>
           <form id="composer" class="composer">
             <textarea id="message-input" placeholder="Type a message or use /tool echo {&quot;message&quot;:&quot;hi&quot;}"></textarea>
             <button type="submit">Send</button>
           </form>
         </section>
-        <section class="panel debug-panel">
-          <div class="panel-title">Turn Steps</div>
-          <div id="trace-chain" class="trace-chain"></div>
-          <div id="trace-list" class="trace-list"></div>
-          <div id="trace-empty" class="trace-empty">Select a trace to inspect the full exchange.</div>
-          <div id="trace-detail" class="trace-detail" hidden>
-            <section class="trace-section">
-              <h3>Summary</h3>
-              <div id="trace-summary" class="trace-summary"></div>
-            </section>
-            <section class="trace-section">
-              <h3>Reduced Result</h3>
-              <pre id="trace-reduced" class="trace-code"></pre>
-            </section>
-            <section class="trace-section">
-              <h3>Request</h3>
-              <pre id="trace-request" class="trace-code"></pre>
-            </section>
-            <section class="trace-section">
-              <h3>Response</h3>
-              <pre id="trace-response" class="trace-code"></pre>
-            </section>
-            <section class="trace-section">
-              <h3>Raw Frames</h3>
-              <pre id="trace-frames" class="trace-code"></pre>
-            </section>
+        <section class="panel inspector-panel">
+          <div class="panel-title panel-heading">
+            <div>
+              <span>Thread Views</span>
+              <div class="panel-subtitle">Secondary live context</div>
+            </div>
+            <div class="view-switcher">
+              <button id="view-compressor" class="view-tab active" type="button" data-view="compressor">Compressor</button>
+              <button id="view-diagnostics" class="view-tab" type="button" data-view="diagnostics">Diagnostics</button>
+            </div>
+          </div>
+
+          <div id="compressor-view" class="inspector-view">
+            <div id="compressor-home" class="compressor-home"></div>
+          </div>
+
+          <div id="diagnostics-view" class="inspector-view" hidden>
+            <div id="trace-chain" class="trace-chain"></div>
+            <div id="trace-list" class="trace-list"></div>
+            <div id="timeline" class="timeline diagnostics-timeline"></div>
+            <div id="trace-empty" class="trace-empty">Select a trace to inspect the full exchange.</div>
+            <div id="trace-detail" class="trace-detail" hidden>
+              <section class="trace-section">
+                <h3>Summary</h3>
+                <div id="trace-summary" class="trace-summary"></div>
+              </section>
+              <section class="trace-section">
+                <h3>Reduced Result</h3>
+                <pre id="trace-reduced" class="trace-code"></pre>
+              </section>
+              <section class="trace-section">
+                <h3>Request</h3>
+                <pre id="trace-request" class="trace-code"></pre>
+              </section>
+              <section class="trace-section">
+                <h3>Response</h3>
+                <pre id="trace-response" class="trace-code"></pre>
+              </section>
+              <section class="trace-section">
+                <h3>Raw Frames</h3>
+                <pre id="trace-frames" class="trace-code"></pre>
+              </section>
+            </div>
           </div>
         </section>
       </main>

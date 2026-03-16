@@ -39,6 +39,7 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
         .route("/api/threads/{thread_id}/messages", post(post_message))
         .route("/api/threads/{thread_id}/stream", get(stream_thread))
         .route("/api/threads/{thread_id}/timeline", get(get_timeline))
+        .route("/api/threads/{thread_id}/trace-details", get(get_thread_trace_details))
         .route("/api/turns/{turn_id}/traces", get(get_turn_traces))
         .route("/api/turns/{turn_id}/replay", post(replay_turn))
         .route("/api/traces/{trace_id}", get(get_trace))
@@ -186,6 +187,13 @@ async fn get_timeline(
     Path(thread_id): Path<String>,
 ) -> Result<Json<Vec<crate::event::Event>>, ApiError> {
     Ok(Json(runtime.list_thread_timeline(&thread_id).await?))
+}
+
+async fn get_thread_trace_details(
+    State(runtime): State<Arc<Runtime>>,
+    Path(thread_id): Path<String>,
+) -> Result<Json<Vec<crate::model::TraceDetail>>, ApiError> {
+    Ok(Json(runtime.list_thread_trace_details(&thread_id).await?))
 }
 
 async fn stream_thread(

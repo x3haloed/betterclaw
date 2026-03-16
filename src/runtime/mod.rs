@@ -281,6 +281,23 @@ impl Runtime {
             .map_err(RuntimeError::from)
     }
 
+    pub async fn list_thread_trace_details(
+        &self,
+        thread_id: &str,
+    ) -> Result<Vec<TraceDetail>, RuntimeError> {
+        let turns = self.list_thread_turns(thread_id).await?;
+        let mut details = Vec::new();
+        for turn in turns {
+            for trace in self.list_turn_traces(&turn.id).await? {
+                if let Some(detail) = self.get_trace_detail(&trace.id).await? {
+                    details.push(detail);
+                }
+            }
+        }
+        details.sort_by_key(|detail| detail.trace.request_started_at);
+        Ok(details)
+    }
+
     pub async fn get_turn(&self, turn_id: &str) -> Result<Option<Turn>, RuntimeError> {
         self.db.get_turn(turn_id).await.map_err(RuntimeError::from)
     }

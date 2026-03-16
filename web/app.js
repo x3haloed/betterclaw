@@ -1,11 +1,13 @@
 const state = {
   selectedThreadId: null,
   selectedTraceId: null,
-  selectedTurnTraceDetails: [],
+  selectedThreadTraceDetails: [],
+  selectedThreadTimeline: [],
   stream: null,
   refreshTimer: null,
   runtimeSettings: null,
   retentionSettings: null,
+  inspectorView: "compressor",
 };
 
 async function request(path, options = {}) {
@@ -25,17 +27,73 @@ function pretty(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function renderMarkdown(value) {
+  const text = value || "";
+  const safe = text.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  if (window.marked?.parse) {
+    return window.marked.parse(safe, { breaks: true, gfm: true, headerIds: false, mangle: false });
+  }
+  return `<pre>${escapeHtml(text)}</pre>`;
+}
+
+function traceRole(detail) {
+  return detail?.request_body?.betterclaw_role || "agent";
+}
+
+function parseCompressorContent(detail) {
+  const content = detail?.reduced_result?.content;
+  if (typeof content !== "string") return null;
+  try {
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
 function summarizeStep(detail) {
   const reduced = detail.reduced_result || {};
+  const parsed = traceRole(detail) === "compressor" ? parseCompressorContent(detail) : null;
+  if (parsed?.summary) {
+    return parsed.summary;
+  }
   const toolCalls = reduced.tool_calls || [];
   if (toolCalls.length) {
     const toolNames = toolCalls.map((toolCall) => toolCall.name).join(", ");
     return `Tool call${toolCalls.length === 1 ? "" : "s"}: ${toolNames}`;
   }
-  if (reduced.content) {
+  if (typeof reduced.content === "string" && reduced.content.trim()) {
     return reduced.content.replace(/\s+/g, " ").trim().slice(0, 140);
   }
   return "No reduced output";
+}
+
+function setInspectorView(view) {
+  state.inspectorView = view;
+  document.getElementById("compressor-view").hidden = view !== "compressor";
+  document.getElementById("diagnostics-view").hidden = view !== "diagnostics";
+  document.getElementById("view-compressor").classList.toggle("active", view === "compressor");
+  document.getElementById("view-diagnostics").classList.toggle("active", view === "diagnostics");
 }
 
 function renderTraceChain(details) {
@@ -47,12 +105,13 @@ function renderTraceChain(details) {
   chain.innerHTML = details
     .map((detail, index) => {
       const isActive = detail.trace.id === state.selectedTraceId;
-      return `<button class="trace-chip${isActive ? " active" : ""}" data-trace-id="${detail.trace.id}">
-        <span class="trace-chip-step">Step ${index + 1}</span>
-        <span class="trace-chip-outcome">${detail.trace.outcome}</span>
+      const role = traceRole(detail);
+      return `<button class="trace-chip${isActive ? " active" : ""}" data-trace-id="${escapeHtml(detail.trace.id)}">
+        <span class="trace-chip-step">${escapeHtml(role)} • step ${index + 1}</span>
+        <span class="trace-chip-outcome">${escapeHtml(detail.trace.outcome)}</span>
       </button>`;
     })
-    .join("<span class=\"trace-chain-arrow\">→</span>");
+    .join('<span class="trace-chain-arrow">→</span>');
   for (const button of chain.querySelectorAll(".trace-chip")) {
     button.onclick = () => selectTrace(button.dataset.traceId);
   }
@@ -62,16 +121,18 @@ function renderTraceSummary(detail) {
   const trace = detail.trace;
   const reduced = detail.reduced_result || {};
   return [
+    ["Role", traceRole(detail)],
     ["Model", trace.model],
     ["Outcome", trace.outcome],
     ["Duration", `${trace.duration_ms} ms`],
     ["Tools", trace.tool_names.length ? trace.tool_names.join(", ") : "none"],
     ["Finish", reduced.finish_reason || "n/a"],
     ["Frames", Array.isArray(detail.stream_body) ? detail.stream_body.length : 0],
+    ["Started", formatTimestamp(trace.request_started_at)],
   ]
     .map(
       ([label, value]) =>
-        `<div class="summary-row"><span class="summary-label">${label}</span><span class="summary-value">${value}</span></div>`,
+        `<div class="summary-row"><span class="summary-label">${escapeHtml(label)}</span><span class="summary-value">${escapeHtml(value)}</span></div>`,
     )
     .join("");
 }
@@ -95,6 +156,124 @@ function clearTraceDetail() {
   document.getElementById("trace-request").textContent = "";
   document.getElementById("trace-response").textContent = "";
   document.getElementById("trace-frames").textContent = "";
+}
+
+function renderConversation(turns) {
+  const conversation = document.getElementById("conversation");
+  conversation.innerHTML = "";
+  if (!turns.length) {
+    conversation.innerHTML = '<div class="empty-state">This thread is empty. Start the conversation below.</div>';
+    return;
+  }
+
+  for (const turn of turns) {
+    conversation.appendChild(
+      createMessageCard({
+        role: "User",
+        kind: "user",
+        status: turn.status,
+        timestamp: turn.created_at,
+        body: escapeHtml(turn.user_message).replaceAll("\n", "<br />"),
+      }),
+    );
+
+    if (turn.assistant_message) {
+      conversation.appendChild(
+        createMessageCard({
+          role: "Assistant",
+          kind: "assistant",
+          status: turn.status,
+          timestamp: turn.updated_at,
+          body: renderMarkdown(turn.assistant_message),
+        }),
+      );
+    } else if (turn.status === "running" || turn.status === "pending") {
+      conversation.appendChild(
+        createMessageCard({
+          role: "Assistant",
+          kind: "status",
+          status: turn.status,
+          timestamp: turn.updated_at,
+          body: "<p>Working…</p>",
+        }),
+      );
+    }
+
+    if (turn.error) {
+      conversation.appendChild(
+        createMessageCard({
+          role: "Runtime",
+          kind: "status",
+          status: turn.status,
+          timestamp: turn.updated_at,
+          body: `<p>${escapeHtml(turn.error)}</p>`,
+        }),
+      );
+    }
+  }
+}
+
+function createMessageCard({ role, kind, status, timestamp, body }) {
+  const card = document.createElement("article");
+  card.className = `message-card ${kind}`;
+  card.innerHTML = `
+    <div class="message-meta">
+      <span class="message-role">${escapeHtml(role)}</span>
+      <span class="message-status">${escapeHtml(status)} • ${escapeHtml(formatTimestamp(timestamp))}</span>
+    </div>
+    <div class="message-body">${body}</div>
+  `;
+  return card;
+}
+
+function renderDiagnosticsTimeline(timeline) {
+  const timelineEl = document.getElementById("timeline");
+  timelineEl.innerHTML = "";
+  if (!timeline.length) {
+    timelineEl.innerHTML = '<div class="empty-state">No diagnostics events for this thread yet.</div>';
+    return;
+  }
+  for (const event of timeline) {
+    const item = document.createElement("div");
+    item.className = "timeline-item";
+    item.innerHTML = `<div class="timeline-kind">${escapeHtml(event.kind)}</div><pre>${escapeHtml(pretty(event.payload))}</pre>`;
+    timelineEl.appendChild(item);
+  }
+}
+
+function renderCompressorHome(details) {
+  const home = document.getElementById("compressor-home");
+  home.innerHTML = "";
+  const compressorDetails = details.filter((detail) => traceRole(detail) === "compressor").reverse();
+  if (!compressorDetails.length) {
+    home.innerHTML = '<div class="empty-state">No compressor activity for this thread yet.</div>';
+    return;
+  }
+
+  for (const detail of compressorDetails) {
+    const parsed = parseCompressorContent(detail);
+    const trace = detail.trace;
+    const card = document.createElement("article");
+    card.className = "compressor-card";
+    const wakePack = parsed?.wake_pack ? renderMarkdown(parsed.wake_pack) : `<pre>${escapeHtml(typeof detail.reduced_result?.content === "string" ? detail.reduced_result.content : pretty(detail.reduced_result))}</pre>`;
+    card.innerHTML = `
+      <div class="compressor-header">
+        <div class="compressor-title">${escapeHtml(parsed?.summary || summarizeStep(detail))}</div>
+        <div class="compressor-meta">${escapeHtml(trace.outcome)} • ${escapeHtml(formatTimestamp(trace.request_started_at))}</div>
+      </div>
+      <div class="compressor-body">${wakePack}</div>
+      <div class="compressor-stats">
+        ${renderCompressorStat("Invariants", (parsed?.invariant_self?.length || 0) + (parsed?.invariant_user?.length || 0) + (parsed?.invariant_relationship?.length || 0))}
+        ${renderCompressorStat("Drift", (parsed?.drift_flags?.length || 0) + (parsed?.drift_contradictions?.length || 0) + (parsed?.drift_merges?.length || 0))}
+        ${renderCompressorStat("Duration", `${trace.duration_ms} ms`)}
+      </div>
+    `;
+    home.appendChild(card);
+  }
+}
+
+function renderCompressorStat(label, value) {
+  return `<div class="compressor-stat"><span class="compressor-stat-label">${escapeHtml(label)}</span><span class="compressor-stat-value">${escapeHtml(value)}</span></div>`;
 }
 
 async function loadThreads() {
@@ -134,19 +313,16 @@ async function loadSettings() {
 
 function renderRetentionSettings(settings) {
   state.retentionSettings = settings;
-  document.getElementById("retention-trace-blob-days").value =
-    settings.trace_blob_retention_days;
+  document.getElementById("retention-trace-blob-days").value = settings.trace_blob_retention_days;
 }
 
 function scheduleThreadRefresh() {
   if (!state.selectedThreadId) return;
-  if (state.refreshTimer) {
-    clearTimeout(state.refreshTimer);
-  }
+  if (state.refreshTimer) clearTimeout(state.refreshTimer);
   state.refreshTimer = setTimeout(() => {
     state.refreshTimer = null;
     selectThread(state.selectedThreadId, { preserveTrace: true }).catch((error) => {
-      document.getElementById("timeline").textContent = error.message;
+      document.getElementById("conversation").innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
     });
   }, 120);
 }
@@ -160,9 +336,7 @@ function connectThreadStream(threadId) {
   if (!threadId) return;
   const stream = new EventSource(`/api/threads/${threadId}/stream`);
   document.getElementById("live-indicator").hidden = false;
-  stream.onmessage = () => {
-    scheduleThreadRefresh();
-  };
+  stream.onmessage = () => scheduleThreadRefresh();
   stream.onerror = () => {
     document.getElementById("live-indicator").hidden = true;
     stream.close();
@@ -179,32 +353,65 @@ async function selectThread(threadId, options = {}) {
     state.selectedTraceId = null;
   }
   connectThreadStream(threadId);
-  const detail = await request(`/api/threads/${threadId}`);
-  document.getElementById("thread-title").textContent = detail.thread.title;
+  const [detail, timeline, traceDetails] = await Promise.all([
+    request(`/api/threads/${threadId}`),
+    request(`/api/threads/${threadId}/timeline`),
+    request(`/api/threads/${threadId}/trace-details`),
+  ]);
 
-  const timeline = await request(`/api/threads/${threadId}/timeline`);
-  const timelineEl = document.getElementById("timeline");
-  timelineEl.innerHTML = "";
-  for (const event of timeline) {
-    const item = document.createElement("div");
-    item.className = "timeline-item";
-    item.innerHTML = `<div class="timeline-kind">${event.kind}</div><pre>${JSON.stringify(event.payload, null, 2)}</pre>`;
-    timelineEl.appendChild(item);
+  document.getElementById("thread-title").textContent = detail.thread.title;
+  document.getElementById("thread-subtitle").textContent = `${detail.turns.length} turn${detail.turns.length === 1 ? "" : "s"}`;
+  renderConversation(detail.turns);
+
+  state.selectedThreadTimeline = timeline;
+  renderDiagnosticsTimeline(timeline);
+
+  state.selectedThreadTraceDetails = traceDetails;
+  renderTraceChain(traceDetails);
+  renderTraceList(traceDetails);
+  renderCompressorHome(traceDetails);
+
+  if (traceDetails.length) {
+    const preferredTraceId =
+      options.preserveTrace && traceDetails.some((detail) => detail.trace.id === state.selectedTraceId)
+        ? state.selectedTraceId
+        : traceDetails[traceDetails.length - 1].trace.id;
+    await selectTrace(preferredTraceId);
+  } else {
+    clearTraceDetail();
   }
 
-  const lastTurn = detail.turns[detail.turns.length - 1];
-  await loadTraces(lastTurn?.id || null, options);
   await loadThreads();
+}
+
+function renderTraceList(details) {
+  const traceList = document.getElementById("trace-list");
+  traceList.innerHTML = "";
+  if (!details.length) {
+    traceList.innerHTML = '<div class="empty-state">No traces recorded for this thread.</div>';
+    return;
+  }
+  for (const [index, detail] of details.entries()) {
+    const trace = detail.trace;
+    const button = document.createElement("button");
+    button.className = "trace-item";
+    button.dataset.traceId = trace.id;
+    button.innerHTML = `
+      <span class="trace-step">${escapeHtml(traceRole(detail))} • step ${index + 1}</span>
+      <span class="trace-primary">${escapeHtml(trace.model)}</span>
+      <span class="trace-secondary">${escapeHtml(trace.outcome)} • ${escapeHtml(`${trace.duration_ms}ms`)} • ${escapeHtml(`${trace.tool_count} tools`)}</span>
+      <span class="trace-preview">${escapeHtml(summarizeStep(detail))}</span>
+    `;
+    button.onclick = () => selectTrace(trace.id);
+    traceList.appendChild(button);
+  }
 }
 
 async function selectTrace(traceId) {
   state.selectedTraceId = traceId;
-  const detail =
-    state.selectedTurnTraceDetails.find((item) => item.trace.id === traceId) ||
-    (await request(`/api/traces/${traceId}`));
+  const detail = state.selectedThreadTraceDetails.find((item) => item.trace.id === traceId) || (await request(`/api/traces/${traceId}`));
   renderTraceDetail(detail);
-  const buttons = document.querySelectorAll(".trace-item");
-  for (const button of buttons) {
+  for (const button of document.querySelectorAll(".trace-item")) {
     button.classList.toggle("active", button.dataset.traceId === traceId);
   }
   for (const chip of document.querySelectorAll(".trace-chip")) {
@@ -212,40 +419,8 @@ async function selectTrace(traceId) {
   }
 }
 
-async function loadTraces(turnId, options = {}) {
-  const traceList = document.getElementById("trace-list");
-  document.getElementById("trace-chain").innerHTML = "";
-  traceList.innerHTML = "";
-  clearTraceDetail();
-  state.selectedTurnTraceDetails = [];
-  if (!turnId) return;
-  const traces = await request(`/api/turns/${turnId}/traces`);
-  const details = await Promise.all(traces.map((trace) => request(`/api/traces/${trace.id}`)));
-  state.selectedTurnTraceDetails = details;
-  renderTraceChain(details);
-  for (const [index, detail] of details.entries()) {
-    const trace = detail.trace;
-    const button = document.createElement("button");
-    button.className = "trace-item";
-    button.dataset.traceId = trace.id;
-    button.innerHTML = `
-      <span class="trace-step">Step ${index + 1}</span>
-      <span class="trace-primary">${trace.model}</span>
-      <span class="trace-secondary">${trace.outcome} • ${trace.duration_ms}ms • ${trace.tool_count} tools</span>
-      <span class="trace-preview">${summarizeStep(detail)}</span>
-    `;
-    button.onclick = () => selectTrace(trace.id);
-    traceList.appendChild(button);
-  }
-  if (details.length) {
-    const preferredTraceId =
-      options.preserveTrace &&
-      details.some((detail) => detail.trace.id === state.selectedTraceId)
-        ? state.selectedTraceId
-        : details[details.length - 1].trace.id;
-    await selectTrace(preferredTraceId);
-  }
-}
+document.getElementById("view-compressor").onclick = () => setInspectorView("compressor");
+document.getElementById("view-diagnostics").onclick = () => setInspectorView("diagnostics");
 
 document.getElementById("new-thread").onclick = async () => {
   const thread = await request("/api/threads", {
@@ -266,7 +441,7 @@ document.getElementById("composer").onsubmit = async (event) => {
     body: JSON.stringify({ content }),
   });
   input.value = "";
-  await selectThread(state.selectedThreadId);
+  await selectThread(state.selectedThreadId, { preserveTrace: true });
 };
 
 document.getElementById("settings-form").onsubmit = async (event) => {
@@ -300,9 +475,7 @@ document.getElementById("retention-form").onsubmit = async (event) => {
   const retention = await request("/api/settings/retention", {
     method: "PUT",
     body: JSON.stringify({
-      trace_blob_retention_days: Number(
-        document.getElementById("retention-trace-blob-days").value,
-      ),
+      trace_blob_retention_days: Number(document.getElementById("retention-trace-blob-days").value),
     }),
   });
   renderRetentionSettings(retention);
@@ -325,6 +498,8 @@ document.getElementById("prune-traces").onclick = async () => {
   }
 };
 
+setInspectorView("compressor");
+
 Promise.all([loadSettings(), loadThreads()]).catch((error) => {
-  document.getElementById("timeline").textContent = error.message;
+  document.getElementById("conversation").innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
 });

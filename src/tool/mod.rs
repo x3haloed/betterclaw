@@ -11,6 +11,7 @@ use walkdir::WalkDir;
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::{Event, EventKind};
+use crate::model::normalize_schema_strict;
 use crate::turn::Turn;
 use crate::workspace::Workspace;
 
@@ -316,120 +317,7 @@ fn is_probably_binary(bytes: &[u8]) -> bool {
 }
 
 pub fn normalize_tool_parameters_schema(schema: &Value) -> Value {
-    let Some(object) = schema.as_object() else {
-        return schema.clone();
-    };
-
-    let mut normalized = object.clone();
-
-    if let Some(items) = normalized.get("items").cloned() {
-        normalized.insert("items".to_string(), normalize_tool_parameters_schema(&items));
-    }
-
-    for keyword in ["anyOf", "oneOf", "allOf"] {
-        if let Some(entries) = normalized.get(keyword).and_then(Value::as_array) {
-            normalized.insert(
-                keyword.to_string(),
-                Value::Array(
-                    entries
-                        .iter()
-                        .map(normalize_tool_parameters_schema)
-                        .collect(),
-                ),
-            );
-        }
-    }
-
-    let is_object_schema = normalized
-        .get("type")
-        .map(schema_type_includes_object)
-        .unwrap_or_else(|| normalized.contains_key("properties"));
-
-    if let Some(properties) = normalized.get("properties").and_then(Value::as_object) {
-        let existing_required = normalized
-            .get("required")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .collect::<std::collections::HashSet<_>>()
-            })
-            .unwrap_or_default();
-
-        let mut normalized_properties = serde_json::Map::new();
-        let mut required = Vec::with_capacity(properties.len());
-        for (name, property_schema) in properties {
-            let mut property = normalize_tool_parameters_schema(property_schema);
-            if !existing_required.contains(name.as_str()) {
-                property = make_schema_nullable(property);
-            }
-            normalized_properties.insert(name.clone(), property);
-            required.push(Value::String(name.clone()));
-        }
-
-        normalized.insert("properties".to_string(), Value::Object(normalized_properties));
-        normalized.insert("required".to_string(), Value::Array(required));
-    }
-
-    if is_object_schema && !normalized.contains_key("additionalProperties") {
-        normalized.insert("additionalProperties".to_string(), Value::Bool(false));
-    }
-
-    Value::Object(normalized)
-}
-
-fn schema_type_includes_object(value: &Value) -> bool {
-    match value {
-        Value::String(kind) => kind == "object",
-        Value::Array(items) => items.iter().any(|item| item.as_str() == Some("object")),
-        _ => false,
-    }
-}
-
-fn make_schema_nullable(schema: Value) -> Value {
-    let Some(object) = schema.as_object() else {
-        return schema;
-    };
-
-    if let Some(type_value) = object.get("type") {
-        let mut updated = object.clone();
-        match type_value {
-            Value::String(kind) if kind != "null" => {
-                updated.insert(
-                    "type".to_string(),
-                    Value::Array(vec![
-                        Value::String(kind.clone()),
-                        Value::String("null".to_string()),
-                    ]),
-                );
-                return Value::Object(updated);
-            }
-            Value::Array(items)
-                if !items.iter().any(|item| item.as_str() == Some("null")) =>
-            {
-                let mut updated_items = items.clone();
-                updated_items.push(Value::String("null".to_string()));
-                updated.insert("type".to_string(), Value::Array(updated_items));
-                return Value::Object(updated);
-            }
-            _ => return schema,
-        }
-    }
-
-    if let Some(any_of) = object.get("anyOf").and_then(Value::as_array)
-        && !any_of
-            .iter()
-            .any(|item| item.get("type").and_then(Value::as_str) == Some("null"))
-    {
-        let mut updated = object.clone();
-        let mut updated_any_of = any_of.clone();
-        updated_any_of.push(json!({ "type": "null" }));
-        updated.insert("anyOf".to_string(), Value::Array(updated_any_of));
-        return Value::Object(updated);
-    }
-
-    schema
+    normalize_schema_strict(schema)
 }
 
 #[derive(Debug, Clone)]

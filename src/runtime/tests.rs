@@ -12,7 +12,7 @@ mod tests {
     use crate::channel::InboundEvent;
     use crate::db::Db;
     use crate::event::EventKind;
-    use crate::model::{ModelEngine, StubModelEngine, strip_reasoning_tags};
+    use crate::model::{ModelEngine, StubModelEngine, strip_reasoning_tags, validate_strict_schema};
     use crate::turn::TurnStatus;
 
     fn env_mutex() -> &'static Mutex<()> {
@@ -463,6 +463,11 @@ mod tests {
                 .and_then(|context| context.get("type")),
             Some(&serde_json::json!(["string", "null"]))
         );
+        validate_strict_schema(
+            function.get("parameters").unwrap(),
+            "ask_user",
+        )
+        .expect("emitted tool parameters should validate in strict mode");
     }
 
     #[tokio::test]

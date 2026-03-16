@@ -12,9 +12,22 @@ mod tests {
     use crate::model::{
         ModelEvent, ModelExchangeRequest, ModelMessage, ModelToolCallMessage,
         ModelToolFunctionMessage, OpenAiCompatibleConfig, ReasoningMode,
-        OpenAiResponsesEngine,
+        OpenAiResponsesEngine, validate_strict_schema,
     };
     use crate::model::openai_responses::responses_text_format;
+    use crate::model::normalize_schema_strict;
+
+    fn required_names(value: &serde_json::Value) -> Vec<String> {
+        let mut names = value
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
 
     #[test]
     fn translates_messages_to_instructions_and_input() {
@@ -200,6 +213,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_response_schema_requires_nullable_optional_fields() {
+        let schema = normalize_schema_strict(&json!({
+            "type": "object",
+            "properties": {
+                "wake_pack": { "type": "string" },
+                "summary": { "type": ["string", "null"] }
+            },
+            "required": ["wake_pack"]
+        }));
+
+        assert_eq!(
+            required_names(&schema["required"]),
+            vec!["summary".to_string(), "wake_pack".to_string()]
+        );
+        assert_eq!(schema["properties"]["summary"]["type"], json!(["string", "null"]));
+        assert_eq!(schema["additionalProperties"], json!(false));
+        validate_strict_schema(&schema, "response_schema").expect("schema should validate");
+    }
+
+    #[test]
     fn responses_payload_uses_flattened_text_format() {
         let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig::default()).expect("engine");
         let payload = engine.build_payload(&ModelExchangeRequest {
@@ -234,5 +267,57 @@ mod tests {
         assert_eq!(payload["text"]["format"]["type"], json!("json_schema"));
         assert_eq!(payload["text"]["format"]["name"], json!("betterclaw_memory_distill"));
         assert!(payload["text"]["format"].get("json_schema").is_none());
+        validate_strict_schema(
+            &payload["text"]["format"]["schema"],
+            "betterclaw_memory_distill",
+        )
+        .expect("payload schema should validate");
+    }
+
+    #[test]
+    fn responses_payload_normalizes_schema_required_fields() {
+        let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig::default()).expect("engine");
+        let payload = engine.build_payload(&ModelExchangeRequest {
+            model: "gpt-5-mini".to_string(),
+            messages: vec![ModelMessage {
+                role: "user".to_string(),
+                content: Some("hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: Some(128),
+            stream: false,
+            response_format: Some(json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "betterclaw_memory_distill",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "wake_pack": { "type": "string" },
+                            "summary": { "type": ["string", "null"] }
+                        },
+                        "required": ["wake_pack"]
+                    }
+                }
+            })),
+            extra: json!({}),
+        });
+
+        assert_eq!(
+            required_names(&payload["text"]["format"]["schema"]["required"]),
+            vec!["summary".to_string(), "wake_pack".to_string()]
+        );
+        assert_eq!(
+            payload["text"]["format"]["schema"]["properties"]["summary"]["type"],
+            json!(["string", "null"])
+        );
+        validate_strict_schema(
+            &payload["text"]["format"]["schema"],
+            "betterclaw_memory_distill",
+        )
+        .expect("normalized payload schema should validate");
     }
 }

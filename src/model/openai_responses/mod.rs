@@ -10,7 +10,7 @@ use crate::model::openai_compat::OpenAiCompatibleConfig;
 use crate::model::{
     AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest,
     ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace, ReasoningMode,
-    TraceOutcome, TransportKind,
+    TraceOutcome, TransportKind, normalize_schema_strict,
 };
 
 pub(crate) mod decode;
@@ -336,6 +336,9 @@ fn responses_text_format(response_format: &Value) -> Value {
         && let Some(json_schema) = object.get("json_schema").and_then(Value::as_object)
     {
         let mut flattened = json_schema.clone();
+        if let Some(schema) = flattened.get("schema").cloned() {
+            flattened.insert("schema".to_string(), normalize_schema_strict(&schema));
+        }
         flattened.insert("type".to_string(), Value::String("json_schema".to_string()));
         return Value::Object(flattened);
     }

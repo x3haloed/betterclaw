@@ -184,6 +184,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_message_is_replayed_as_normal_assistant_history() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("final-message-history.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let first = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-final-history",
+                "/final-message I checked the file and found the orientation map.",
+            ))
+            .await
+            .unwrap();
+
+        let turns = runtime.list_thread_turns(&first.thread.id).await.unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].assistant_message.as_deref(),
+            Some("I checked the file and found the orientation map.")
+        );
+
+        let second = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-final-history",
+                "What did you find?",
+            ))
+            .await
+            .unwrap();
+
+        let traces = runtime.list_turn_traces(&second.turn_id).await.unwrap();
+        assert_eq!(traces.len(), 1);
+        let detail = runtime
+            .get_trace_detail(&traces[0].id)
+            .await
+            .unwrap()
+            .expect("trace detail");
+        let messages = detail.request_body["messages"]
+            .as_array()
+            .expect("request messages array");
+
+        assert!(messages.iter().any(|message| {
+            message.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
+                && message.get("content").and_then(serde_json::Value::as_str)
+                    == Some("I checked the file and found the orientation map.")
+        }));
+        assert!(!messages.iter().any(|message| {
+            message.get("role").and_then(serde_json::Value::as_str) == Some("tool")
+        }));
+    }
+
+    #[tokio::test]
     async fn assistant_messages_saved_without_reasoning_tags() {
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("history.db")).await.unwrap();

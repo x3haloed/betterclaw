@@ -2,6 +2,7 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
     use tokio::sync::Mutex;
@@ -14,6 +15,7 @@ mod tests {
     use crate::event::EventKind;
     use crate::model::{ModelEngine, StubModelEngine, strip_reasoning_tags, validate_strict_schema};
     use crate::turn::TurnStatus;
+    use crate::workspace::Workspace;
 
     fn env_mutex() -> &'static Mutex<()> {
         static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
@@ -492,5 +494,42 @@ mod tests {
         unsafe {
             std::env::remove_var("BETTERCLAW_SYSTEM_PROMPT");
         }
+    }
+
+    #[tokio::test]
+    async fn system_prompt_includes_workspace_agents_and_soul_files() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("AGENTS.md"),
+            "## CONTEXT\n- User: Chad\n- Constraint: keep coordination cost low.",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("SOUL.md"),
+            "## VALUES\n- Prefer reversible probes.\n- Capture clarity.",
+        )
+        .unwrap();
+
+        let db = Db::open(&dir.path().join("workspace-prompt.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let settings = runtime.get_runtime_settings("default").await.unwrap();
+        let workspace = Workspace::new("default", dir.path());
+
+        let messages = runtime
+            .build_system_messages(&settings, &workspace, Some("hello"))
+            .await
+            .unwrap();
+        let system_prompt = messages
+            .first()
+            .and_then(|message| message.content.as_deref())
+            .expect("system prompt should be present");
+
+        assert!(system_prompt.contains("## Agent Instructions"));
+        assert!(system_prompt.contains("Constraint: keep coordination cost low."));
+        assert!(system_prompt.contains("## Core Values"));
+        assert!(system_prompt.contains("Prefer reversible probes."));
+        assert!(system_prompt.contains("You are BetterClaw Agent, a secure autonomous assistant."));
     }
 }

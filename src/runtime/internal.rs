@@ -10,6 +10,7 @@ use crate::workspace::Workspace;
 use chrono::Utc;
 use futures_util::future::join_all;
 use serde_json::{Value, json};
+use tokio::fs;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -107,7 +108,7 @@ impl Runtime {
         }
 
         let mut conversation = self
-            .build_conversation_history(&thread, &turn, &settings)
+            .build_conversation_history(&thread, &turn, &settings, &workspace)
             .await?;
         let initial_request = self.build_model_request(conversation.clone(), true, &settings);
         self.append_event_and_publish(
@@ -258,9 +259,10 @@ impl Runtime {
         thread: &Thread,
         turn: &Turn,
         settings: &RuntimeSettings,
+        workspace: &Workspace,
     ) -> Result<Vec<ModelMessage>, RuntimeError> {
         let mut messages = self
-            .build_system_messages(settings, Some(&turn.user_message))
+            .build_system_messages(settings, workspace, Some(&turn.user_message))
             .await?;
         let prior_turns = self
             .list_thread_turns(&thread.id)
@@ -302,13 +304,17 @@ impl Runtime {
     pub(crate) async fn build_system_messages(
         &self,
         settings: &RuntimeSettings,
+        workspace: &Workspace,
         query_hint: Option<&str>,
     ) -> Result<Vec<ModelMessage>, RuntimeError> {
         let mut messages = Vec::new();
-        if !settings.system_prompt.trim().is_empty() {
+        let combined_system_prompt = self
+            .compose_system_prompt(settings, workspace)
+            .await?;
+        if !combined_system_prompt.trim().is_empty() {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(settings.system_prompt.clone()),
+                content: Some(combined_system_prompt),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -344,6 +350,21 @@ impl Runtime {
             });
         }
         Ok(messages)
+    }
+
+    async fn compose_system_prompt(
+        &self,
+        settings: &RuntimeSettings,
+        workspace: &Workspace,
+    ) -> Result<String, RuntimeError> {
+        let mut parts = Vec::new();
+        if let Some(identity_prompt) = workspace_identity_prompt(workspace).await? {
+            parts.push(identity_prompt);
+        }
+        if !settings.system_prompt.trim().is_empty() {
+            parts.push(settings.system_prompt.clone());
+        }
+        Ok(parts.join("\n\n---\n\n"))
     }
 
     pub(crate) async fn build_ledger_recall_block(
@@ -875,6 +896,32 @@ impl Runtime {
             error,
         });
         Ok(())
+    }
+}
+
+async fn workspace_identity_prompt(workspace: &Workspace) -> Result<Option<String>, RuntimeError> {
+    let identity_files = [
+        ("AGENTS.md", "## Agent Instructions"),
+        ("SOUL.md", "## Core Values"),
+    ];
+    let mut parts = Vec::new();
+    for (file_name, header) in identity_files {
+        let path = workspace.root.join(file_name);
+        let content = match fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(RuntimeError::Other(error.into())),
+        };
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        parts.push(format!("{}\n\n{}", header, trimmed));
+    }
+    if parts.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(parts.join("\n\n---\n\n")))
     }
 }
 

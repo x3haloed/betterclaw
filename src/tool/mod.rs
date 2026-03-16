@@ -105,6 +105,11 @@ impl ToolRegistry {
         registry.register(tool_fs::ListDirTool);
         registry.register(tool_fs::GrepTool);
         registry.register(tool_fs::FindTool);
+        registry.register(tool_tidepool::TidepoolMyAccountTool);
+        registry.register(tool_tidepool::TidepoolListSubscriptionsTool);
+        registry.register(tool_tidepool::TidepoolSubscribeDomainTool);
+        registry.register(tool_tidepool::TidepoolUnsubscribeDomainTool);
+        registry.register(tool_tidepool::TidepoolPostMessageTool);
         registry.register(tool_core::FinalMessageTool);
         registry.register(tool_core::AskUserTool);
         registry.register(tool_web::WebSearchTool);
@@ -548,5 +553,7 @@ mod tool_core;
 mod tool_fs;
 
 mod tool_web;
+
+mod tool_tidepool;
 
 // Register function

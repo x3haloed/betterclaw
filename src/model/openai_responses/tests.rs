@@ -14,6 +14,7 @@ mod tests {
         ModelToolFunctionMessage, OpenAiCompatibleConfig, ReasoningMode,
         OpenAiResponsesEngine,
     };
+    use crate::model::openai_responses::responses_text_format;
 
     #[test]
     fn translates_messages_to_instructions_and_input() {
@@ -172,5 +173,66 @@ mod tests {
         });
 
         assert!(payload.get("temperature").is_none());
+    }
+
+    #[test]
+    fn responses_text_format_flattens_chat_style_json_schema() {
+        let format = responses_text_format(&json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "betterclaw_memory_distill",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "wake_pack": { "type": "string" }
+                    },
+                    "required": ["wake_pack"],
+                    "additionalProperties": false
+                },
+                "strict": true
+            }
+        }));
+
+        assert_eq!(format["type"], json!("json_schema"));
+        assert_eq!(format["name"], json!("betterclaw_memory_distill"));
+        assert_eq!(format["strict"], json!(true));
+        assert_eq!(format["schema"]["type"], json!("object"));
+    }
+
+    #[test]
+    fn responses_payload_uses_flattened_text_format() {
+        let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig::default()).expect("engine");
+        let payload = engine.build_payload(&ModelExchangeRequest {
+            model: "gpt-5-mini".to_string(),
+            messages: vec![ModelMessage {
+                role: "user".to_string(),
+                content: Some("hello".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: Some(128),
+            stream: false,
+            response_format: Some(json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "betterclaw_memory_distill",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "wake_pack": { "type": "string" }
+                        },
+                        "required": ["wake_pack"],
+                        "additionalProperties": false
+                    }
+                }
+            })),
+            extra: json!({}),
+        });
+
+        assert_eq!(payload["text"]["format"]["type"], json!("json_schema"));
+        assert_eq!(payload["text"]["format"]["name"], json!("betterclaw_memory_distill"));
+        assert!(payload["text"]["format"].get("json_schema").is_none());
     }
 }

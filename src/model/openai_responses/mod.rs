@@ -67,7 +67,9 @@ impl OpenAiResponsesEngine {
             payload["max_output_tokens"] = json!(max_tokens);
         }
         if let Some(response_format) = &request.response_format {
-            payload["text"] = json!({ "format": response_format });
+            payload["text"] = json!({
+                "format": responses_text_format(response_format)
+            });
         }
         if let Some(extra) = request.extra.as_object()
             && let Some(target) = payload.as_object_mut()
@@ -323,6 +325,22 @@ impl OpenAiResponsesEngine {
         raw_trace.reasoning_mode = reasoning_mode;
         Ok(accumulator.build(started_at, completed_at, raw_trace, events))
     }
+}
+
+fn responses_text_format(response_format: &Value) -> Value {
+    let Some(object) = response_format.as_object() else {
+        return response_format.clone();
+    };
+
+    if object.get("type").and_then(Value::as_str) == Some("json_schema")
+        && let Some(json_schema) = object.get("json_schema").and_then(Value::as_object)
+    {
+        let mut flattened = json_schema.clone();
+        flattened.insert("type".to_string(), Value::String("json_schema".to_string()));
+        return Value::Object(flattened);
+    }
+
+    response_format.clone()
 }
 
 #[async_trait]

@@ -425,6 +425,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_definitions_emit_strict_nullable_schemas() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("tool-schema.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let ask_user = runtime
+            .tool_definitions()
+            .into_iter()
+            .find(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("ask_user")
+            })
+            .expect("ask_user tool definition should exist");
+
+        let function = ask_user.get("function").unwrap();
+        assert_eq!(function.get("strict"), Some(&serde_json::Value::Bool(true)));
+
+        let required = function
+            .get("parameters")
+            .and_then(|parameters| parameters.get("required"))
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(required.contains(&"question"));
+        assert!(required.contains(&"context"));
+
+        assert_eq!(
+            function
+                .get("parameters")
+                .and_then(|parameters| parameters.get("properties"))
+                .and_then(|properties| properties.get("context"))
+                .and_then(|context| context.get("type")),
+            Some(&serde_json::json!(["string", "null"]))
+        );
+    }
+
+    #[tokio::test]
     async fn startup_system_prompt_override_updates_runtime_settings() {
         let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();

@@ -106,8 +106,8 @@ pub(crate) fn convert_tool_definition(tool: &Value) -> Value {
             "type": "function",
             "name": function.get("name").cloned().unwrap_or(Value::String(String::new())),
             "description": function.get("description").cloned().unwrap_or(Value::Null),
-            "parameters": function.get("parameters").cloned().unwrap_or_else(|| json!({ "type": "object", "properties": {} })),
-            "strict": true,
+            "parameters": function.get("parameters").cloned().unwrap_or_else(|| json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })),
+            "strict": function.get("strict").cloned().unwrap_or(Value::Bool(true)),
         });
     }
     tool.clone()

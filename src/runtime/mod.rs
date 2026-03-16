@@ -19,7 +19,7 @@ use crate::model::{
 };
 use crate::settings::{ModelRole, RetentionSettings, RuntimeSettings};
 use crate::thread::Thread;
-use crate::tool::ToolRegistry;
+use crate::tool::{ToolRegistry, normalize_tool_parameters_schema};
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
 
@@ -219,7 +219,8 @@ impl Runtime {
                     "function": {
                         "name": tool.name,
                         "description": tool.description,
-                        "parameters": tool.parameters_schema
+                        "parameters": normalize_tool_parameters_schema(&tool.parameters_schema),
+                        "strict": true
                     }
                 })
             })

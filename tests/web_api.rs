@@ -324,7 +324,7 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
                 .uri("/api/settings/runtime")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"model":"custom-model","system_prompt":"Be extremely concise.","temperature":0.7,"max_tokens":77,"stream":false,"allow_tools":false,"max_history_turns":3}"#,
+                    r#"{"model":"custom-model","system_prompt":"Be extremely concise.","max_tokens":77,"stream":false,"allow_tools":false,"max_history_turns":3}"#,
                 ))
                 .unwrap(),
         )
@@ -389,11 +389,6 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
     assert_eq!(trace["trace"]["model"], "custom-model");
     assert_eq!(trace["request_body"]["model"], "custom-model");
     let request_body_text = trace["request_body"].to_string();
-    assert!(
-        request_body_text.contains("\"temperature\":0.7")
-            || request_body_text.contains("\"temperature\":0.699"),
-        "temperature should round-trip"
-    );
     assert_eq!(trace["request_body"]["max_tokens"], 77);
     assert_eq!(trace["request_body"]["stream"], false);
     assert_eq!(trace["request_body"]["tools"], Value::Array(vec![]));

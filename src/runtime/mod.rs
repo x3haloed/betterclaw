@@ -25,7 +25,12 @@ use crate::workspace::Workspace;
 
 fn default_workspace_root() -> PathBuf {
     dirs::home_dir()
-        .map(|path| path.join(".betterclaw").join("workspaces").join("default").join("files"))
+        .map(|path| {
+            path.join(".betterclaw")
+                .join("workspaces")
+                .join("default")
+                .join("files")
+        })
         .unwrap_or_else(|| PathBuf::from("."))
 }
 

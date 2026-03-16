@@ -343,11 +343,8 @@ fn build_copilot_config(
     let mut extra_headers = Vec::new();
     extra_headers.push((
         "Copilot-Integration-Id".to_string(),
-        first_present_env(&[
-            "GITHUB_COPILOT_INTEGRATION_ID",
-            "COPILOT_INTEGRATION_ID",
-        ])
-        .unwrap_or_else(|| "betterclaw".to_string()),
+        first_present_env(&["GITHUB_COPILOT_INTEGRATION_ID", "COPILOT_INTEGRATION_ID"])
+            .unwrap_or_else(|| "betterclaw".to_string()),
     ));
 
     if let Some(editor_version) = first_present_env(&["COPILOT_EDITOR_VERSION"]) {
@@ -377,10 +374,7 @@ fn resolve_copilot_token() -> Result<String, anyhow::Error> {
     )
 }
 
-fn resolve_copilot_token_with<L, R>(
-    lookup: L,
-    run_command: R,
-) -> Result<String, anyhow::Error>
+fn resolve_copilot_token_with<L, R>(lookup: L, run_command: R) -> Result<String, anyhow::Error>
 where
     L: Fn(&str) -> Option<String>,
     R: FnOnce(&str) -> Result<String, anyhow::Error>,
@@ -434,10 +428,7 @@ fn run_token_command(command: &str) -> Result<String, anyhow::Error> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let message = stderr.trim();
         if message.is_empty() {
-            anyhow::bail!(
-                "Copilot token command exited with status {}",
-                output.status
-            );
+            anyhow::bail!("Copilot token command exited with status {}", output.status);
         }
         anyhow::bail!("Copilot token command failed: {message}");
     }
@@ -530,10 +521,7 @@ mod tests {
 
     #[test]
     fn copilot_token_prefers_direct_env_token() {
-        let values = HashMap::from([(
-            "GITHUB_COPILOT_API_TOKEN",
-            "  copilot-token  ".to_string(),
-        )]);
+        let values = HashMap::from([("GITHUB_COPILOT_API_TOKEN", "  copilot-token  ".to_string())]);
         let token = resolve_copilot_token_with(
             |name| values.get(name).cloned(),
             |_| panic!("command runner should not be used"),

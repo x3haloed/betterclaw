@@ -297,7 +297,6 @@ function renderSettings(settings) {
   state.runtimeSettings = settings;
   document.getElementById("settings-model").value = settings.model;
   document.getElementById("settings-system-prompt").value = settings.system_prompt;
-  document.getElementById("settings-temperature").value = settings.temperature;
   document.getElementById("settings-max-tokens").value = settings.max_tokens;
   document.getElementById("settings-max-history-turns").value = settings.max_history_turns;
   document.getElementById("settings-stream").checked = settings.stream;
@@ -451,7 +450,6 @@ document.getElementById("settings-form").onsubmit = async (event) => {
   const payload = {
     model: document.getElementById("settings-model").value.trim(),
     system_prompt: document.getElementById("settings-system-prompt").value,
-    temperature: Number(document.getElementById("settings-temperature").value),
     max_tokens: Number(document.getElementById("settings-max-tokens").value),
     max_history_turns: Number(document.getElementById("settings-max-history-turns").value),
     stream: document.getElementById("settings-stream").checked,

@@ -307,7 +307,6 @@ impl Runtime {
                 },
             ],
             tools: Vec::new(),
-            temperature: Some(0.1),
             max_tokens: Some(1400),
             stream: false,
             response_format: Some(json!({

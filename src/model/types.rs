@@ -42,7 +42,6 @@ pub struct ModelExchangeRequest {
     pub model: String,
     pub messages: Vec<ModelMessage>,
     pub tools: Vec<Value>,
-    pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub stream: bool,
     pub response_format: Option<Value>,

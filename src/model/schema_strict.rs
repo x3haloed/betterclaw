@@ -59,7 +59,10 @@ fn normalize_schema_recursive(schema: &mut Value) {
 
     object.insert("additionalProperties".to_string(), Value::Bool(false));
     if !object.contains_key("properties") {
-        object.insert("properties".to_string(), Value::Object(serde_json::Map::new()));
+        object.insert(
+            "properties".to_string(),
+            Value::Object(serde_json::Map::new()),
+        );
     }
 
     let current_required = object
@@ -156,8 +159,7 @@ fn validate_object_schema(schema: &Value, path: &str) -> Vec<String> {
 
     match schema.get("type") {
         Some(Value::String(kind)) if kind == "object" => {}
-        Some(Value::Array(items)) if items.iter().any(|item| item.as_str() == Some("object")) => {
-        }
+        Some(Value::Array(items)) if items.iter().any(|item| item.as_str() == Some("object")) => {}
         Some(other) => {
             errors.push(format!("{path}: expected object type, got {other}"));
             return errors;
@@ -200,16 +202,25 @@ fn validate_object_schema(schema: &Value, path: &str) -> Vec<String> {
 
     for (key, property) in properties {
         let property_path = format!("{path}.{key}");
-        if property.get("type").is_none() && property.get("anyOf").is_none() && property.get("$ref").is_none() {
+        if property.get("type").is_none()
+            && property.get("anyOf").is_none()
+            && property.get("$ref").is_none()
+        {
             errors.push(format!("{property_path}: property missing type/anyOf/$ref"));
             continue;
         }
 
         if let Some(items) = property.get("items")
             && items.get("type").is_some()
-            && items.get("type").map(schema_type_includes_object).unwrap_or(false)
+            && items
+                .get("type")
+                .map(schema_type_includes_object)
+                .unwrap_or(false)
         {
-            errors.extend(validate_object_schema(items, &format!("{property_path}.items")));
+            errors.extend(validate_object_schema(
+                items,
+                &format!("{property_path}.items"),
+            ));
         }
 
         let property_is_object = property
@@ -257,7 +268,10 @@ mod tests {
             required_names(&normalized["required"]),
             vec!["context".to_string(), "question".to_string()]
         );
-        assert_eq!(normalized["properties"]["context"]["type"], json!(["string", "null"]));
+        assert_eq!(
+            normalized["properties"]["context"]["type"],
+            json!(["string", "null"])
+        );
         validate_strict_schema(&normalized, "test").expect("normalized schema should validate");
     }
 
@@ -278,7 +292,10 @@ mod tests {
             "required": []
         }));
 
-        assert_eq!(normalized["properties"]["payload"]["type"], json!(["object", "null"]));
+        assert_eq!(
+            normalized["properties"]["payload"]["type"],
+            json!(["object", "null"])
+        );
         assert_eq!(
             normalized["properties"]["payload"]["properties"]["label"]["type"],
             json!(["string", "null"])

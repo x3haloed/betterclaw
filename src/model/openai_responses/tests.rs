@@ -9,13 +9,13 @@ mod tests {
         convert_tool_definition, decode_responses_json, decode_responses_stream_frame,
         split_instructions_and_input,
     };
+    use crate::model::normalize_schema_strict;
+    use crate::model::openai_responses::responses_text_format;
     use crate::model::{
         ModelEvent, ModelExchangeRequest, ModelMessage, ModelToolCallMessage,
-        ModelToolFunctionMessage, OpenAiCompatibleConfig, ReasoningMode,
-        OpenAiResponsesEngine, validate_strict_schema,
+        ModelToolFunctionMessage, OpenAiCompatibleConfig, OpenAiResponsesEngine, ReasoningMode,
+        validate_strict_schema,
     };
-    use crate::model::openai_responses::responses_text_format;
-    use crate::model::normalize_schema_strict;
 
     fn required_names(value: &serde_json::Value) -> Vec<String> {
         let mut names = value
@@ -163,32 +163,6 @@ mod tests {
     }
 
     #[test]
-    fn copilot_responses_payload_omits_temperature() {
-        let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig {
-            provider_name: "copilot".to_string(),
-            ..OpenAiCompatibleConfig::default()
-        })
-        .expect("engine");
-        let payload = engine.build_payload(&ModelExchangeRequest {
-            model: "gpt-5-mini".to_string(),
-            messages: vec![ModelMessage {
-                role: "user".to_string(),
-                content: Some("hello".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-            }],
-            tools: Vec::new(),
-            temperature: Some(0.2),
-            max_tokens: Some(128),
-            stream: true,
-            response_format: None,
-            extra: json!({}),
-        });
-
-        assert!(payload.get("temperature").is_none());
-    }
-
-    #[test]
     fn responses_text_format_flattens_chat_style_json_schema() {
         let format = responses_text_format(&json!({
             "type": "json_schema",
@@ -227,7 +201,10 @@ mod tests {
             required_names(&schema["required"]),
             vec!["summary".to_string(), "wake_pack".to_string()]
         );
-        assert_eq!(schema["properties"]["summary"]["type"], json!(["string", "null"]));
+        assert_eq!(
+            schema["properties"]["summary"]["type"],
+            json!(["string", "null"])
+        );
         assert_eq!(schema["additionalProperties"], json!(false));
         validate_strict_schema(&schema, "response_schema").expect("schema should validate");
     }
@@ -244,7 +221,6 @@ mod tests {
                 tool_call_id: None,
             }],
             tools: Vec::new(),
-            temperature: None,
             max_tokens: Some(128),
             stream: false,
             response_format: Some(json!({
@@ -265,7 +241,10 @@ mod tests {
         });
 
         assert_eq!(payload["text"]["format"]["type"], json!("json_schema"));
-        assert_eq!(payload["text"]["format"]["name"], json!("betterclaw_memory_distill"));
+        assert_eq!(
+            payload["text"]["format"]["name"],
+            json!("betterclaw_memory_distill")
+        );
         assert!(payload["text"]["format"].get("json_schema").is_none());
         validate_strict_schema(
             &payload["text"]["format"]["schema"],
@@ -286,7 +265,6 @@ mod tests {
                 tool_call_id: None,
             }],
             tools: Vec::new(),
-            temperature: None,
             max_tokens: Some(128),
             stream: false,
             response_format: Some(json!({

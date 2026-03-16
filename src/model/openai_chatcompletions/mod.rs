@@ -46,11 +46,6 @@ impl OpenAiChatCompletionsEngine {
         if !request.tools.is_empty() {
             payload["tools"] = Value::Array(request.tools.clone());
         }
-        if self.config.supports_temperature()
-            && let Some(temperature) = request.temperature
-        {
-            payload["temperature"] = json!(temperature);
-        }
         if let Some(max_tokens) = request.max_tokens {
             payload["max_tokens"] = json!(max_tokens);
         }

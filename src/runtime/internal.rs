@@ -10,8 +10,8 @@ use crate::workspace::Workspace;
 use chrono::Utc;
 use futures_util::future::join_all;
 use serde_json::{Value, json};
-use tokio::fs;
 use std::time::{Duration, Instant};
+use tokio::fs;
 use uuid::Uuid;
 
 impl Runtime {
@@ -308,9 +308,7 @@ impl Runtime {
         query_hint: Option<&str>,
     ) -> Result<Vec<ModelMessage>, RuntimeError> {
         let mut messages = Vec::new();
-        let combined_system_prompt = self
-            .compose_system_prompt(settings, workspace)
-            .await?;
+        let combined_system_prompt = self.compose_system_prompt(settings, workspace).await?;
         if !combined_system_prompt.trim().is_empty() {
             messages.push(ModelMessage {
                 role: "system".to_string(),
@@ -403,7 +401,6 @@ impl Runtime {
             } else {
                 Vec::new()
             },
-            temperature: Some(settings.temperature),
             max_tokens: Some(settings.max_tokens),
             stream: settings.stream,
             response_format: None,

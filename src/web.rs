@@ -39,7 +39,10 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
         .route("/api/threads/{thread_id}/messages", post(post_message))
         .route("/api/threads/{thread_id}/stream", get(stream_thread))
         .route("/api/threads/{thread_id}/timeline", get(get_timeline))
-        .route("/api/threads/{thread_id}/trace-details", get(get_thread_trace_details))
+        .route(
+            "/api/threads/{thread_id}/trace-details",
+            get(get_thread_trace_details),
+        )
         .route("/api/turns/{turn_id}/traces", get(get_turn_traces))
         .route("/api/turns/{turn_id}/replay", post(replay_turn))
         .route("/api/traces/{trace_id}", get(get_trace))
@@ -77,7 +80,6 @@ async fn get_runtime_settings(
 struct UpdateRuntimeSettingsRequest {
     model: String,
     system_prompt: String,
-    temperature: f32,
     max_tokens: u32,
     stream: bool,
     allow_tools: bool,
@@ -101,7 +103,6 @@ async fn update_runtime_settings(
         agent_id: current.agent_id,
         model: payload.model,
         system_prompt: payload.system_prompt,
-        temperature: payload.temperature,
         max_tokens: payload.max_tokens,
         stream: payload.stream,
         allow_tools: payload.allow_tools,

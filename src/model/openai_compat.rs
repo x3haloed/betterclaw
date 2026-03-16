@@ -30,10 +30,6 @@ impl Default for OpenAiCompatibleConfig {
 }
 
 impl OpenAiCompatibleConfig {
-    pub fn supports_temperature(&self) -> bool {
-        !matches!(self.provider_name.as_str(), "copilot")
-    }
-
     pub fn build_client(&self, accept_sse: bool) -> Result<Client, anyhow::Error> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("BetterClaw"));
@@ -170,19 +166,5 @@ mod tests {
             &json!({ "error": { "code": "rate_limit_exceeded", "message": "slow down" } }),
         );
         assert_eq!(message.as_deref(), Some("slow down"));
-    }
-
-    #[test]
-    fn copilot_disables_temperature_support() {
-        let config = OpenAiCompatibleConfig {
-            provider_name: "copilot".to_string(),
-            ..OpenAiCompatibleConfig::default()
-        };
-        assert!(!config.supports_temperature());
-    }
-
-    #[test]
-    fn default_provider_supports_temperature() {
-        assert!(OpenAiCompatibleConfig::default().supports_temperature());
     }
 }

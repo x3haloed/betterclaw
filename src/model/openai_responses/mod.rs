@@ -58,11 +58,6 @@ impl OpenAiResponsesEngine {
                     .collect::<Vec<_>>(),
             );
         }
-        if self.config.supports_temperature()
-            && let Some(temperature) = request.temperature
-        {
-            payload["temperature"] = json!(temperature);
-        }
         if let Some(max_tokens) = request.max_tokens {
             payload["max_output_tokens"] = json!(max_tokens);
         }

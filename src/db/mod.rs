@@ -127,7 +127,6 @@ impl Db {
                 agent_id TEXT PRIMARY KEY,
                 model TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
-                temperature REAL NOT NULL,
                 max_tokens INTEGER NOT NULL,
                 stream INTEGER NOT NULL,
                 allow_tools INTEGER NOT NULL,
@@ -219,6 +218,27 @@ impl Db {
             "TEXT NOT NULL DEFAULT '[]'",
         )
         .await?;
+        self.drop_column_if_exists(&conn, "runtime_settings", "temperature")
+            .await?;
+        Ok(())
+    }
+
+    async fn drop_column_if_exists(
+        &self,
+        conn: &Connection,
+        table: &str,
+        column: &str,
+    ) -> Result<()> {
+        let pragma = format!("PRAGMA table_info({table})");
+        let mut rows = conn.query(&pragma, params![]).await?;
+        while let Some(row) = rows.next().await? {
+            let existing: String = row.get(1)?;
+            if existing == column {
+                let alter = format!("ALTER TABLE {table} DROP COLUMN {column}");
+                conn.execute(&alter, params![]).await?;
+                return Ok(());
+            }
+        }
         Ok(())
     }
 

@@ -166,32 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn copilot_chat_payload_omits_temperature() {
-        let engine = OpenAiChatCompletionsEngine::new(OpenAiCompatibleConfig {
-            provider_name: "copilot".to_string(),
-            ..OpenAiCompatibleConfig::default()
-        })
-        .expect("engine");
-        let payload = engine.build_payload(&ModelExchangeRequest {
-            model: "gpt-5-mini".to_string(),
-            messages: vec![ModelMessage {
-                role: "user".to_string(),
-                content: Some("hello".to_string()),
-                tool_calls: None,
-                tool_call_id: None,
-            }],
-            tools: Vec::new(),
-            temperature: Some(0.2),
-            max_tokens: Some(128),
-            stream: true,
-            response_format: None,
-            extra: json!({}),
-        });
-
-        assert!(payload.get("temperature").is_none());
-    }
-
-    #[test]
     fn detects_structured_reasoning_in_stream_frames() {
         let mut reasoning_mode = ReasoningMode::Unknown;
         let events = decode_openai_stream_frame(
@@ -287,7 +261,6 @@ mod tests {
                 tool_call_id: None,
             }],
             tools: Vec::new(),
-            temperature: None,
             max_tokens: None,
             stream: true,
             response_format: None,

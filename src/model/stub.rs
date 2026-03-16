@@ -40,7 +40,6 @@ impl ModelRunner for StubModelEngine {
             "messages": request.messages,
             "tools": request.tools,
             "stream": request.stream,
-            "temperature": request.temperature,
             "max_tokens": request.max_tokens,
             "response_format": request.response_format,
             "extra": request.extra,

@@ -23,10 +23,6 @@ use crate::tool::ToolRegistry;
 use crate::turn::{Turn, TurnStatus};
 use crate::workspace::Workspace;
 
-/// Get the default workspace root path (~/.betterclaw/workspaces/default/files).
-///
-/// This emulates the old behavior where the agent's working directory for file
-/// tool resolution was always under the betterclaw home directory.
 fn default_workspace_root() -> PathBuf {
     dirs::home_dir()
         .map(|path| path.join(".betterclaw").join("workspaces").join("default").join("files"))

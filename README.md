@@ -39,6 +39,8 @@ Current presets:
   Uses OpenRouter with `OPENROUTER_API_KEY`. By default this uses chat-completions; set `BETTERCLAW_PROVIDER_MODE=responses` to use the shared Responses engine instead.
 - `BETTERCLAW_PROVIDER=codex`
   Uses the shared Responses engine with Codex auth loaded from `OPENAI_CODEX_AUTH_PATH` (default: `~/.codex/auth.json`).
+- `BETTERCLAW_PROVIDER=copilot`
+  Uses the shared Responses engine against GitHub Copilot. Prefer `GITHUB_COPILOT_API_TOKEN`. If you need refreshable auth, point `BETTERCLAW_COPILOT_TOKEN_COMMAND` at a helper that prints a fresh bearer token on stdout.
 
 Common env:
 
@@ -58,6 +60,21 @@ Codex-specific env:
 - `OPENAI_CODEX_MODEL`
 - `OPENAI_CODEX_BASE_URL`
 - `OPENAI_CODEX_AUTH_PATH`
+
+Copilot-specific env:
+
+- `COPILOT_MODEL`
+- `COPILOT_API_URL`
+- `GITHUB_COPILOT_API_TOKEN`
+- `BETTERCLAW_COPILOT_TOKEN`
+- `BETTERCLAW_COPILOT_TOKEN_COMMAND`
+- `GITHUB_COPILOT_INTEGRATION_ID`
+- `COPILOT_INTEGRATION_ID`
+
+Notes:
+
+- BetterClaw does not auto-load `.env`; your launcher must export these variables.
+- Interactive `copilot` CLI login is not enough by itself for the raw HTTP provider path here. BetterClaw needs either a direct bearer token or a helper command that can supply one.
 
 See [`/Users/chad/Repos/betterclaw/docs/provider-engine.md`](/Users/chad/Repos/betterclaw/docs/provider-engine.md) for the architecture behind the provider split.
 

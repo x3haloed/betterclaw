@@ -3,6 +3,7 @@ use crate::error::RuntimeError;
 use crate::model::*;
 use crate::settings::{ModelRole, ModelRoleConfig};
 use serde_json::{Value, json};
+use std::process::Command;
 
 pub(crate) struct ResolvedModelEngine {
     pub(crate) engine: ModelEngine,
@@ -35,6 +36,7 @@ impl ProviderPreset {
             "local" | "lmstudio" | "openai_compatible" => Self::local_from_env(),
             "openrouter" => Self::openrouter_from_env(),
             "codex" => Self::codex_from_env(),
+            "copilot" | "github_copilot" | "github-copilot" => Self::copilot_from_env(),
             other => anyhow::bail!("unsupported BETTERCLAW_PROVIDER '{other}'"),
         }
     }
@@ -121,6 +123,24 @@ impl ProviderPreset {
             engine: ModelEngine::openai_responses(engine),
             model_name,
             provider_name: "codex".to_string(),
+        })
+    }
+
+    fn copilot_from_env() -> Result<ResolvedModelEngine, anyhow::Error> {
+        let model_name = std::env::var("COPILOT_MODEL")
+            .or_else(|_| std::env::var("BETTERCLAW_MODEL"))
+            .unwrap_or_else(|_| "gpt-5-mini".to_string());
+        let config = build_copilot_config(
+            std::env::var("COPILOT_API_URL")
+                .or_else(|_| std::env::var("BETTERCLAW_MODEL_BASE_URL"))
+                .ok(),
+            "copilot",
+        )?;
+        let engine = OpenAiResponsesEngine::new(config)?;
+        Ok(ResolvedModelEngine {
+            engine: ModelEngine::openai_responses(engine),
+            model_name,
+            provider_name: "copilot".to_string(),
         })
     }
 }
@@ -300,8 +320,138 @@ pub(crate) fn resolve_role_engine(
                 provider_name: "codex".to_string(),
             })
         }
+        "copilot" | "github_copilot" | "github-copilot" => {
+            let engine = OpenAiResponsesEngine::new(build_copilot_config(
+                role.base_url.clone(),
+                "copilot",
+            )?)?;
+            Ok(ResolvedRoleEngine {
+                engine: ModelEngine::openai_responses(engine),
+                model_name: role.model.clone(),
+                provider_name: "copilot".to_string(),
+            })
+        }
         other => anyhow::bail!("unsupported role provider '{other}'"),
     }
+}
+
+fn build_copilot_config(
+    base_url_override: Option<String>,
+    provider_name: &str,
+) -> Result<OpenAiCompatibleConfig, anyhow::Error> {
+    let bearer_token = resolve_copilot_token()?;
+    let mut extra_headers = Vec::new();
+    extra_headers.push((
+        "Copilot-Integration-Id".to_string(),
+        first_present_env(&[
+            "GITHUB_COPILOT_INTEGRATION_ID",
+            "COPILOT_INTEGRATION_ID",
+        ])
+        .unwrap_or_else(|| "betterclaw".to_string()),
+    ));
+
+    if let Some(editor_version) = first_present_env(&["COPILOT_EDITOR_VERSION"]) {
+        extra_headers.push(("Editor-Version".to_string(), editor_version));
+    }
+    if let Some(plugin_version) =
+        first_present_env(&["COPILOT_EDITOR_PLUGIN_VERSION", "COPILOT_PLUGIN_VERSION"])
+    {
+        extra_headers.push(("Editor-Plugin-Version".to_string(), plugin_version));
+    }
+
+    Ok(OpenAiCompatibleConfig {
+        base_url: base_url_override
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "https://api.githubcopilot.com".to_string()),
+        provider_name: provider_name.to_string(),
+        bearer_token: Some(bearer_token),
+        extra_headers,
+        ..OpenAiCompatibleConfig::default()
+    })
+}
+
+fn resolve_copilot_token() -> Result<String, anyhow::Error> {
+    resolve_copilot_token_with(
+        |name| std::env::var(name).ok(),
+        |command| run_token_command(command),
+    )
+}
+
+fn resolve_copilot_token_with<L, R>(
+    lookup: L,
+    run_command: R,
+) -> Result<String, anyhow::Error>
+where
+    L: Fn(&str) -> Option<String>,
+    R: FnOnce(&str) -> Result<String, anyhow::Error>,
+{
+    for name in [
+        "GITHUB_COPILOT_API_TOKEN",
+        "BETTERCLAW_COPILOT_TOKEN",
+        "COPILOT_TOKEN",
+    ] {
+        if let Some(value) = lookup(name) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+
+    for name in ["BETTERCLAW_COPILOT_TOKEN_COMMAND", "COPILOT_TOKEN_COMMAND"] {
+        if let Some(command) = lookup(name) {
+            let command = command.trim();
+            if !command.is_empty() {
+                let token = run_command(command)?;
+                let trimmed = token.trim();
+                if trimmed.is_empty() {
+                    anyhow::bail!("{name} produced an empty token");
+                }
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "Copilot provider requires GITHUB_COPILOT_API_TOKEN, BETTERCLAW_COPILOT_TOKEN, COPILOT_TOKEN, or BETTERCLAW_COPILOT_TOKEN_COMMAND"
+    )
+}
+
+fn run_token_command(command: &str) -> Result<String, anyhow::Error> {
+    #[cfg(target_os = "windows")]
+    let output = Command::new("cmd")
+        .args(["/C", command])
+        .output()
+        .map_err(|error| anyhow::anyhow!("failed to run Copilot token command: {error}"))?;
+
+    #[cfg(not(target_os = "windows"))]
+    let output = Command::new("sh")
+        .args(["-lc", command])
+        .output()
+        .map_err(|error| anyhow::anyhow!("failed to run Copilot token command: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr.trim();
+        if message.is_empty() {
+            anyhow::bail!(
+                "Copilot token command exited with status {}",
+                output.status
+            );
+        }
+        anyhow::bail!("Copilot token command failed: {message}");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn first_present_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 pub(crate) fn default_openai_codex_auth_path() -> String {
@@ -369,5 +519,43 @@ pub(crate) fn env_role(role: ModelRole) -> Option<ModelRoleConfig> {
                 enabled: true,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::resolve_copilot_token_with;
+
+    #[test]
+    fn copilot_token_prefers_direct_env_token() {
+        let values = HashMap::from([(
+            "GITHUB_COPILOT_API_TOKEN",
+            "  copilot-token  ".to_string(),
+        )]);
+        let token = resolve_copilot_token_with(
+            |name| values.get(name).cloned(),
+            |_| panic!("command runner should not be used"),
+        )
+        .unwrap();
+        assert_eq!(token, "copilot-token");
+    }
+
+    #[test]
+    fn copilot_token_falls_back_to_command() {
+        let values = HashMap::from([(
+            "BETTERCLAW_COPILOT_TOKEN_COMMAND",
+            "token-helper".to_string(),
+        )]);
+        let token = resolve_copilot_token_with(
+            |name| values.get(name).cloned(),
+            |command| {
+                assert_eq!(command, "token-helper");
+                Ok(" command-token\n".to_string())
+            },
+        )
+        .unwrap();
+        assert_eq!(token, "command-token");
     }
 }

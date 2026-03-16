@@ -23,6 +23,16 @@ Provider presets now infer the engine family:
   OpenRouter with `BETTERCLAW_PROVIDER_MODE=chat|responses`.
 - `BETTERCLAW_PROVIDER=codex`
   Codex auth/header quirks on top of the shared Responses engine.
+- `BETTERCLAW_PROVIDER=copilot`
+  GitHub Copilot on top of the shared Responses engine, with `Copilot-Integration-Id` headers and token resolution from direct env vars or a helper command.
+
+Copilot auth in the rewrite is intentionally explicit:
+
+- preferred: `GITHUB_COPILOT_API_TOKEN`
+- compatibility fallback: `BETTERCLAW_COPILOT_TOKEN` or legacy `COPILOT_TOKEN`
+- refresh hook: `BETTERCLAW_COPILOT_TOKEN_COMMAND`
+
+The installed `copilot` CLI does not currently expose a stable public command for printing the bearer token BetterClaw would need for direct HTTP calls, so BetterClaw uses a generic helper-command hook instead of scraping private CLI internals.
 
 Both OpenAI-compatible engines now also share one runtime-level rate-limit gate:
 

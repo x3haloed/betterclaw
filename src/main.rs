@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use betterclaw::channels::discord::{DiscordChannel, DiscordConfig};
 use betterclaw::channels::tidepool::TidepoolChannel;
 use betterclaw::db::Db;
@@ -15,7 +15,12 @@ use betterclaw::web;
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let loaded_env_path = load_startup_env()?;
     logging::init()?;
+
+    if let Some(env_path) = loaded_env_path.as_ref() {
+        tracing::info!(env_path = %env_path.display(), "Loaded startup environment file");
+    }
 
     let db_path = env::var("BETTERCLAW_DB_PATH")
         .map(PathBuf::from)
@@ -60,4 +65,42 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+fn load_startup_env() -> Result<Option<PathBuf>> {
+    let env_path = env::var("BETTERCLAW_ENV_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(default_env_path);
+
+    let Some(env_path) = env_path else {
+        return Ok(None);
+    };
+
+    if !env_path.exists() {
+        return Ok(None);
+    }
+
+    dotenvy::from_path(&env_path).with_context(|| {
+        format!(
+            "failed to load startup environment file {}",
+            env_path.display()
+        )
+    })?;
+    Ok(Some(env_path))
+}
+
+fn default_env_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|path| path.join(".betterclaw").join(".env"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_env_path;
+
+    #[test]
+    fn default_env_path_targets_betterclaw_home() {
+        let path = default_env_path().expect("home directory should exist in test environment");
+        assert!(path.ends_with(".betterclaw/.env"));
+    }
 }

@@ -9,6 +9,7 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
+dotenvy = "0.15"
 flate2 = "1.0"
 futures-util = "0.3"
 globset = "0.4"

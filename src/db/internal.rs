@@ -45,7 +45,18 @@ pub(crate) fn memory_artifact_kind_from_str(value: &str) -> MemoryArtifactKind {
 }
 
 pub(crate) fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {
-    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+
+    const LEGACY_FORMATS: [&str; 2] = ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%d %H:%M:%S"];
+    for format in LEGACY_FORMATS {
+        if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(value, format) {
+            return Ok(parsed.and_utc());
+        }
+    }
+
+    Err(anyhow::anyhow!("unsupported datetime format: {value}"))
 }
 
 pub(crate) fn compress_bytes(input: &[u8]) -> Result<Vec<u8>> {
@@ -94,5 +105,31 @@ pub(crate) fn redact_json(value: &Value) -> Value {
         ),
         Value::Array(items) => Value::Array(items.iter().map(redact_json).collect()),
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Datelike, Timelike};
+
+    use super::parse_datetime;
+
+    #[test]
+    fn parses_rfc3339_datetimes() {
+        let parsed = parse_datetime("2026-03-16T02:30:54.109921+00:00").unwrap();
+        assert_eq!(parsed.year(), 2026);
+        assert_eq!(parsed.month(), 3);
+        assert_eq!(parsed.day(), 16);
+    }
+
+    #[test]
+    fn parses_legacy_sqlite_datetimes() {
+        let parsed = parse_datetime("2026-03-11 15:32:09").unwrap();
+        assert_eq!(parsed.year(), 2026);
+        assert_eq!(parsed.month(), 3);
+        assert_eq!(parsed.day(), 11);
+        assert_eq!(parsed.hour(), 15);
+        assert_eq!(parsed.minute(), 32);
+        assert_eq!(parsed.second(), 9);
     }
 }

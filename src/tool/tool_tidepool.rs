@@ -562,6 +562,50 @@ impl Tool for TidepoolListDmDomainsTool {
     }
 }
 
+pub struct TidepoolListDomainMembersTool;
+
+#[async_trait]
+impl Tool for TidepoolListDomainMembersTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_list_domain_members".to_string(),
+            description: "List members of Tidepool domains. Optionally filter to a specific domain. Returns account ID, role, and join timestamp for each member.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Filter to a specific domain. If omitted, returns members from all domains."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        optional_u64(params, "tidepool_list_domain_members", "domain_id")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = optional_u64(&params, "tidepool_list_domain_members", "domain_id")?;
+        let client = shared_tidepool_client("tidepool_list_domain_members").await?;
+        let members = client.domain_members(domain_id);
+        Ok(json!({
+            "members": members.iter().map(|m| json!({
+                "membership_id": m.membership_id,
+                "domain_id": m.domain_id,
+                "account_id": m.account_id,
+                "role": format!("{:?}", m.role),
+            })).collect::<Vec<_>>(),
+            "count": members.len(),
+            "domain_filter": domain_id,
+        }))
+    }
+}
+
 pub struct TidepoolReadMessagesTool;
 
 #[async_trait]
@@ -746,6 +790,7 @@ mod tests {
         assert!(names.contains(&"tidepool_remove_domain_member".to_string()));
         assert!(names.contains(&"tidepool_create_dm".to_string()));
         assert!(names.contains(&"tidepool_list_dm_domains".to_string()));
+        assert!(names.contains(&"tidepool_list_domain_members".to_string()));
         assert!(names.contains(&"tidepool_read_messages".to_string()));
     }
 
@@ -888,6 +933,27 @@ mod tests {
     fn list_dm_domains_validation_rejects_params() {
         let tool = TidepoolListDmDomainsTool;
         let error = tool.validate(&json!({"domain_id": 1})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn list_domain_members_validation_accepts_empty_params() {
+        let tool = TidepoolListDomainMembersTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn list_domain_members_validation_accepts_domain_filter() {
+        let tool = TidepoolListDomainMembersTool;
+        tool.validate(&json!({"domain_id": 42})).unwrap();
+    }
+
+    #[test]
+    fn list_domain_members_validation_rejects_non_numeric() {
+        let tool = TidepoolListDomainMembersTool;
+        let error = tool
+            .validate(&json!({"domain_id": "abc"}))
+            .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 

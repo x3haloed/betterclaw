@@ -9,10 +9,10 @@ use spacetimedb_sdk::{DbContext as _, Table as _};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::generated::tidepool::{
-    AccountLookup, DbConnection, DmLookup, DomainKind, DomainRole, MyAccountTableAccess,
-    MyDmDomainsTableAccess, MySubscribedMessagesTableAccess, MySubscriptionsTableAccess,
-    SubscriptionLookup, add_domain_member, create_dm, create_domain, post_message,
-    remove_domain_member, subscribe_domain, unsubscribe_domain,
+    AccountLookup, DbConnection, DmLookup, DomainKind, DomainMember, DomainMemberTableAccess,
+    DomainRole, MyAccountTableAccess, MyDmDomainsTableAccess, MySubscribedMessagesTableAccess,
+    MySubscriptionsTableAccess, SubscriptionLookup, add_domain_member, create_dm, create_domain,
+    post_message, remove_domain_member, subscribe_domain, unsubscribe_domain,
 };
 
 const DEFAULT_BASE_URL: &str = "https://spacetimedb.com";
@@ -128,6 +128,7 @@ impl TidepoolClient {
             "SELECT * FROM my_subscriptions",
             "SELECT * FROM my_subscribed_messages",
             "SELECT * FROM my_dm_domains",
+            "SELECT * FROM domain_member",
         ]);
 
         let run_connection = Arc::clone(&connection);
@@ -181,6 +182,19 @@ impl TidepoolClient {
             .collect::<Vec<_>>();
         dm_domains.sort_by_key(|item| item.domain_id);
         dm_domains
+    }
+
+    pub fn domain_members(&self, domain_id: Option<u64>) -> Vec<DomainMember> {
+        let mut members: Vec<DomainMember> = self
+            .inner
+            .connection
+            .db
+            .domain_member()
+            .iter()
+            .filter(|m| domain_id.map_or(true, |id| m.domain_id == id))
+            .collect();
+        members.sort_by_key(|m| (m.domain_id, m.account_id));
+        members
     }
 
     pub async fn recv(&self) -> Option<Result<TidepoolInboundMessage>> {

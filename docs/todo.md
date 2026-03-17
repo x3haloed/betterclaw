@@ -27,3 +27,4 @@ Big missing areas left to implement:
   - [x] inject_skills setting + DB migration
 - [x] tidepool_read_messages tool — read message history from subscribed domains
 - [x] Fix Tidepool cursor seeding boundary skip — seed to baseline-1 to avoid losing messages at the boundary
+- [x] tidepool_search_messages tool — content-based message search with domain/author/after_message_id filters

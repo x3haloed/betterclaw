@@ -671,6 +671,97 @@ impl Tool for TidepoolReadMessagesTool {
     }
 }
 
+pub struct TidepoolSearchMessagesTool;
+
+#[async_trait]
+impl Tool for TidepoolSearchMessagesTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_search_messages".to_string(),
+            description: "Search message history by content across subscribed Tidepool domains. \
+                Case-insensitive substring match on message body. Supports filtering by domain, \
+                author, and returning only messages after a given ID. Returns most recent matches first."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text to search for in message bodies. Case-insensitive substring match."
+                    },
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Restrict search to a specific domain."
+                    },
+                    "author_account_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Only return messages from this account."
+                    },
+                    "after_message_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Only search messages with message_id greater than this value."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of results to return. Defaults to 20."
+                    }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        let query = require_string(params, "tidepool_search_messages", "query")?;
+        if query.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_search_messages".to_string(),
+                reason: "field 'query' must not be empty".to_string(),
+            });
+        }
+        optional_u64(params, "tidepool_search_messages", "domain_id")?;
+        optional_u64(params, "tidepool_search_messages", "author_account_id")?;
+        optional_u64(params, "tidepool_search_messages", "after_message_id")?;
+        optional_u32(params, "tidepool_search_messages", "limit")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let query = require_string(&params, "tidepool_search_messages", "query")?;
+        let domain_id = optional_u64(&params, "tidepool_search_messages", "domain_id")?;
+        let author_account_id =
+            optional_u64(&params, "tidepool_search_messages", "author_account_id")?;
+        let after_message_id =
+            optional_u64(&params, "tidepool_search_messages", "after_message_id")?;
+        let limit = optional_u32(&params, "tidepool_search_messages", "limit")?
+            .map(|v| v as usize)
+            .unwrap_or(20);
+        let client = shared_tidepool_client("tidepool_search_messages").await?;
+        let messages = client.search_messages(&query, domain_id, author_account_id, after_message_id, limit);
+        Ok(json!({
+            "messages": messages.iter().map(|m| json!({
+                "message_id": m.message_id,
+                "domain_id": m.domain_id,
+                "domain_title": m.domain_title,
+                "domain_slug": m.domain_slug,
+                "domain_sequence": m.domain_sequence,
+                "author_account_id": m.author_account_id,
+                "body": m.body,
+                "reply_to_message_id": m.reply_to_message_id,
+            })).collect::<Vec<_>>(),
+            "count": messages.len(),
+            "query": query,
+            "domain_filter": domain_id,
+            "author_filter": author_account_id,
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -800,6 +891,7 @@ mod tests {
         assert!(names.contains(&"tidepool_list_dm_domains".to_string()));
         assert!(names.contains(&"tidepool_list_domain_members".to_string()));
         assert!(names.contains(&"tidepool_read_messages".to_string()));
+        assert!(names.contains(&"tidepool_search_messages".to_string()));
     }
 
     #[test]
@@ -1001,5 +1093,50 @@ mod tests {
             .validate(&json!({"after_message_id": "not-a-number"}))
             .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn search_messages_validation_requires_query() {
+        let tool = TidepoolSearchMessagesTool;
+        let error = tool.validate(&json!({})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn search_messages_validation_rejects_blank_query() {
+        let tool = TidepoolSearchMessagesTool;
+        let error = tool.validate(&json!({"query": "   "})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn search_messages_validation_accepts_valid_params() {
+        let tool = TidepoolSearchMessagesTool;
+        tool.validate(&json!({"query": "hello"})).unwrap();
+        tool.validate(&json!({
+            "query": "hello",
+            "domain_id": 1,
+            "author_account_id": 42,
+            "after_message_id": 100,
+            "limit": 50
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn search_messages_validation_rejects_invalid_domain_id() {
+        let tool = TidepoolSearchMessagesTool;
+        let error = tool
+            .validate(&json!({"query": "test", "domain_id": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn default_registry_includes_search_messages_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_search_messages".to_string()));
     }
 }

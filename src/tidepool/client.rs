@@ -419,6 +419,62 @@ impl TidepoolClient {
         messages
     }
 
+    /// Search messages by content. Supports optional domain_id, author_account_id,
+    /// and after_message_id filters. Case-insensitive substring match on body.
+    pub fn search_messages(
+        &self,
+        query: &str,
+        domain_id: Option<u64>,
+        author_account_id: Option<u64>,
+        after_message_id: Option<u64>,
+        limit: usize,
+    ) -> Vec<TidepoolInboundMessage> {
+        let query_lower = query.to_lowercase();
+        let mut messages: Vec<TidepoolInboundMessage> = self
+            .inner
+            .connection
+            .db
+            .my_subscribed_messages()
+            .iter()
+            .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
+            .filter(|row| {
+                author_account_id.map_or(true, |id| row.author_account_id == id)
+            })
+            .filter(|row| {
+                after_message_id.map_or(true, |after| row.message_id > after)
+            })
+            .filter(|row| row.body.to_lowercase().contains(&query_lower))
+            .map(|row| {
+                let subscription = self
+                    .inner
+                    .connection
+                    .db
+                    .my_subscriptions()
+                    .iter()
+                    .find(|s| s.domain_id == row.domain_id);
+                TidepoolInboundMessage {
+                    domain_id: row.domain_id,
+                    domain_title: subscription
+                        .as_ref()
+                        .map(|s| s.title.clone())
+                        .unwrap_or_else(|| format!("Domain {}", row.domain_id)),
+                    domain_slug: subscription
+                        .as_ref()
+                        .map(|s| s.slug.clone())
+                        .unwrap_or_default(),
+                    message_id: row.message_id,
+                    domain_sequence: row.domain_sequence,
+                    author_account_id: row.author_account_id,
+                    body: row.body.clone(),
+                    reply_to_message_id: row.reply_to_message_id,
+                }
+            })
+            .collect();
+        messages.sort_by(|a, b| b.message_id.cmp(&a.message_id));
+        messages.truncate(limit);
+        messages
+    }
+
     pub async fn shutdown(&self) {
         let _ = self.inner.connection.disconnect();
         // Do NOT abort the run_loop task. After disconnect(), the SDK's

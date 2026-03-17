@@ -12,7 +12,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{ProviderPreset, Runtime};
-    use crate::channel::InboundEvent;
+    use crate::channel::{InboundAttachment, InboundEvent};
     use crate::db::Db;
     use crate::event::EventKind;
     use crate::model::{
@@ -367,7 +367,7 @@ mod tests {
             .unwrap();
         let turn = runtime
             .db()
-            .create_turn(&thread.id, "stuck message")
+            .create_turn(&thread.id, "stuck message", None)
             .await
             .unwrap();
         drop(runtime);
@@ -678,5 +678,76 @@ mod tests {
         assert!(system_prompt.contains("## Core Values"));
         assert!(system_prompt.contains("Prefer reversible probes."));
         assert!(system_prompt.contains("You are BetterClaw Agent, a secure autonomous assistant."));
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    use chrono::Utc;
+    use super::internal::build_user_message_content;
+    use crate::channel::InboundAttachment;
+    use crate::model::{ContentPart, MessageContent};
+    use crate::turn::{Turn, TurnStatus};
+
+    fn make_turn(user_message: &str, attachments: Option<&str>) -> Turn {
+        Turn {
+            id: "test-turn".to_string(),
+            thread_id: "test-thread".to_string(),
+            status: TurnStatus::Running,
+            user_message: user_message.to_string(),
+            attachments_json: attachments.map(|s| s.to_string()),
+            assistant_message: None,
+            error: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn text_only_turn_produces_text_content() {
+        let turn = make_turn("hello world", None);
+        match build_user_message_content(&turn) {
+            MessageContent::Text(text) => assert_eq!(text, "hello world"),
+            _ => panic!("expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn turn_with_image_attachments_produces_parts() {
+        let attachments = serde_json::to_string(&vec![InboundAttachment {
+            url: "https://example.com/photo.png".to_string(),
+            filename: "photo.png".to_string(),
+            content_type: Some("image/png".to_string()),
+        }])
+        .unwrap();
+        let turn = make_turn("what is this?", Some(&attachments));
+        match build_user_message_content(&turn) {
+            MessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(&parts[0], ContentPart::Text { text } if text == "what is this?"));
+                match &parts[1] {
+                    ContentPart::ImageUrl { image_url } => {
+                        assert_eq!(image_url.url, "https://example.com/photo.png");
+                    }
+                    _ => panic!("expected ImageUrl part"),
+                }
+            }
+            _ => panic!("expected Parts variant"),
+        }
+    }
+
+    #[test]
+    fn turn_with_non_image_attachments_stays_text() {
+        let attachments = serde_json::to_string(&vec![InboundAttachment {
+            url: "https://example.com/doc.pdf".to_string(),
+            filename: "doc.pdf".to_string(),
+            content_type: Some("application/pdf".to_string()),
+        }])
+        .unwrap();
+        let turn = make_turn("read this", Some(&attachments));
+        match build_user_message_content(&turn) {
+            MessageContent::Text(text) => assert_eq!(text, "read this"),
+            _ => panic!("expected Text variant for non-image attachments"),
+        }
     }
 }

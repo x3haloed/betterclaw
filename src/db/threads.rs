@@ -90,7 +90,7 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT id, thread_id, status, user_message, assistant_message, error, created_at, updated_at FROM turns WHERE id = ?",
+                "SELECT id, thread_id, status, user_message, attachments_json, assistant_message, error, created_at, updated_at FROM turns WHERE id = ?",
                 params![turn_id.to_string()],
             )
             .await?;
@@ -100,10 +100,11 @@ impl Db {
                 thread_id: row.get::<String>(1)?,
                 status: turn_status_from_string(&row.get::<String>(2)?),
                 user_message: row.get::<String>(3)?,
-                assistant_message: row.get::<Option<String>>(4)?,
-                error: row.get::<Option<String>>(5)?,
-                created_at: parse_datetime(&row.get::<String>(6)?)?,
-                updated_at: parse_datetime(&row.get::<String>(7)?)?,
+                attachments_json: row.get::<Option<String>>(4)?,
+                assistant_message: row.get::<Option<String>>(5)?,
+                error: row.get::<Option<String>>(6)?,
+                created_at: parse_datetime(&row.get::<String>(7)?)?,
+                updated_at: parse_datetime(&row.get::<String>(8)?)?,
             })
         } else {
             None
@@ -132,17 +133,23 @@ impl Db {
         }
         Ok(threads)
     }
-    pub async fn create_turn(&self, thread_id: &str, user_message: &str) -> Result<Turn> {
+    pub async fn create_turn(
+        &self,
+        thread_id: &str,
+        user_message: &str,
+        attachments_json: Option<&str>,
+    ) -> Result<Turn> {
         let conn = self.connect()?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         conn.execute(
-            "INSERT INTO turns (id, thread_id, status, user_message, assistant_message, error, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)",
+            "INSERT INTO turns (id, thread_id, status, user_message, attachments_json, assistant_message, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)",
             params![
                 id.clone(),
                 thread_id.to_string(),
                 "running".to_string(),
                 user_message.to_string(),
+                attachments_json.map(ToString::to_string),
                 now.to_rfc3339(),
                 now.to_rfc3339()
             ],
@@ -153,6 +160,7 @@ impl Db {
             thread_id: thread_id.to_string(),
             status: TurnStatus::Running,
             user_message: user_message.to_string(),
+            attachments_json: attachments_json.map(|s| s.to_string()),
             assistant_message: None,
             error: None,
             created_at: now,
@@ -187,7 +195,7 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT id, thread_id, status, user_message, assistant_message, error, created_at, updated_at FROM turns WHERE thread_id = ? ORDER BY created_at ASC",
+                "SELECT id, thread_id, status, user_message, attachments_json, assistant_message, error, created_at, updated_at FROM turns WHERE thread_id = ? ORDER BY created_at ASC",
                 params![thread_id.to_string()],
             )
             .await?;
@@ -198,10 +206,11 @@ impl Db {
                 thread_id: row.get::<String>(1)?,
                 status: turn_status_from_string(&row.get::<String>(2)?),
                 user_message: row.get::<String>(3)?,
-                assistant_message: row.get::<Option<String>>(4)?,
-                error: row.get::<Option<String>>(5)?,
-                created_at: parse_datetime(&row.get::<String>(6)?)?,
-                updated_at: parse_datetime(&row.get::<String>(7)?)?,
+                attachments_json: row.get::<Option<String>>(4)?,
+                assistant_message: row.get::<Option<String>>(5)?,
+                error: row.get::<Option<String>>(6)?,
+                created_at: parse_datetime(&row.get::<String>(7)?)?,
+                updated_at: parse_datetime(&row.get::<String>(8)?)?,
             });
         }
         Ok(turns)
@@ -210,7 +219,7 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT id, thread_id, status, user_message, assistant_message, error, created_at, updated_at FROM turns WHERE status = ? ORDER BY created_at ASC",
+                "SELECT id, thread_id, status, user_message, attachments_json, assistant_message, error, created_at, updated_at FROM turns WHERE status = ? ORDER BY created_at ASC",
                 params!["running".to_string()],
             )
             .await?;
@@ -221,10 +230,11 @@ impl Db {
                 thread_id: row.get::<String>(1)?,
                 status: turn_status_from_string(&row.get::<String>(2)?),
                 user_message: row.get::<String>(3)?,
-                assistant_message: row.get::<Option<String>>(4)?,
-                error: row.get::<Option<String>>(5)?,
-                created_at: parse_datetime(&row.get::<String>(6)?)?,
-                updated_at: parse_datetime(&row.get::<String>(7)?)?,
+                attachments_json: row.get::<Option<String>>(4)?,
+                assistant_message: row.get::<Option<String>>(5)?,
+                error: row.get::<Option<String>>(6)?,
+                created_at: parse_datetime(&row.get::<String>(7)?)?,
+                updated_at: parse_datetime(&row.get::<String>(8)?)?,
             });
         }
         Ok(turns)

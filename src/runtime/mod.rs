@@ -8,7 +8,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::agent::Agent;
-use crate::channel::{InboundEvent, OutboundMessage};
+use crate::channel::{InboundAttachment, InboundEvent, OutboundMessage};
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
@@ -378,6 +378,7 @@ impl Runtime {
             .get_thread(&source_turn.thread_id)
             .await?
             .ok_or_else(|| RuntimeError::ThreadNotFound(source_turn.thread_id.clone()))?;
+        let attachments: Vec<InboundAttachment> = source_turn.attachments();
         self.handle_inbound_internal(
             InboundEvent {
                 agent_id: thread.agent_id.clone(),
@@ -385,6 +386,7 @@ impl Runtime {
                 external_thread_id: thread.external_thread_id.clone(),
                 content: source_turn.user_message,
                 metadata: None,
+                attachments,
                 received_at: Utc::now(),
             },
             Some(source_turn_id.to_string()),

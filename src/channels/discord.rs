@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::channel::InboundEvent;
+use crate::channel::{InboundAttachment, InboundEvent};
 use crate::runtime::Runtime;
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
@@ -290,6 +290,7 @@ impl DiscordChannel {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let attachments = parse_discord_attachments(payload.get("attachments"));
         let content = append_attachment_lines(normalized, payload.get("attachments"));
         let content = if is_dm {
             content
@@ -308,6 +309,7 @@ impl DiscordChannel {
                 external_thread_id: discord_thread_key(&channel_id, is_dm),
                 content,
                 metadata: None,
+                attachments,
                 received_at: chrono::Utc::now(),
             },
             message_id,
@@ -480,6 +482,32 @@ fn append_attachment_lines(content: String, attachments: Option<&Value>) -> Stri
     format!("{content}\n\n[Attachments]\n{}", lines.join("\n"))
 }
 
+fn parse_discord_attachments(attachments: Option<&Value>) -> Vec<InboundAttachment> {
+    let Some(items) = attachments.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let url = item.get("url")?.as_str()?.to_string();
+            let filename = item
+                .get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or("attachment")
+                .to_string();
+            let content_type = item
+                .get("content_type")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            Some(InboundAttachment {
+                url,
+                filename,
+                content_type,
+            })
+        })
+        .collect()
+}
+
 fn split_for_discord(content: &str) -> Vec<String> {
     if content.is_empty() {
         return vec![String::new()];
@@ -499,7 +527,7 @@ fn inbound_agent_id() -> &'static str {
 mod tests {
     use super::{
         append_attachment_lines, discord_thread_key, inbound_agent_id, normalize_message_content,
-        split_for_discord,
+        parse_discord_attachments, split_for_discord,
     };
     use serde_json::json;
 
@@ -528,6 +556,27 @@ mod tests {
         );
         assert!(body.contains("[Attachments]"));
         assert!(body.contains("image.png"));
+    }
+
+    #[test]
+    fn parse_discord_attachments_extracts_images() {
+        let attachments = parse_discord_attachments(Some(&json!([
+            { "filename": "photo.jpg", "url": "https://cdn.discord.com/photo.jpg", "content_type": "image/jpeg" },
+            { "filename": "doc.pdf", "url": "https://cdn.discord.com/doc.pdf", "content_type": "application/pdf" }
+        ])));
+        assert_eq!(attachments.len(), 2);
+        assert!(attachments[0].is_image());
+        assert!(!attachments[1].is_image());
+        assert_eq!(attachments[0].url, "https://cdn.discord.com/photo.jpg");
+        assert_eq!(attachments[0].content_type.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn parse_discord_attachments_empty_when_no_attachments() {
+        let attachments = parse_discord_attachments(None);
+        assert!(attachments.is_empty());
+        let attachments = parse_discord_attachments(Some(&json!([])));
+        assert!(attachments.is_empty());
     }
 
     #[test]

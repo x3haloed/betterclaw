@@ -259,6 +259,8 @@ impl Db {
             "INTEGER NOT NULL DEFAULT 1",
         )
         .await?;
+        self.add_column_if_missing(&conn, "turns", "attachments_json", "TEXT")
+            .await?;
         Ok(())
     }
 

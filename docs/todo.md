@@ -16,8 +16,8 @@ Big missing areas left to implement:
   - [x] MessageContent enum with Text | Parts (image_url) variants
   - [x] ContentPart enum with Text and ImageUrl
   - [x] OpenAI Responses API payload handles image_url
-  - [ ] Chat Completions API payload handles image_url
-  - [ ] Discord input attachment handling
+  - [x] Chat Completions API payload handles image_url
+  - [x] Discord input attachment handling
 - [x] first-class skills support
   - [x] Skill discovery from workspace skills/ directory
   - [x] Skills block injected into system prompt

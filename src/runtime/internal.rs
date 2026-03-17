@@ -77,9 +77,17 @@ impl Runtime {
             .await?;
         let workspace = self.workspace_for_agent(&event.agent_id).await?;
         let settings = self.get_runtime_settings(&event.agent_id).await?;
+        let attachments_json = if event.attachments.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&event.attachments)
+                    .unwrap_or_else(|_| "[]".to_string()),
+            )
+        };
         let turn = self
             .db
-            .create_turn(&thread.id, &event.content)
+            .create_turn(&thread.id, &event.content, attachments_json.as_deref())
             .await
             .map_err(RuntimeError::from)?;
 
@@ -343,9 +351,10 @@ impl Runtime {
                 });
             }
         }
+        let user_content = build_user_message_content(turn);
         messages.push(ModelMessage {
             role: "user".to_string(),
-            content: Some(MessageContent::Text(turn.user_message.clone())),
+            content: Some(user_content),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -1066,4 +1075,21 @@ pub(crate) fn build_fts_query(query: &str) -> String {
         .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+/// Build the user message content, including image attachments as multi-part content
+/// when images are present. This enables vision-capable models to "see" uploaded images.
+pub(crate) fn build_user_message_content(turn: &Turn) -> MessageContent {
+    let attachments = turn.attachments();
+    let image_attachments: Vec<_> = attachments.iter().filter(|a| a.is_image()).collect();
+
+    if image_attachments.is_empty() {
+        return MessageContent::Text(turn.user_message.clone());
+    }
+
+    let mut parts = vec![ContentPart::text(&turn.user_message)];
+    for attachment in &image_attachments {
+        parts.push(ContentPart::image_url(&attachment.url));
+    }
+    MessageContent::Parts(parts)
 }

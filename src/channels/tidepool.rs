@@ -125,6 +125,7 @@ impl TidepoolChannel {
                 external_thread_id: external_thread_id.clone(),
                 content: message.body.clone(),
                 metadata: Some(metadata.clone()),
+                attachments: Vec::new(),
                 received_at: Utc::now(),
             })
             .await

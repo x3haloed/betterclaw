@@ -4,8 +4,22 @@ Big missing areas left to implement:
 
 - [x] collect/improve available tools based on what OpenClaw, copilot-sdk, and Qwen-Agent offer to their agents.
 - [x] Add the compressor, wake_pack, durable ledger, and ledger_recall systems
-- [ ] add our tension/pattern/hypothesis routines back in (c9551d3b7d0798a4976a36d3419ded695355ee7c)
+- [x] add our tension/pattern/hypothesis routines back in (c9551d3b7d0798a4976a36d3419ded695355ee7c)
+  - [x] Observation types (Tension, Pattern, Hypothesis, Contradiction)
+  - [x] DB layer (upsert, list, resolve, summary, stale cleanup)
+  - [x] Runtime routines (detect tensions, tool failure patterns, hypotheses, contradictions)
+  - [x] Observations block injected into system prompt
+  - [x] Wired into turn completion flow
 - [x] Add tidepool support
 - [ ] Add Codex & Copilot providers in
 - [ ] image and video attachments (image_url for openai-compat, video_url if supported by provider), input via Discord
-- [ ] first-class skills support
+  - [x] MessageContent enum with Text | Parts (image_url) variants
+  - [x] ContentPart enum with Text and ImageUrl
+  - [x] OpenAI Responses API payload handles image_url
+  - [ ] Chat Completions API payload handles image_url
+  - [ ] Discord input attachment handling
+- [x] first-class skills support
+  - [x] Skill discovery from workspace skills/ directory
+  - [x] Skills block injected into system prompt
+  - [x] read_skill tool for agents to read full instructions
+  - [x] inject_skills setting + DB migration

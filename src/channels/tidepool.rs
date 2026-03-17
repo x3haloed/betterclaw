@@ -12,7 +12,12 @@ use crate::tidepool::{
     connect_shared_client,
 };
 
-const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+/// Initial reconnect delay. Doubled on each consecutive failure up to MAX_RECONNECT_DELAY.
+const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+/// Cap on exponential backoff for reconnects.
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
+/// If a connection survives this long, reset the backoff to INITIAL on next failure.
+const CONNECTION_HEALTHY_THRESHOLD: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct TidepoolChannel {
@@ -31,12 +36,35 @@ impl TidepoolChannel {
         })
     }
 
+    /// Run the reconnect loop with exponential backoff.
+    ///
+    /// Connection-level failures (event stream ends, Tidepool server unreachable)
+    /// trigger a reconnect with doubling delay. Model API errors inside handle_message
+    /// are logged and skipped — they do NOT tear down the Tidepool connection.
     async fn run_forever(self) {
+        let mut backoff = INITIAL_RECONNECT_DELAY;
         loop {
+            let start = tokio::time::Instant::now();
             if let Err(error) = self.run_once().await {
                 clear_shared_client().await;
-                tracing::error!(error = %error, "Tidepool channel loop failed; reconnecting");
-                tokio::time::sleep(RECONNECT_DELAY).await;
+
+                // If the connection was healthy for a while, reset backoff.
+                // A connection that lasted CONNECTION_HEALTHY_THRESHOLD means
+                // the failure was likely transient, not a persistent outage.
+                if start.elapsed() >= CONNECTION_HEALTHY_THRESHOLD {
+                    backoff = INITIAL_RECONNECT_DELAY;
+                }
+
+                tracing::error!(
+                    error = %error,
+                    backoff_secs = backoff.as_secs(),
+                    "Tidepool channel loop failed; reconnecting with backoff"
+                );
+
+                tokio::time::sleep(backoff).await;
+
+                // Exponential backoff with cap
+                backoff = (backoff * 2).min(MAX_RECONNECT_DELAY);
             }
         }
     }
@@ -132,16 +160,35 @@ impl TidepoolChannel {
         {
             Ok(outcome) => outcome,
             Err(error) => {
+                // Model API errors (rate limits, bad responses, etc.) are logged
+                // and the cursor is advanced so we don't retry forever. The Tidepool
+                // connection stays alive — this is a runtime issue, not a connectivity
+                // issue. Tearing down the connection would amplify the failure.
                 tracing::error!(
                     error = %error,
                     domain_id = message.domain_id,
                     message_id = message.message_id,
-                    "Tidepool inbound turn failed"
+                    "Tidepool inbound turn failed — skipping message, advancing cursor"
                 );
-                return Err(error.into());
+                self.runtime
+                    .db()
+                    .upsert_cursor(&ChannelCursor {
+                        channel: "tidepool".to_string(),
+                        cursor_key,
+                        cursor_value: message.domain_sequence.to_string(),
+                        updated_at: Utc::now(),
+                    })
+                    .await
+                    .context("upserting Tidepool cursor after failed turn")?;
+                return Ok(());
             }
         };
 
+        // Track posting errors without tearing down the connection.
+        // We always advance the cursor — we've consumed the inbound message.
+        // If posting fails, we log it. On reconnect, cursor prevents re-processing
+        // the inbound (avoiding duplicate replies for already-succeeded posts).
+        let mut first_post_error: Option<anyhow::Error> = None;
         for outbound in &outcome.outbound_messages {
             let trimmed = outbound.trim();
             if trimmed.is_empty() {
@@ -161,11 +208,22 @@ impl TidepoolChannel {
                 message_id = message.message_id,
                 "Posting Tidepool outbound reply"
             );
-            client
+            if let Err(error) = client
                 .post_message(message.domain_id, outbound, Some(message.message_id))
                 .with_context(|| {
                     format!("posting reply to Tidepool domain {}", message.domain_id)
-                })?;
+                })
+            {
+                tracing::error!(
+                    error = %error,
+                    domain_id = message.domain_id,
+                    message_id = message.message_id,
+                    "Failed to post Tidepool reply — will advance cursor anyway"
+                );
+                if first_post_error.is_none() {
+                    first_post_error = Some(error);
+                }
+            }
         }
 
         self.runtime
@@ -178,6 +236,13 @@ impl TidepoolChannel {
             })
             .await
             .context("upserting Tidepool cursor")?;
+
+        if let Some(error) = first_post_error {
+            // Return the posting error to trigger reconnect, but only after
+            // cursor is persisted. This prevents the reconnect from
+            // re-processing the inbound message (cursor already advanced).
+            return Err(error);
+        }
 
         Ok(())
     }
@@ -313,9 +378,18 @@ fn cursor_seed_value(baseline_sequence: u64) -> u64 {
 }
 
 #[cfg(test)]
+fn next_backoff(current: std::time::Duration) -> std::time::Duration {
+    (current * 2).min(MAX_RECONNECT_DELAY)
+}
+
+#[cfg(test)]
 mod tests {
-    use super::{cursor_seed_value, is_tidepool_noop, tidepool_thread_key};
+    use super::{
+        CONNECTION_HEALTHY_THRESHOLD, INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
+        cursor_seed_value, is_tidepool_noop, next_backoff, tidepool_thread_key,
+    };
     use std::collections::HashMap;
+    use std::time::Duration;
 
     #[test]
     fn canonical_thread_key_uses_domain_id() {
@@ -384,5 +458,33 @@ mod tests {
     fn noop_allows_medium_messages() {
         assert!(!is_tidepool_noop("Running cargo test now."));
         assert!(!is_tidepool_noop("Fixed in commit abc123."));
+    }
+
+    #[test]
+    fn backoff_doubles_until_max() {
+        assert_eq!(INITIAL_RECONNECT_DELAY, Duration::from_secs(1));
+        assert_eq!(MAX_RECONNECT_DELAY, Duration::from_secs(60));
+
+        let mut d = INITIAL_RECONNECT_DELAY;
+        // 1 → 2 → 4 → 8 → 16 → 32 → 60 (capped) → 60
+        assert_eq!(next_backoff(d), Duration::from_secs(2));
+        d = next_backoff(d);
+        assert_eq!(next_backoff(d), Duration::from_secs(4));
+        d = next_backoff(d);
+        assert_eq!(next_backoff(d), Duration::from_secs(8));
+        d = next_backoff(d);
+        assert_eq!(next_backoff(d), Duration::from_secs(16));
+        d = next_backoff(d);
+        assert_eq!(next_backoff(d), Duration::from_secs(32));
+        d = next_backoff(d);
+        assert_eq!(next_backoff(d), Duration::from_secs(60)); // capped
+        d = next_backoff(d);
+        assert_eq!(next_backoff(d), Duration::from_secs(60)); // stays capped
+    }
+
+    #[test]
+    fn healthy_connection_threshold_is_reasonable() {
+        // Connections lasting 30+ seconds should reset backoff
+        assert_eq!(CONNECTION_HEALTHY_THRESHOLD, Duration::from_secs(30));
     }
 }

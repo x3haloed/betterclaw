@@ -1,0 +1,4 @@
+[test]
+# SQLite-backed tests have global-state contention when run with high parallelism.
+# Run serially for reliable CI and local test runs.
+test-threads = 1

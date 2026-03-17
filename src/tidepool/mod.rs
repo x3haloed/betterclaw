@@ -9,6 +9,8 @@ pub use client::{
     TidepoolBootstrapOutcome, TidepoolClient, TidepoolConfig, TidepoolInboundMessage,
 };
 
+pub use crate::generated::tidepool::DomainKind;
+
 static SHARED_TIDEPOOL_CLIENT: OnceLock<RwLock<Option<TidepoolClient>>> = OnceLock::new();
 
 fn shared_client_slot() -> &'static RwLock<Option<TidepoolClient>> {

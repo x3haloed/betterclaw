@@ -3,10 +3,11 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::error::RuntimeError;
-use crate::generated::tidepool::SubscriptionLookup;
+use crate::generated::tidepool::{DomainKind, SubscriptionLookup};
 use crate::tidepool::require_shared_client;
 
 const DEFAULT_SUBSCRIBE_BATCH_WINDOW_SECONDS: u32 = 30;
+const DEFAULT_CREATE_DOMAIN_MESSAGE_CHAR_LIMIT: u16 = 4096;
 
 pub struct TidepoolMyAccountTool;
 
@@ -214,6 +215,108 @@ impl Tool for TidepoolPostMessageTool {
     }
 }
 
+pub struct TidepoolCreateDomainTool;
+
+#[async_trait]
+impl Tool for TidepoolCreateDomainTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_create_domain".to_string(),
+            description: "Create a new Tidepool domain. Use this to spin up coordination channels for multi-agent workflows.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["Public", "Private", "Dm"],
+                        "description": "Domain visibility: Public (anyone can join), Private (invite-only), Dm (direct message)."
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "URL-safe identifier for the domain (e.g. 'coord-lab')."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Human-readable name for the domain."
+                    },
+                    "message_char_limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum message length. Defaults to 4096."
+                    }
+                },
+                "required": ["kind", "slug", "title"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        let kind = require_string(params, "tidepool_create_domain", "kind")?;
+        match kind.as_str() {
+            "Public" | "Private" | "Dm" => {}
+            other => {
+                return Err(RuntimeError::InvalidToolParameters {
+                    tool: "tidepool_create_domain".to_string(),
+                    reason: format!(
+                        "field 'kind' must be one of 'Public', 'Private', 'Dm'; got '{other}'"
+                    ),
+                });
+            }
+        }
+        let slug = require_string(params, "tidepool_create_domain", "slug")?;
+        if slug.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_create_domain".to_string(),
+                reason: "field 'slug' must not be empty".to_string(),
+            });
+        }
+        let title = require_string(params, "tidepool_create_domain", "title")?;
+        if title.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_create_domain".to_string(),
+                reason: "field 'title' must not be empty".to_string(),
+            });
+        }
+        optional_u16(params, "tidepool_create_domain", "message_char_limit")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let kind_str = require_string(&params, "tidepool_create_domain", "kind")?;
+        let kind = match kind_str.as_str() {
+            "Public" => DomainKind::Public,
+            "Private" => DomainKind::Private,
+            "Dm" => DomainKind::Dm,
+            other => {
+                return Err(RuntimeError::ToolExecution {
+                    tool: "tidepool_create_domain".to_string(),
+                    reason: format!("unexpected kind '{other}'"),
+                });
+            }
+        };
+        let slug = require_string(&params, "tidepool_create_domain", "slug")?;
+        let title = require_string(&params, "tidepool_create_domain", "title")?;
+        let message_char_limit = optional_u16(
+            &params,
+            "tidepool_create_domain",
+            "message_char_limit",
+        )?
+        .unwrap_or(DEFAULT_CREATE_DOMAIN_MESSAGE_CHAR_LIMIT);
+        let client = shared_tidepool_client("tidepool_create_domain").await?;
+        client
+            .create_domain(kind, slug.clone(), title.clone(), message_char_limit)
+            .map_err(|error| tool_execution("tidepool_create_domain", error))?;
+        Ok(json!({
+            "status": "created",
+            "kind": kind_str,
+            "slug": slug,
+            "title": title,
+            "message_char_limit": message_char_limit,
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -293,6 +396,25 @@ fn optional_u32(params: &Value, tool: &str, field: &str) -> Result<Option<u32>, 
     }
 }
 
+fn optional_u16(params: &Value, tool: &str, field: &str) -> Result<Option<u16>, RuntimeError> {
+    match params.get(field) {
+        Some(value) => {
+            let Some(raw) = value.as_u64() else {
+                return Err(RuntimeError::InvalidToolParameters {
+                    tool: tool.to_string(),
+                    reason: format!("field '{field}' must be an integer"),
+                });
+            };
+            let narrowed = u16::try_from(raw).map_err(|_| RuntimeError::InvalidToolParameters {
+                tool: tool.to_string(),
+                reason: format!("field '{field}' is too large"),
+            })?;
+            Ok(Some(narrowed))
+        }
+        None => Ok(None),
+    }
+}
+
 fn tool_execution(tool: &str, error: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::ToolExecution {
         tool: tool.to_string(),
@@ -317,6 +439,7 @@ mod tests {
         assert!(names.contains(&"tidepool_subscribe_domain".to_string()));
         assert!(names.contains(&"tidepool_unsubscribe_domain".to_string()));
         assert!(names.contains(&"tidepool_post_message".to_string()));
+        assert!(names.contains(&"tidepool_create_domain".to_string()));
     }
 
     #[test]
@@ -337,5 +460,37 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn create_domain_validation_rejects_invalid_kind() {
+        let tool = TidepoolCreateDomainTool;
+        let error = tool
+            .validate(&json!({"kind":"Secret","slug":"test","title":"Test"}))
+            .unwrap_err();
+
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn create_domain_validation_rejects_blank_slug() {
+        let tool = TidepoolCreateDomainTool;
+        let error = tool
+            .validate(&json!({"kind":"Public","slug":"  ","title":"Test"}))
+            .unwrap_err();
+
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn create_domain_validation_accepts_valid_params() {
+        let tool = TidepoolCreateDomainTool;
+        tool.validate(&json!({
+            "kind": "Private",
+            "slug": "my-domain",
+            "title": "My Domain",
+            "message_char_limit": 2048
+        }))
+        .unwrap();
     }
 }

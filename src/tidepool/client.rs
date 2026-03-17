@@ -9,8 +9,8 @@ use spacetimedb_sdk::{DbContext as _, Table as _};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::generated::tidepool::{
-    AccountLookup, DbConnection, MyAccountTableAccess, MySubscribedMessagesTableAccess,
-    MySubscriptionsTableAccess, SubscriptionLookup, post_message, subscribe_domain,
+    AccountLookup, DbConnection, DomainKind, MyAccountTableAccess, MySubscribedMessagesTableAccess,
+    MySubscriptionsTableAccess, SubscriptionLookup, create_domain, post_message, subscribe_domain,
     unsubscribe_domain,
 };
 
@@ -213,6 +213,20 @@ impl TidepoolClient {
             .with_context(|| format!("unsubscribing from Tidepool domain {domain_id}"))?;
         self.wait_for_subscription_state(domain_id, false).await?;
         Ok(self.subscriptions())
+    }
+
+    pub fn create_domain(
+        &self,
+        kind: DomainKind,
+        slug: impl Into<String>,
+        title: impl Into<String>,
+        message_char_limit: u16,
+    ) -> Result<()> {
+        self.inner
+            .connection
+            .reducers
+            .create_domain(kind, slug.into(), title.into(), message_char_limit)
+            .context("creating Tidepool domain")
     }
 
     async fn wait_for_subscription_state(&self, domain_id: u64, present: bool) -> Result<()> {

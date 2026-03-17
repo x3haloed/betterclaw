@@ -12,7 +12,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{ProviderPreset, Runtime};
-    use crate::channel::{InboundAttachment, InboundEvent};
+    use crate::channel::InboundEvent;
     use crate::db::Db;
     use crate::event::EventKind;
     use crate::model::{
@@ -294,6 +294,8 @@ mod tests {
 
     #[tokio::test]
     async fn auto_distill_uses_model_driven_compressor_output() {
+        // Serialize to avoid SQLite contention from parallel Runtime::new calls.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("compressor.db")).await.unwrap();
         let runtime = Runtime::new(db).await.unwrap();
@@ -392,6 +394,8 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limited_turn_retries_after_retry_after_window() {
+        // Serialize to avoid timing interference with parallel rate-limit tests.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("rate-limit.db")).await.unwrap();
         let runtime = Runtime::with_model_engine_and_backoff(
@@ -431,6 +435,10 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_gate_blocks_other_requests_until_retry_window() {
+        // Serialize with other env-dependent tests to avoid parallel interference
+        // with shared stub state and timing-sensitive assertions.
+        let _guard = env_mutex().lock().await;
+
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("rate-limit-gate.db"))
             .await
@@ -457,7 +465,9 @@ mod tests {
                 .unwrap()
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Give the first request time to acquire the gate and hit the rate limit
+        // before the second request arrives.
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         let second_started = Instant::now();
         let second = runtime
@@ -470,7 +480,14 @@ mod tests {
             .unwrap();
         let first = first.await.unwrap();
 
-        assert!(second_started.elapsed() >= Duration::from_millis(150));
+        // The second request should have been blocked for at least the remaining
+        // throttle window. With a 400ms retry_after and 200ms initial sleep,
+        // ~200ms should remain.
+        assert!(
+            second_started.elapsed() >= Duration::from_millis(100),
+            "second request should have been blocked by shared throttle, waited {:?}",
+            second_started.elapsed()
+        );
         assert!(first.response.contains("/rate-limit-once 400"));
         assert!(second.response.contains("hello while blocked"));
 
@@ -478,18 +495,24 @@ mod tests {
             .list_thread_timeline(&second.thread.id)
             .await
             .unwrap();
-        assert!(second_timeline.iter().any(|event| {
-            event.kind == EventKind::RateLimited
-                && event
-                    .payload
-                    .get("shared_gate")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-        }));
+        assert!(
+            second_timeline.iter().any(|event| {
+                event.kind == EventKind::RateLimited
+                    && event
+                        .payload
+                        .get("shared_gate")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            }),
+            "second thread timeline should contain a shared_gate RateLimited event; got events: {:?}",
+            second_timeline.iter().map(|e| (&e.kind, &e.payload)).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
     async fn missing_retry_after_uses_exponential_backoff_base() {
+        // Serialize to avoid timing interference with parallel rate-limit tests.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("rate-limit-backoff.db"))
             .await
@@ -645,6 +668,8 @@ mod tests {
 
     #[tokio::test]
     async fn system_prompt_includes_workspace_agents_and_soul_files() {
+        // Serialize to avoid races with env var mutations and Runtime init from parallel tests.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         fs::write(
             dir.path().join("AGENTS.md"),

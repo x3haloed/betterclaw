@@ -111,6 +111,8 @@ impl ToolRegistry {
         registry.register(tool_tidepool::TidepoolUnsubscribeDomainTool);
         registry.register(tool_tidepool::TidepoolPostMessageTool);
         registry.register(tool_tidepool::TidepoolCreateDomainTool);
+        registry.register(tool_tidepool::TidepoolAddDomainMemberTool);
+        registry.register(tool_tidepool::TidepoolCreateDmTool);
         registry.register(tool_core::FinalMessageTool);
         registry.register(tool_core::AskUserTool);
         registry.register(tool_web::WebSearchTool);

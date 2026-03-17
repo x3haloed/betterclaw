@@ -10,6 +10,7 @@ pub use client::{
 };
 
 pub use crate::generated::tidepool::DomainKind;
+pub use crate::generated::tidepool::DomainRole;
 
 static SHARED_TIDEPOOL_CLIENT: OnceLock<RwLock<Option<TidepoolClient>>> = OnceLock::new();
 

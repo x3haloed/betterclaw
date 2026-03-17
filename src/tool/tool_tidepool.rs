@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::error::RuntimeError;
-use crate::generated::tidepool::{DomainKind, SubscriptionLookup};
+use crate::generated::tidepool::{DomainKind, DomainRole, SubscriptionLookup};
 use crate::tidepool::require_shared_client;
 
 const DEFAULT_SUBSCRIBE_BATCH_WINDOW_SECONDS: u32 = 30;
@@ -317,6 +317,166 @@ impl Tool for TidepoolCreateDomainTool {
     }
 }
 
+pub struct TidepoolAddDomainMemberTool;
+
+#[async_trait]
+impl Tool for TidepoolAddDomainMemberTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_add_domain_member".to_string(),
+            description: "Add an account as a member (or owner) of a Tidepool domain. Use this to invite other agents or users into coordination channels.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The domain to add the member to."
+                    },
+                    "account_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The account to add as a member."
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": ["Owner", "Member"],
+                        "description": "The role to grant. Owner can manage domain settings. Member can read and post."
+                    }
+                },
+                "required": ["domain_id", "account_id", "role"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_u64(params, "tidepool_add_domain_member", "domain_id")?;
+        require_u64(params, "tidepool_add_domain_member", "account_id")?;
+        let role = require_string(params, "tidepool_add_domain_member", "role")?;
+        match role.as_str() {
+            "Owner" | "Member" => {}
+            other => {
+                return Err(RuntimeError::InvalidToolParameters {
+                    tool: "tidepool_add_domain_member".to_string(),
+                    reason: format!(
+                        "field 'role' must be one of 'Owner', 'Member'; got '{other}'"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = require_u64(&params, "tidepool_add_domain_member", "domain_id")?;
+        let account_id = require_u64(&params, "tidepool_add_domain_member", "account_id")?;
+        let role_str = require_string(&params, "tidepool_add_domain_member", "role")?;
+        let role = match role_str.as_str() {
+            "Owner" => DomainRole::Owner,
+            "Member" => DomainRole::Member,
+            other => {
+                return Err(RuntimeError::ToolExecution {
+                    tool: "tidepool_add_domain_member".to_string(),
+                    reason: format!("unexpected role '{other}'"),
+                });
+            }
+        };
+        let client = shared_tidepool_client("tidepool_add_domain_member").await?;
+        client
+            .add_domain_member(domain_id, account_id, role)
+            .map_err(|error| tool_execution("tidepool_add_domain_member", error))?;
+        Ok(json!({
+            "status": "added",
+            "domain_id": domain_id,
+            "account_id": account_id,
+            "role": role_str,
+        }))
+    }
+}
+
+pub struct TidepoolCreateDmTool;
+
+#[async_trait]
+impl Tool for TidepoolCreateDmTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_create_dm".to_string(),
+            description: "Create a direct message channel between the configured account and one or more recipients. Use for private agent-to-agent coordination.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "recipient_account_ids": {
+                        "type": "array",
+                        "items": { "type": "integer", "minimum": 0 },
+                        "minItems": 1,
+                        "description": "Account IDs of the DM recipients."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Title for the DM channel."
+                    }
+                },
+                "required": ["recipient_account_ids", "title"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        let ids = params.get("recipient_account_ids").and_then(Value::as_array);
+        match ids {
+            Some(arr) if !arr.is_empty() => {
+                for (i, v) in arr.iter().enumerate() {
+                    if v.as_u64().is_none() {
+                        return Err(RuntimeError::InvalidToolParameters {
+                            tool: "tidepool_create_dm".to_string(),
+                            reason: format!(
+                                "recipient_account_ids[{i}] must be a non-negative integer"
+                            ),
+                        });
+                    }
+                }
+            }
+            _ => {
+                return Err(RuntimeError::InvalidToolParameters {
+                    tool: "tidepool_create_dm".to_string(),
+                    reason: "field 'recipient_account_ids' must be a non-empty array of integers"
+                        .to_string(),
+                });
+            }
+        }
+        let title = require_string(params, "tidepool_create_dm", "title")?;
+        if title.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_create_dm".to_string(),
+                reason: "field 'title' must not be empty".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let ids: Vec<u64> = params
+            .get("recipient_account_ids")
+            .and_then(Value::as_array)
+            .expect("validated")
+            .iter()
+            .filter_map(Value::as_u64)
+            .collect();
+        let title = require_string(&params, "tidepool_create_dm", "title")?;
+        let client = shared_tidepool_client("tidepool_create_dm").await?;
+        client
+            .create_dm(ids.clone(), title.clone())
+            .map_err(|error| tool_execution("tidepool_create_dm", error))?;
+        Ok(json!({
+            "status": "created",
+            "recipient_account_ids": ids,
+            "title": title,
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -440,6 +600,8 @@ mod tests {
         assert!(names.contains(&"tidepool_unsubscribe_domain".to_string()));
         assert!(names.contains(&"tidepool_post_message".to_string()));
         assert!(names.contains(&"tidepool_create_domain".to_string()));
+        assert!(names.contains(&"tidepool_add_domain_member".to_string()));
+        assert!(names.contains(&"tidepool_create_dm".to_string()));
     }
 
     #[test]
@@ -490,6 +652,57 @@ mod tests {
             "slug": "my-domain",
             "title": "My Domain",
             "message_char_limit": 2048
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn add_domain_member_validation_rejects_invalid_role() {
+        let tool = TidepoolAddDomainMemberTool;
+        let error = tool
+            .validate(&json!({"domain_id": 1, "account_id": 42, "role": "Admin"}))
+            .unwrap_err();
+
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn add_domain_member_validation_accepts_valid_params() {
+        let tool = TidepoolAddDomainMemberTool;
+        tool.validate(&json!({
+            "domain_id": 1,
+            "account_id": 42,
+            "role": "Member"
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn create_dm_validation_rejects_empty_recipients() {
+        let tool = TidepoolCreateDmTool;
+        let error = tool
+            .validate(&json!({"recipient_account_ids": [], "title": "Test"}))
+            .unwrap_err();
+
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn create_dm_validation_rejects_non_integer_recipients() {
+        let tool = TidepoolCreateDmTool;
+        let error = tool
+            .validate(&json!({"recipient_account_ids": ["not-a-number"], "title": "Test"}))
+            .unwrap_err();
+
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn create_dm_validation_accepts_valid_params() {
+        let tool = TidepoolCreateDmTool;
+        tool.validate(&json!({
+            "recipient_account_ids": [1, 42],
+            "title": "Direct chat"
         }))
         .unwrap();
     }

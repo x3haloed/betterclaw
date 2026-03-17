@@ -23,3 +23,5 @@ Big missing areas left to implement:
   - [x] Skills block injected into system prompt
   - [x] read_skill tool for agents to read full instructions
   - [x] inject_skills setting + DB migration
+- [x] tidepool_read_messages tool — read message history from subscribed domains
+- [x] Fix Tidepool cursor seeding boundary skip — seed to baseline-1 to avoid losing messages at the boundary

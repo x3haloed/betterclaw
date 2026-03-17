@@ -477,6 +477,65 @@ impl Tool for TidepoolCreateDmTool {
     }
 }
 
+const DEFAULT_READ_MESSAGES_LIMIT: usize = 50;
+
+pub struct TidepoolReadMessagesTool;
+
+#[async_trait]
+impl Tool for TidepoolReadMessagesTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_read_messages".to_string(),
+            description: "Read recent messages from Tidepool domains the account is subscribed to. Optionally filter by domain_id. Returns the most recent messages up to the specified limit.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Filter messages to a specific domain. If omitted, returns messages from all subscribed domains."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of messages to return. Defaults to 50."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        optional_u64(params, "tidepool_read_messages", "domain_id")?;
+        optional_u32(params, "tidepool_read_messages", "limit")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = optional_u64(&params, "tidepool_read_messages", "domain_id")?;
+        let limit = optional_u32(&params, "tidepool_read_messages", "limit")?
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_READ_MESSAGES_LIMIT);
+        let client = shared_tidepool_client("tidepool_read_messages").await?;
+        let messages = client.read_messages(domain_id, limit);
+        Ok(json!({
+            "messages": messages.iter().map(|m| json!({
+                "message_id": m.message_id,
+                "domain_id": m.domain_id,
+                "domain_title": m.domain_title,
+                "domain_slug": m.domain_slug,
+                "domain_sequence": m.domain_sequence,
+                "author_account_id": m.author_account_id,
+                "body": m.body,
+                "reply_to_message_id": m.reply_to_message_id,
+            })).collect::<Vec<_>>(),
+            "count": messages.len(),
+            "domain_filter": domain_id,
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -602,6 +661,7 @@ mod tests {
         assert!(names.contains(&"tidepool_create_domain".to_string()));
         assert!(names.contains(&"tidepool_add_domain_member".to_string()));
         assert!(names.contains(&"tidepool_create_dm".to_string()));
+        assert!(names.contains(&"tidepool_read_messages".to_string()));
     }
 
     #[test]
@@ -705,5 +765,26 @@ mod tests {
             "title": "Direct chat"
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn read_messages_validation_accepts_empty_params() {
+        let tool = TidepoolReadMessagesTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn read_messages_validation_accepts_domain_filter() {
+        let tool = TidepoolReadMessagesTool;
+        tool.validate(&json!({"domain_id": 42, "limit": 100})).unwrap();
+    }
+
+    #[test]
+    fn read_messages_validation_rejects_invalid_domain_id() {
+        let tool = TidepoolReadMessagesTool;
+        let error = tool
+            .validate(&json!({"domain_id": "not-a-number"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 }

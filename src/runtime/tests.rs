@@ -277,6 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn assistant_messages_saved_without_reasoning_tags() {
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("history.db")).await.unwrap();
         let runtime = Runtime::new(db).await.unwrap();

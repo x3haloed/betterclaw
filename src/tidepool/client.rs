@@ -278,6 +278,55 @@ impl TidepoolClient {
         }
     }
 
+    pub fn read_messages(
+        &self,
+        domain_id: Option<u64>,
+        limit: usize,
+    ) -> Vec<TidepoolInboundMessage> {
+        let mut messages: Vec<TidepoolInboundMessage> = self
+            .inner
+            .connection
+            .db
+            .my_subscribed_messages()
+            .iter()
+            .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
+            .map(|row| {
+                let subscription = self
+                    .inner
+                    .connection
+                    .db
+                    .my_subscriptions()
+                    .iter()
+                    .find(|s| s.domain_id == row.domain_id);
+                TidepoolInboundMessage {
+                    domain_id: row.domain_id,
+                    domain_title: subscription
+                        .as_ref()
+                        .map(|s| s.title.clone())
+                        .unwrap_or_else(|| format!("Domain {}", row.domain_id)),
+                    domain_slug: subscription
+                        .as_ref()
+                        .map(|s| s.slug.clone())
+                        .unwrap_or_default(),
+                    message_id: row.message_id,
+                    domain_sequence: row.domain_sequence,
+                    author_account_id: row.author_account_id,
+                    body: row.body.clone(),
+                    reply_to_message_id: row.reply_to_message_id,
+                }
+            })
+            .collect();
+        messages.sort_by(|a, b| {
+            a.domain_id
+                .cmp(&b.domain_id)
+                .then(a.domain_sequence.cmp(&b.domain_sequence))
+        });
+        if messages.len() > limit {
+            messages = messages[messages.len() - limit..].to_vec();
+        }
+        messages
+    }
+
     pub async fn shutdown(&self) {
         let _ = self.inner.connection.disconnect();
         if let Some(run_loop) = self.inner.run_loop.lock().await.take() {

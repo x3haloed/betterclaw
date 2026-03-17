@@ -191,9 +191,14 @@ impl TidepoolChannel {
                 continue;
             }
 
+            // Seed cursor to baseline - 1 so messages arriving exactly at the
+            // baseline boundary are not skipped by the <= filter in handle_message.
+            let seed_value = baseline_sequence.saturating_sub(1);
+
             tracing::info!(
                 domain_id = *domain_id,
                 baseline_sequence = *baseline_sequence,
+                seed_value,
                 current_cursor,
                 "Seeding Tidepool cursor from attach snapshot baseline"
             );
@@ -202,7 +207,7 @@ impl TidepoolChannel {
                 .upsert_cursor(&ChannelCursor {
                     channel: "tidepool".to_string(),
                     cursor_key,
-                    cursor_value: baseline_sequence.to_string(),
+                    cursor_value: seed_value.to_string(),
                     updated_at: Utc::now(),
                 })
                 .await
@@ -217,8 +222,13 @@ fn tidepool_thread_key(domain_id: u64) -> String {
 }
 
 #[cfg(test)]
+fn cursor_seed_value(baseline_sequence: u64) -> u64 {
+    baseline_sequence.saturating_sub(1)
+}
+
+#[cfg(test)]
 mod tests {
-    use super::tidepool_thread_key;
+    use super::{cursor_seed_value, tidepool_thread_key};
     use std::collections::HashMap;
 
     #[test]
@@ -241,5 +251,13 @@ mod tests {
         }
         assert_eq!(baseline.get(&7), Some(&5));
         assert_eq!(baseline.get(&8), Some(&3));
+    }
+
+    #[test]
+    fn cursor_seed_subtracts_one_to_avoid_boundary_skip() {
+        assert_eq!(cursor_seed_value(0), 0);
+        assert_eq!(cursor_seed_value(1), 0);
+        assert_eq!(cursor_seed_value(48), 47);
+        assert_eq!(cursor_seed_value(100), 99);
     }
 }

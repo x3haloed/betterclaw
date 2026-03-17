@@ -97,6 +97,8 @@ struct UpdateRuntimeSettingsRequest {
     #[serde(default)]
     inject_observations: Option<bool>,
     #[serde(default)]
+    inject_skills: Option<bool>,
+    #[serde(default)]
     model_roles: Option<Vec<ModelRoleConfig>>,
 }
 
@@ -126,6 +128,9 @@ async fn update_runtime_settings(
         inject_observations: payload
             .inject_observations
             .unwrap_or(current.inject_observations),
+        inject_skills: payload
+            .inject_skills
+            .unwrap_or(current.inject_skills),
         model_roles: payload.model_roles.unwrap_or(current.model_roles),
         created_at: current.created_at,
         updated_at: current.updated_at,

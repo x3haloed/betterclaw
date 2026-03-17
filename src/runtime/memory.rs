@@ -3,7 +3,7 @@ use super::internal::{build_fts_query, truncate_for_wake_pack};
 use super::*;
 use crate::error::RuntimeError;
 use crate::memory::*;
-use crate::model::ModelExchangeRequest;
+use crate::model::{MessageContent, ModelExchangeRequest};
 use crate::thread::Thread;
 use crate::turn::Turn;
 use serde_json::json;
@@ -273,16 +273,16 @@ impl Runtime {
             messages: vec![
                 ModelMessage {
                     role: "system".to_string(),
-                    content: Some(
+                    content: Some(MessageContent::Text(
                         "You are BetterClaw's memory compressor. Produce strict JSON only. Synthesize a compact wake pack plus cited invariant and drift artifacts from the supplied runtime evidence. Be conservative, do not invent facts, and only cite entry ids present in the evidence."
                             .to_string(),
-                    ),
+                    )),
                     tool_calls: None,
                     tool_call_id: None,
                 },
                 ModelMessage {
                     role: "user".to_string(),
-                    content: Some(
+                    content: Some(MessageContent::Text(
                         json!({
                             "task": "distill_runtime_memory",
                             "namespace_id": namespace_id,
@@ -301,7 +301,7 @@ impl Runtime {
                             }
                         })
                         .to_string(),
-                    ),
+                    )),
                     tool_calls: None,
                     tool_call_id: None,
                 },

@@ -11,6 +11,7 @@ pub mod model;
 pub mod runtime;
 pub mod routine;
 pub mod settings;
+pub mod skill;
 pub mod thread;
 pub mod tidepool;
 pub mod tool;

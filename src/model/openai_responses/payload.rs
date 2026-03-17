@@ -1,4 +1,4 @@
-use crate::model::ModelMessage;
+use crate::model::{ContentPart, MessageContent, ModelMessage};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -21,16 +21,48 @@ enum ResponseInputItem {
 }
 
 #[derive(Debug, Serialize)]
-struct ResponseContentItem {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    text: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ResponseContentItem {
+    InputText { text: String },
+    OutputText { text: String },
+    ImageUrl { image_url: ResponseImageUrl },
 }
 
-fn response_content_kind(role: &str) -> &'static str {
+#[derive(Debug, Serialize)]
+struct ResponseImageUrl {
+    url: String,
+}
+
+fn response_text_item(role: &str, text: String) -> ResponseContentItem {
     match role {
-        "assistant" => "output_text",
-        _ => "input_text",
+        "assistant" => ResponseContentItem::OutputText { text },
+        _ => ResponseContentItem::InputText { text },
+    }
+}
+
+/// Convert a MessageContent into ResponseContentItems for the Responses API.
+fn content_to_response_items(role: &str, content: &MessageContent) -> Vec<ResponseContentItem> {
+    match content {
+        MessageContent::Text(text) if !text.is_empty() => {
+            vec![response_text_item(role, text.clone())]
+        }
+        MessageContent::Text(_) => vec![],
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text { text } if !text.is_empty() => {
+                    Some(response_text_item(role, text.clone()))
+                }
+                ContentPart::Text { .. } => None,
+                ContentPart::ImageUrl { image_url } => {
+                    Some(ResponseContentItem::ImageUrl {
+                        image_url: ResponseImageUrl {
+                            url: image_url.url.clone(),
+                        },
+                    })
+                }
+            })
+            .collect(),
     }
 }
 
@@ -41,35 +73,38 @@ pub(crate) fn split_instructions_and_input(messages: &[ModelMessage]) -> (String
     for (index, message) in messages.iter().enumerate() {
         match message.role.as_str() {
             "system" => {
-                if let Some(content) = message.content.as_deref()
-                    && !content.trim().is_empty()
+                if let Some(text) = message.content.as_ref().and_then(|c| c.text())
+                    && !text.trim().is_empty()
                 {
-                    instructions.push(content.to_string());
+                    instructions.push(text);
                 }
             }
             "tool" => {
+                let output = message
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.text())
+                    .unwrap_or_default();
                 input.push(
                     serde_json::to_value(ResponseInputItem::FunctionCallOutput {
                         call_id: normalized_tool_call_id(message.tool_call_id.as_deref(), index),
-                        output: message.content.clone().unwrap_or_default(),
+                        output,
                     })
                     .expect("function_call_output should serialize"),
                 );
             }
             role => {
-                if let Some(content) = message.content.as_deref()
-                    && !content.is_empty()
-                {
-                    input.push(
-                        serde_json::to_value(ResponseInputItem::Message {
-                            role: role.to_string(),
-                            content: vec![ResponseContentItem {
-                                kind: response_content_kind(role),
-                                text: content.to_string(),
-                            }],
-                        })
-                        .expect("message item should serialize"),
-                    );
+                if let Some(content) = &message.content {
+                    let items = content_to_response_items(role, content);
+                    if !items.is_empty() {
+                        input.push(
+                            serde_json::to_value(ResponseInputItem::Message {
+                                role: role.to_string(),
+                                content: items,
+                            })
+                            .expect("message item should serialize"),
+                        );
+                    }
                 }
                 if let Some(tool_calls) = &message.tool_calls {
                     for tool_call in tool_calls {

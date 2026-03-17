@@ -27,19 +27,19 @@ impl ModelRunner for StubModelEngine {
         let last_message = request
             .messages
             .last()
-            .and_then(|message| message.content.clone())
+            .and_then(|message| message.content.as_ref().and_then(|c| c.text()))
             .unwrap_or_default();
         let tool_messages = request
             .messages
             .iter()
             .filter(|message| message.role == "tool")
-            .filter_map(|message| message.content.clone())
+            .filter_map(|message| message.content.as_ref().and_then(|c| c.text()))
             .collect::<Vec<_>>();
         let user_messages = request
             .messages
             .iter()
             .filter(|message| message.role == "user")
-            .filter_map(|message| message.content.clone())
+            .filter_map(|message| message.content.as_ref().and_then(|c| c.text()))
             .collect::<Vec<_>>();
         let raw_request = json!({
             "model": request.model,

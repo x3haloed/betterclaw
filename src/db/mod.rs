@@ -252,6 +252,13 @@ impl Db {
             "INTEGER NOT NULL DEFAULT 1",
         )
         .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "inject_skills",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
         Ok(())
     }
 

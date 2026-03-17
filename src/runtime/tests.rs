@@ -7,6 +7,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use serde_json::json;
     use tokio::sync::Mutex;
+    use crate::model::MessageContent;
 
     use tempfile::tempdir;
 
@@ -139,7 +140,7 @@ mod tests {
         let request = runtime.build_model_request(
             vec![ModelMessage {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(MessageContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             }],
@@ -667,9 +668,9 @@ mod tests {
             .build_system_messages(&settings, &workspace, Some("hello"))
             .await
             .unwrap();
-        let system_prompt = messages
+        let system_prompt: String = messages
             .first()
-            .and_then(|message| message.content.as_deref())
+            .and_then(|message| message.content.as_ref().and_then(|c| c.text()))
             .expect("system prompt should be present");
 
         assert!(system_prompt.contains("## Agent Instructions"));

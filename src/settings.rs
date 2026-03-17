@@ -46,6 +46,8 @@ pub struct RuntimeSettings {
     pub enable_observations: bool,
     #[serde(default = "default_true")]
     pub inject_observations: bool,
+    #[serde(default = "default_true")]
+    pub inject_skills: bool,
     #[serde(default)]
     pub model_roles: Vec<ModelRoleConfig>,
     pub created_at: DateTime<Utc>,
@@ -87,6 +89,7 @@ impl RuntimeSettings {
             enable_auto_distill: true,
             enable_observations: true,
             inject_observations: true,
+            inject_skills: true,
             model_roles: vec![ModelRoleConfig {
                 role: ModelRole::Agent,
                 provider: "local".to_string(),

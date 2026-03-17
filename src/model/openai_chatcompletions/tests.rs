@@ -5,6 +5,7 @@ use super::*;
 mod tests {
     use std::time::Instant;
 
+    use crate::model::MessageContent;
     use serde_json::{Value, json};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -158,7 +159,7 @@ mod tests {
     fn ordinary_messages_do_not_gain_null_content() {
         let value = serialize_chat_message(&ModelMessage {
             role: "assistant".to_string(),
-            content: Some("hello".to_string()),
+            content: Some(MessageContent::Text("hello".to_string())),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -256,7 +257,7 @@ mod tests {
             model: "test-model".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(MessageContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             }],

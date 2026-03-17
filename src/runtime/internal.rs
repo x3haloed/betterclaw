@@ -4,6 +4,7 @@ use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::*;
 use crate::routine::RoutineConfig;
+use crate::skill::{build_skills_block, discover_skills};
 use crate::thread::Thread;
 use crate::tool::*;
 use crate::turn::{Turn, TurnStatus};
@@ -187,7 +188,7 @@ impl Runtime {
                     synthetic_summary_prompt_sent = true;
                     conversation.push(ModelMessage {
                         role: "user".to_string(),
-                        content: Some(SYNTHETIC_TOOL_SUMMARY_PROMPT.to_string()),
+                        content: Some(MessageContent::Text(SYNTHETIC_TOOL_SUMMARY_PROMPT.to_string())),
                         tool_calls: None,
                         tool_call_id: None,
                     });
@@ -329,14 +330,14 @@ impl Runtime {
         for prior_turn in history_slice {
             messages.push(ModelMessage {
                 role: "user".to_string(),
-                content: Some(prior_turn.user_message.clone()),
+                content: Some(MessageContent::Text(prior_turn.user_message.clone())),
                 tool_calls: None,
                 tool_call_id: None,
             });
             if let Some(assistant_message) = prior_turn.assistant_message.clone() {
                 messages.push(ModelMessage {
                     role: "assistant".to_string(),
-                    content: Some(strip_reasoning_tags(&assistant_message)),
+                    content: Some(MessageContent::Text(strip_reasoning_tags(&assistant_message))),
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -344,7 +345,7 @@ impl Runtime {
         }
         messages.push(ModelMessage {
             role: "user".to_string(),
-            content: Some(turn.user_message.clone()),
+            content: Some(MessageContent::Text(turn.user_message.clone())),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -362,7 +363,7 @@ impl Runtime {
         if !combined_system_prompt.trim().is_empty() {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(combined_system_prompt),
+                content: Some(MessageContent::Text(combined_system_prompt)),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -377,7 +378,7 @@ impl Runtime {
         {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(format!("<wake_pack>\n{}\n</wake_pack>", wake_pack.content)),
+                content: Some(MessageContent::Text(format!("<wake_pack>\n{}\n</wake_pack>", wake_pack.content))),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -392,7 +393,7 @@ impl Runtime {
         {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(recall_block),
+                content: Some(MessageContent::Text(recall_block)),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -402,10 +403,21 @@ impl Runtime {
         {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(obs_block),
+                content: Some(MessageContent::Text(obs_block)),
                 tool_calls: None,
                 tool_call_id: None,
             });
+        }
+        if settings.inject_skills {
+            let skills = discover_skills(&workspace.root).await;
+            if let Some(skills_block) = build_skills_block(&skills) {
+                messages.push(ModelMessage {
+                    role: "system".to_string(),
+                    content: Some(MessageContent::Text(skills_block)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
         }
         Ok(messages)
     }
@@ -868,7 +880,7 @@ impl Runtime {
             .await?;
             continuation_messages.push(ModelMessage {
                 role: "tool".to_string(),
-                content: Some(output.to_string()),
+                content: Some(MessageContent::Text(output.to_string())),
                 tool_calls: None,
                 tool_call_id: Some(tool_call.id),
             });

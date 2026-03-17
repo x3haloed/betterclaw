@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use crate::model::openai_compat::OpenAiCompatibleConfig;
 use crate::model::{
-    AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent, ModelExchangeRequest,
-    ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace, ReasoningMode,
-    TraceOutcome, TransportKind,
+    AccumulationMode, ExchangeAccumulator, ModelEngineError, ModelEvent,
+    ModelExchangeRequest, ModelExchangeResult, ModelRunner, ModelUsage, RawFrame, RawModelTrace,
+    ReasoningMode, TraceOutcome, TransportKind,
 };
 
 pub(crate) mod decode;

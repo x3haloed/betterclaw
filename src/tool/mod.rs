@@ -117,6 +117,7 @@ impl ToolRegistry {
         registry.register(tool_ledger::LedgerListTool);
         registry.register(tool_ledger::LedgerGetTool);
         registry.register(tool_ledger::ConversationSearchTool);
+        registry.register(tool_skill::ReadSkillTool);
         registry.register(tool_core::MessageTool);
         registry
     }
@@ -547,6 +548,8 @@ async fn tool_collect_ledger_entries(
 }
 
 mod tool_ledger;
+
+mod tool_skill;
 
 mod tool_core;
 

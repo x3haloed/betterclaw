@@ -12,11 +12,118 @@ use crate::model::openai_responses::OpenAiResponsesEngine;
 use crate::model::stub::StubModelEngine;
 use crate::model::{ModelEvent, RawModelTrace, TraceOutcome};
 
+/// A content part for multi-modal messages (text + images).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text {
+        text: String,
+    },
+    #[serde(rename = "image_url")]
+    ImageUrl {
+        image_url: ImageUrl,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrl {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl ContentPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    pub fn image_url(url: impl Into<String>) -> Self {
+        Self::ImageUrl {
+            image_url: ImageUrl {
+                url: url.into(),
+                detail: Some("auto".to_string()),
+            },
+        }
+    }
+
+    pub fn image_url_with_detail(url: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self::ImageUrl {
+            image_url: ImageUrl {
+                url: url.into(),
+                detail: Some(detail.into()),
+            },
+        }
+    }
+}
+
+/// Message content that can be either a plain string or multi-part (text + images).
+/// OpenAI-compatible APIs accept both forms for the `content` field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    /// Plain text content.
+    Text(String),
+    /// Multi-part content array (text + image_url).
+    Parts(Vec<ContentPart>),
+}
+
+impl MessageContent {
+    /// Extract plain text from either variant. Images are skipped.
+    pub fn text(&self) -> Option<String> {
+        match self {
+            Self::Text(s) if !s.is_empty() => Some(s.clone()),
+            Self::Text(_) => None,
+            Self::Parts(parts) => {
+                let texts: Vec<&str> = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                if texts.is_empty() {
+                    None
+                } else {
+                    Some(texts.join("\n"))
+                }
+            }
+        }
+    }
+
+    /// Check if this content contains any image parts.
+    pub fn has_images(&self) -> bool {
+        match self {
+            Self::Text(_) => false,
+            Self::Parts(parts) => parts.iter().any(|p| matches!(p, ContentPart::ImageUrl { .. })),
+        }
+    }
+}
+
+impl Default for MessageContent {
+    fn default() -> Self {
+        Self::Text(String::new())
+    }
+}
+
+impl From<String> for MessageContent {
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
+}
+
+impl From<&str> for MessageContent {
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMessage {
     pub role: String,
+    /// Message content — can be a plain string or multi-part array.
+    /// OpenAI-compatible APIs accept both.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ModelToolCallMessage>>,
     #[serde(skip_serializing_if = "Option::is_none")]

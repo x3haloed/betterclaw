@@ -3,6 +3,7 @@ use super::payload::*;
 
 #[cfg(test)]
 mod tests {
+    use crate::model::MessageContent;
     use serde_json::json;
 
     use super::{
@@ -34,13 +35,13 @@ mod tests {
         let (instructions, input) = split_instructions_and_input(&[
             ModelMessage {
                 role: "system".to_string(),
-                content: Some("be careful".to_string()),
+                content: Some(MessageContent::Text("be careful".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             },
             ModelMessage {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(MessageContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             },
@@ -57,13 +58,13 @@ mod tests {
         let (_instructions, input) = split_instructions_and_input(&[
             ModelMessage {
                 role: "assistant".to_string(),
-                content: Some("already answered".to_string()),
+                content: Some(MessageContent::Text("already answered".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             },
             ModelMessage {
                 role: "user".to_string(),
-                content: Some("follow up".to_string()),
+                content: Some(MessageContent::Text("follow up".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             },
@@ -94,7 +95,7 @@ mod tests {
             },
             ModelMessage {
                 role: "tool".to_string(),
-                content: Some("{\"message\":\"hi\"}".to_string()),
+                content: Some(MessageContent::Text("{\"message\":\"hi\"}".to_string())),
                 tool_calls: None,
                 tool_call_id: Some("call-1".to_string()),
             },
@@ -309,7 +310,7 @@ mod tests {
             model: "gpt-5-mini".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(MessageContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             }],
@@ -353,7 +354,7 @@ mod tests {
             model: "gpt-5-mini".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(MessageContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             }],

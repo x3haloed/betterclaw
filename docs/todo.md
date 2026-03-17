@@ -11,7 +11,7 @@ Big missing areas left to implement:
   - [x] Observations block injected into system prompt
   - [x] Wired into turn completion flow
 - [x] Add tidepool support
-- [ ] Add Codex & Copilot providers in
+- [x] Add Codex & Copilot providers in
 - [ ] image and video attachments (image_url for openai-compat, video_url if supported by provider), input via Discord
   - [x] MessageContent enum with Text | Parts (image_url) variants
   - [x] ContentPart enum with Text and ImageUrl

@@ -20,8 +20,10 @@ impl Db {
         let conn = self.connect()?;
         let id = external_thread_id.to_string();
         let now = Utc::now();
+        // INSERT OR IGNORE handles concurrent resolve_thread() calls racing
+        // to create the same thread (same id = external_thread_id).
         conn.execute(
-            "INSERT INTO threads (id, agent_id, channel, external_thread_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO threads (id, agent_id, channel, external_thread_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
                 id.clone(),
                 agent_id.to_string(),
@@ -33,15 +35,13 @@ impl Db {
             ],
         )
         .await?;
-        Ok(Thread {
-            id,
-            agent_id: agent_id.to_string(),
-            channel: channel.to_string(),
-            external_thread_id: external_thread_id.to_string(),
-            title: title.to_string(),
-            created_at: now,
-            updated_at: now,
-        })
+        // Always return the row — either ours or the one that beat us.
+        if let Some(thread) = self.find_thread(agent_id, channel, external_thread_id).await? {
+            Ok(thread)
+        } else {
+            // Should never happen after INSERT OR IGNORE, but guard anyway.
+            anyhow::bail!("create_thread: row missing after INSERT OR IGNORE for {}", external_thread_id)
+        }
     }
 
     pub async fn find_thread(

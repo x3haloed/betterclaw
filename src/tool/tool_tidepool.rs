@@ -395,6 +395,55 @@ impl Tool for TidepoolAddDomainMemberTool {
     }
 }
 
+pub struct TidepoolRemoveDomainMemberTool;
+
+#[async_trait]
+impl Tool for TidepoolRemoveDomainMemberTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_remove_domain_member".to_string(),
+            description: "Remove an account from a Tidepool domain. Use this to revoke access to coordination channels.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The domain to remove the member from."
+                    },
+                    "account_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The account to remove."
+                    }
+                },
+                "required": ["domain_id", "account_id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_u64(params, "tidepool_remove_domain_member", "domain_id")?;
+        require_u64(params, "tidepool_remove_domain_member", "account_id")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = require_u64(&params, "tidepool_remove_domain_member", "domain_id")?;
+        let account_id = require_u64(&params, "tidepool_remove_domain_member", "account_id")?;
+        let client = shared_tidepool_client("tidepool_remove_domain_member").await?;
+        client
+            .remove_domain_member(domain_id, account_id)
+            .map_err(|error| tool_execution("tidepool_remove_domain_member", error))?;
+        Ok(json!({
+            "status": "removed",
+            "domain_id": domain_id,
+            "account_id": account_id,
+        }))
+    }
+}
+
 pub struct TidepoolCreateDmTool;
 
 #[async_trait]
@@ -660,6 +709,7 @@ mod tests {
         assert!(names.contains(&"tidepool_post_message".to_string()));
         assert!(names.contains(&"tidepool_create_domain".to_string()));
         assert!(names.contains(&"tidepool_add_domain_member".to_string()));
+        assert!(names.contains(&"tidepool_remove_domain_member".to_string()));
         assert!(names.contains(&"tidepool_create_dm".to_string()));
         assert!(names.contains(&"tidepool_read_messages".to_string()));
     }
@@ -735,6 +785,32 @@ mod tests {
             "role": "Member"
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn remove_domain_member_validation_requires_both_ids() {
+        let tool = TidepoolRemoveDomainMemberTool;
+        let error = tool.validate(&json!({"domain_id": 1})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn remove_domain_member_validation_accepts_valid_params() {
+        let tool = TidepoolRemoveDomainMemberTool;
+        tool.validate(&json!({
+            "domain_id": 1,
+            "account_id": 42
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn remove_domain_member_validation_rejects_non_numeric() {
+        let tool = TidepoolRemoveDomainMemberTool;
+        let error = tool
+            .validate(&json!({"domain_id": "abc", "account_id": 42}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]

@@ -11,8 +11,8 @@ use tokio::sync::{Mutex, mpsc};
 use crate::generated::tidepool::{
     AccountLookup, DbConnection, DomainKind, DomainRole, MyAccountTableAccess,
     MySubscribedMessagesTableAccess, MySubscriptionsTableAccess, SubscriptionLookup,
-    add_domain_member, create_dm, create_domain, post_message, subscribe_domain,
-    unsubscribe_domain,
+    add_domain_member, create_dm, create_domain, post_message, remove_domain_member,
+    subscribe_domain, unsubscribe_domain,
 };
 
 const DEFAULT_BASE_URL: &str = "https://spacetimedb.com";
@@ -241,6 +241,14 @@ impl TidepoolClient {
             .reducers
             .add_domain_member(domain_id, account_id, role)
             .context("adding Tidepool domain member")
+    }
+
+    pub fn remove_domain_member(&self, domain_id: u64, account_id: u64) -> Result<()> {
+        self.inner
+            .connection
+            .reducers
+            .remove_domain_member(domain_id, account_id)
+            .context("removing Tidepool domain member")
     }
 
     pub fn create_dm(&self, recipient_account_ids: Vec<u64>, title: impl Into<String>) -> Result<()> {

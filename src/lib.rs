@@ -16,5 +16,6 @@ pub mod thread;
 pub mod tidepool;
 pub mod tool;
 pub mod turn;
+pub mod update;
 pub mod web;
 pub mod workspace;

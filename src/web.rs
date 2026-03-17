@@ -48,6 +48,8 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
         .route("/api/turns/{turn_id}/traces", get(get_turn_traces))
         .route("/api/turns/{turn_id}/replay", post(replay_turn))
         .route("/api/traces/{trace_id}", get(get_trace))
+        .route("/api/runtime/check-update", get(check_update))
+        .route("/api/runtime/self-update", post(self_update))
         .with_state(runtime)
 }
 
@@ -333,6 +335,27 @@ async fn get_trace(
 struct ThreadDetail {
     thread: crate::thread::Thread,
     turns: Vec<crate::turn::Turn>,
+}
+
+/// Check if new commits are available without pulling.
+async fn check_update() -> Result<Json<serde_json::Value>, ApiError> {
+    match crate::update::check_for_updates(None) {
+        Ok(status) => Ok(Json(json!({ "status": status }))),
+        Err(e) => Err(ApiError::Runtime(RuntimeError::Other(e))),
+    }
+}
+
+/// Trigger a self-update: git pull → cargo build → exec into new binary.
+async fn self_update() -> Result<Json<crate::update::UpdateStatus>, ApiError> {
+    // Run the update in a blocking thread since it involves process spawning
+    let result = tokio::task::spawn_blocking(|| crate::update::perform_update(true))
+        .await
+        .map_err(|e| ApiError::Runtime(RuntimeError::Other(anyhow!(e))))?;
+
+    match result {
+        Ok(status) => Ok(Json(status)),
+        Err(e) => Err(ApiError::Runtime(RuntimeError::Other(e))),
+    }
 }
 
 #[derive(Debug)]

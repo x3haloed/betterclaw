@@ -12,12 +12,14 @@ Big missing areas left to implement:
   - [x] Wired into turn completion flow
 - [x] Add tidepool support
 - [x] Add Codex & Copilot providers in
-- [ ] image and video attachments (image_url for openai-compat, video_url if supported by provider), input via Discord
+- [x] image and video attachments (image_url for openai-compat, video_url if supported by provider), input via Discord
   - [x] MessageContent enum with Text | Parts (image_url) variants
   - [x] ContentPart enum with Text and ImageUrl
   - [x] OpenAI Responses API payload handles image_url
   - [x] Chat Completions API payload handles image_url
   - [x] Discord input attachment handling
+- [x] max tool-loop iterations (MAX_TOOL_LOOP_ITERATIONS=32) to prevent runaway turns
+- [x] Tidepool outbound noop filter — suppresses ACK/FYI/no-response-needed messages that create agent feedback loops
 - [x] first-class skills support
   - [x] Skill discovery from workspace skills/ directory
   - [x] Skills block injected into system prompt

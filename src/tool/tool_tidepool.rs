@@ -613,7 +613,7 @@ impl Tool for TidepoolReadMessagesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tidepool_read_messages".to_string(),
-            description: "Read recent messages from Tidepool domains the account is subscribed to. Optionally filter by domain_id. Returns the most recent messages up to the specified limit.".to_string(),
+            description: "Read recent messages from Tidepool domains the account is subscribed to. Optionally filter by domain_id and/or after_message_id for incremental reads. Returns the most recent messages up to the specified limit.".to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -621,6 +621,11 @@ impl Tool for TidepoolReadMessagesTool {
                         "type": "integer",
                         "minimum": 0,
                         "description": "Optional. Filter messages to a specific domain. If omitted, returns messages from all subscribed domains."
+                    },
+                    "after_message_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Only return messages with message_id strictly greater than this value. Useful for incremental polling after the last message you've seen."
                     },
                     "limit": {
                         "type": "integer",
@@ -635,17 +640,19 @@ impl Tool for TidepoolReadMessagesTool {
 
     fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
         optional_u64(params, "tidepool_read_messages", "domain_id")?;
+        optional_u64(params, "tidepool_read_messages", "after_message_id")?;
         optional_u32(params, "tidepool_read_messages", "limit")?;
         Ok(())
     }
 
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
         let domain_id = optional_u64(&params, "tidepool_read_messages", "domain_id")?;
+        let after_message_id = optional_u64(&params, "tidepool_read_messages", "after_message_id")?;
         let limit = optional_u32(&params, "tidepool_read_messages", "limit")?
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_READ_MESSAGES_LIMIT);
         let client = shared_tidepool_client("tidepool_read_messages").await?;
-        let messages = client.read_messages(domain_id, limit);
+        let messages = client.read_messages_filtered(domain_id, after_message_id, limit);
         Ok(json!({
             "messages": messages.iter().map(|m| json!({
                 "message_id": m.message_id,
@@ -659,6 +666,7 @@ impl Tool for TidepoolReadMessagesTool {
             })).collect::<Vec<_>>(),
             "count": messages.len(),
             "domain_filter": domain_id,
+            "after_message_id": after_message_id,
         }))
     }
 }
@@ -974,6 +982,23 @@ mod tests {
         let tool = TidepoolReadMessagesTool;
         let error = tool
             .validate(&json!({"domain_id": "not-a-number"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn read_messages_validation_accepts_after_message_id() {
+        let tool = TidepoolReadMessagesTool;
+        tool.validate(&json!({"after_message_id": 100})).unwrap();
+        tool.validate(&json!({"domain_id": 1, "after_message_id": 100, "limit": 20}))
+            .unwrap();
+    }
+
+    #[test]
+    fn read_messages_validation_rejects_invalid_after_message_id() {
+        let tool = TidepoolReadMessagesTool;
+        let error = tool
+            .validate(&json!({"after_message_id": "not-a-number"}))
             .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }

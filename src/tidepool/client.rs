@@ -364,9 +364,13 @@ impl TidepoolClient {
 
     pub async fn shutdown(&self) {
         let _ = self.inner.connection.disconnect();
-        if let Some(run_loop) = self.inner.run_loop.lock().await.take() {
-            run_loop.abort();
-        }
+        // Do NOT abort the run_loop task. After disconnect(), the SDK's
+        // run_async() will exit on its own. Aborting it mid-cleanup leaves
+        // internal WebSocket timers dangling, which panic when they fire
+        // during the next connection attempt ("Tokio context is being
+        // shutdown"). Simply drop the JoinHandle and let the reconnect
+        // delay give the old task time to finish and release sockets.
+        let _ = self.inner.run_loop.lock().await.take();
     }
 }
 

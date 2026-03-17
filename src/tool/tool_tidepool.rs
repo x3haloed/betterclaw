@@ -528,6 +528,40 @@ impl Tool for TidepoolCreateDmTool {
 
 const DEFAULT_READ_MESSAGES_LIMIT: usize = 50;
 
+pub struct TidepoolListDmDomainsTool;
+
+#[async_trait]
+impl Tool for TidepoolListDmDomainsTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_list_dm_domains".to_string(),
+            description: "List direct message domains the configured account participates in. Shows domain ID, title, and participant account IDs for each DM channel.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        validate_empty_object(params, "tidepool_list_dm_domains")
+    }
+
+    async fn call(&self, _params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let client = shared_tidepool_client("tidepool_list_dm_domains").await?;
+        let dm_domains = client.dm_domains();
+        Ok(json!({
+            "dm_domains": dm_domains.iter().map(|dm| json!({
+                "domain_id": dm.domain_id,
+                "title": dm.title,
+                "participant_account_ids": dm.participant_account_ids,
+            })).collect::<Vec<_>>(),
+            "count": dm_domains.len(),
+        }))
+    }
+}
+
 pub struct TidepoolReadMessagesTool;
 
 #[async_trait]
@@ -711,6 +745,7 @@ mod tests {
         assert!(names.contains(&"tidepool_add_domain_member".to_string()));
         assert!(names.contains(&"tidepool_remove_domain_member".to_string()));
         assert!(names.contains(&"tidepool_create_dm".to_string()));
+        assert!(names.contains(&"tidepool_list_dm_domains".to_string()));
         assert!(names.contains(&"tidepool_read_messages".to_string()));
     }
 
@@ -841,6 +876,19 @@ mod tests {
             "title": "Direct chat"
         }))
         .unwrap();
+    }
+
+    #[test]
+    fn list_dm_domains_validation_accepts_empty_params() {
+        let tool = TidepoolListDmDomainsTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn list_dm_domains_validation_rejects_params() {
+        let tool = TidepoolListDmDomainsTool;
+        let error = tool.validate(&json!({"domain_id": 1})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]

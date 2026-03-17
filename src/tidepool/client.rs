@@ -72,6 +72,17 @@ pub struct TidepoolInboundMessage {
     pub reply_to_message_id: Option<u64>,
 }
 
+/// Presence information for a single agent/account based on recent message activity.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentPresenceEntry {
+    pub account_id: u64,
+    pub last_message_id: u64,
+    pub last_domain_id: u64,
+    pub last_domain_title: String,
+    pub message_count: usize,
+    pub active_domain_ids: Vec<u64>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TidepoolBootstrapOutcome {
     pub account_id: u64,
@@ -473,6 +484,68 @@ impl TidepoolClient {
         messages.sort_by(|a, b| b.message_id.cmp(&a.message_id));
         messages.truncate(limit);
         messages
+    }
+
+    /// Infer agent presence from recent message activity in subscribed domains.
+    ///
+    /// Analyzes the last `window_size` messages across all (or a specific) subscribed
+    /// domains to determine which accounts have been active recently. Returns a
+    /// presence entry for each unique author with their last activity details.
+    pub fn agent_presence(
+        &self,
+        domain_id: Option<u64>,
+        window_size: usize,
+    ) -> Vec<AgentPresenceEntry> {
+        use std::collections::HashMap;
+
+        let mut activity: HashMap<u64, AgentPresenceEntry> = HashMap::new();
+
+        for row in self
+            .inner
+            .connection
+            .db
+            .my_subscribed_messages()
+            .iter()
+            .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
+        {
+            let entry = activity.entry(row.author_account_id).or_insert_with(|| {
+                AgentPresenceEntry {
+                    account_id: row.author_account_id,
+                    last_message_id: 0,
+                    last_domain_id: 0,
+                    last_domain_title: String::new(),
+                    message_count: 0,
+                    active_domain_ids: Vec::new(),
+                }
+            });
+
+            entry.message_count += 1;
+            if row.message_id > entry.last_message_id {
+                entry.last_message_id = row.message_id;
+                entry.last_domain_id = row.domain_id;
+                let subscription = self
+                    .inner
+                    .connection
+                    .db
+                    .my_subscriptions()
+                    .iter()
+                    .find(|s| s.domain_id == row.domain_id);
+                entry.last_domain_title = subscription
+                    .as_ref()
+                    .map(|s| s.title.clone())
+                    .unwrap_or_else(|| format!("Domain {}", row.domain_id));
+            }
+            if !entry.active_domain_ids.contains(&row.domain_id) {
+                entry.active_domain_ids.push(row.domain_id);
+            }
+        }
+
+        let mut entries: Vec<AgentPresenceEntry> = activity.into_values().collect();
+        entries.sort_by(|a, b| b.last_message_id.cmp(&a.last_message_id));
+        if entries.len() > window_size {
+            entries.truncate(window_size);
+        }
+        entries
     }
 
     pub async fn shutdown(&self) {

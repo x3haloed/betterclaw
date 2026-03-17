@@ -6,7 +6,8 @@ use tokio::sync::RwLock;
 pub mod client;
 
 pub use client::{
-    TidepoolBootstrapOutcome, TidepoolClient, TidepoolConfig, TidepoolInboundMessage,
+    AgentPresenceEntry, TidepoolBootstrapOutcome, TidepoolClient, TidepoolConfig,
+    TidepoolInboundMessage,
 };
 
 pub use crate::generated::tidepool::DomainKind;

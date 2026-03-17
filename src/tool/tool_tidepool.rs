@@ -671,6 +671,61 @@ impl Tool for TidepoolReadMessagesTool {
     }
 }
 
+pub struct TidepoolAgentPresenceTool;
+
+#[async_trait]
+impl Tool for TidepoolAgentPresenceTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_agent_presence".to_string(),
+            description: "Detect which agents/accounts are active in Tidepool domains by analyzing recent message activity. Returns presence information including last activity, message count, and active domains for each recently-active account. Use this to determine who is online and responsive before sending coordination messages.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Restrict presence analysis to a specific domain. If omitted, analyzes all subscribed domains."
+                    },
+                    "window_size": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of active accounts to return, ordered by most recent activity. Defaults to 20."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        optional_u64(params, "tidepool_agent_presence", "domain_id")?;
+        optional_u32(params, "tidepool_agent_presence", "window_size")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = optional_u64(&params, "tidepool_agent_presence", "domain_id")?;
+        let window_size = optional_u32(&params, "tidepool_agent_presence", "window_size")?
+            .map(|v| v as usize)
+            .unwrap_or(20);
+        let client = shared_tidepool_client("tidepool_agent_presence").await?;
+        let presence = client.agent_presence(domain_id, window_size);
+        Ok(json!({
+            "agents": presence.iter().map(|p| json!({
+                "account_id": p.account_id,
+                "last_message_id": p.last_message_id,
+                "last_domain_id": p.last_domain_id,
+                "last_domain_title": p.last_domain_title,
+                "message_count": p.message_count,
+                "active_domain_ids": p.active_domain_ids,
+            })).collect::<Vec<_>>(),
+            "count": presence.len(),
+            "domain_filter": domain_id,
+        }))
+    }
+}
+
 pub struct TidepoolSearchMessagesTool;
 
 #[async_trait]
@@ -1138,5 +1193,50 @@ mod tests {
         let definitions = registry.definitions();
         let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_search_messages".to_string()));
+    }
+
+    #[test]
+    fn default_registry_includes_agent_presence_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_agent_presence".to_string()));
+    }
+
+    #[test]
+    fn agent_presence_validation_accepts_empty_params() {
+        let tool = TidepoolAgentPresenceTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn agent_presence_validation_accepts_domain_filter() {
+        let tool = TidepoolAgentPresenceTool;
+        tool.validate(&json!({"domain_id": 42})).unwrap();
+    }
+
+    #[test]
+    fn agent_presence_validation_accepts_window_size() {
+        let tool = TidepoolAgentPresenceTool;
+        tool.validate(&json!({"window_size": 5})).unwrap();
+        tool.validate(&json!({"domain_id": 1, "window_size": 50})).unwrap();
+    }
+
+    #[test]
+    fn agent_presence_validation_rejects_invalid_domain_id() {
+        let tool = TidepoolAgentPresenceTool;
+        let error = tool
+            .validate(&json!({"domain_id": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn agent_presence_validation_rejects_invalid_window_size() {
+        let tool = TidepoolAgentPresenceTool;
+        let error = tool
+            .validate(&json!({"window_size": "big"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 }

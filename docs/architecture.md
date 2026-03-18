@@ -83,7 +83,7 @@ The system should be generous with truth and conservative with disk.
 
 ## Trace Schema
 
-The concrete model-provider trace format is defined in [`/Users/chad/Repos/betterclaw/docs/model-traces.md`](/Users/chad/Repos/betterclaw/docs/model-traces.md).
+The concrete model-provider trace format is defined in [`model-traces.md`](model-traces.md).
 
 That document should be treated as the source of truth for:
 

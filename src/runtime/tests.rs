@@ -103,6 +103,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_tool_arguments_are_fed_back_to_model() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("malformed-tool-feedback.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-malformed-tool-feedback",
+                "/tool final_message {\"content\":\"unterminated}",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status, TurnStatus::Succeeded);
+        assert!(outcome.response.contains("malformed_tool_arguments"));
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        let tool_result_payload = timeline
+            .iter()
+            .find(|event| event.kind == EventKind::ToolResult)
+            .map(|event| event.payload.clone())
+            .expect("tool result should be recorded");
+        assert_eq!(
+            tool_result_payload["output"]["error"],
+            json!("malformed_tool_arguments")
+        );
+        assert_eq!(
+            tool_result_payload["output"]["tool"],
+            json!("final_message")
+        );
+    }
+
+    #[tokio::test]
     async fn parallel_tool_calls_continue_in_one_batch() {
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("test.db")).await.unwrap();

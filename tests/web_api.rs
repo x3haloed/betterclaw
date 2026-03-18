@@ -87,7 +87,7 @@ async fn posting_message_creates_turn_and_trace() {
 }
 
 #[tokio::test]
-async fn malformed_tool_call_records_trace_and_fails_cleanly() {
+async fn malformed_tool_call_records_trace_and_stays_recoverable() {
     let app = app().await;
 
     let create = app
@@ -120,7 +120,17 @@ async fn malformed_tool_call_records_trace_and_fails_cleanly() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let posted: Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        posted["response"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("malformed_tool_arguments")
+    );
 
     let detail = app
         .clone()
@@ -137,7 +147,7 @@ async fn malformed_tool_call_records_trace_and_fails_cleanly() {
         .unwrap();
     let detail: Value = serde_json::from_slice(&body).unwrap();
     let turns = detail["turns"].as_array().unwrap();
-    assert_eq!(turns.last().unwrap()["status"], "failed");
+    assert_eq!(turns.last().unwrap()["status"], "succeeded");
 
     let traces = app
         .clone()
@@ -145,7 +155,7 @@ async fn malformed_tool_call_records_trace_and_fails_cleanly() {
             Request::builder()
                 .uri(format!(
                     "/api/turns/{}/traces",
-                    turns.last().unwrap()["id"].as_str().unwrap()
+                    posted["turn_id"].as_str().unwrap()
                 ))
                 .body(Body::empty())
                 .unwrap(),

@@ -161,7 +161,9 @@ impl Runtime {
                 push_visible_reply_segment(&mut visible_reply_segments, content);
             }
 
-            if exchange.outcome != TraceOutcome::Ok {
+            let recoverable_parse_error =
+                exchange.outcome == TraceOutcome::ParseError && !exchange.tool_calls.is_empty();
+            if exchange.outcome != TraceOutcome::Ok && !recoverable_parse_error {
                 let error = exchange
                     .error_summary
                     .clone()
@@ -799,12 +801,25 @@ impl Runtime {
         workspace: &Workspace,
         tool_calls: Vec<ReducedToolCall>,
     ) -> Result<ToolExecutionOutcome, RuntimeError> {
+        enum PendingToolExecution {
+            Execute {
+                tool_call: ReducedToolCall,
+                invocation: ToolInvocation,
+                arguments: Value,
+            },
+            Immediate {
+                tool_call: ReducedToolCall,
+                invocation: ToolInvocation,
+                output: Value,
+            },
+        }
+
         let mut assistant_tool_calls = Vec::new();
         let mut continuation_messages = Vec::new();
         let mut outbound_messages = Vec::new();
         let mut ask_user_question = None;
         let mut final_message = None;
-        let mut batch = Vec::new();
+        let mut pending = Vec::new();
         let tool_context = ToolContext::new(
             workspace.clone(),
             thread.id.clone(),
@@ -814,18 +829,12 @@ impl Runtime {
         );
 
         for tool_call in tool_calls {
-            let arguments = tool_call.arguments_json.clone().ok_or_else(|| {
-                RuntimeError::ModelParse(format!(
-                    "tool call '{}' had malformed JSON arguments: {}",
-                    tool_call.name, tool_call.arguments_text
-                ))
-            })?;
             let invocation = ToolInvocation {
                 id: Uuid::new_v4().to_string(),
                 turn_id: turn.id.clone(),
                 thread_id: thread.id.clone(),
                 tool_name: tool_call.name.clone(),
-                parameters: arguments.clone(),
+                parameters: tool_call.arguments_json.clone().unwrap_or(Value::Null),
                 created_at: Utc::now(),
             };
             self.append_event_and_publish(
@@ -848,24 +857,59 @@ impl Runtime {
                     arguments: tool_call.arguments_text.clone(),
                 },
             });
-            batch.push((tool_call, invocation, arguments));
+            match tool_call.arguments_json.clone() {
+                Some(arguments) => pending.push(PendingToolExecution::Execute {
+                    tool_call,
+                    invocation,
+                    arguments,
+                }),
+                None => pending.push(PendingToolExecution::Immediate {
+                    output: json!({
+                        "error": "malformed_tool_arguments",
+                        "tool": tool_call.name,
+                        "message": "tool arguments were not valid JSON",
+                        "received_arguments": tool_call.arguments_text,
+                    }),
+                    tool_call,
+                    invocation,
+                }),
+            }
         }
 
-        let executions = batch.iter().map(|(tool_call, _, arguments)| {
-            self.tools
-                .execute(&tool_call.name, arguments.clone(), &tool_context)
+        let executions = pending.iter().filter_map(|item| match item {
+            PendingToolExecution::Execute {
+                tool_call,
+                arguments,
+                ..
+            } => Some(self.tools.execute(&tool_call.name, arguments.clone(), &tool_context)),
+            PendingToolExecution::Immediate { .. } => None,
         });
         let outputs = join_all(executions).await;
+        let mut outputs = outputs.into_iter();
 
-        for ((tool_call, invocation, arguments), output) in batch.into_iter().zip(outputs) {
-            let output = match output {
-                Ok(output) => output,
-                Err(error @ RuntimeError::InvalidToolParameters { .. })
-                | Err(error @ RuntimeError::ToolExecution { .. })
-                | Err(error @ RuntimeError::ToolNotFound(_)) => {
-                    tool_feedback_error(&error, &tool_call.name, &arguments)
+        for item in pending {
+            let (tool_call, invocation, output) = match item {
+                PendingToolExecution::Execute {
+                    tool_call,
+                    invocation,
+                    arguments,
+                } => {
+                    let output = match outputs.next().expect("missing tool execution result") {
+                        Ok(output) => output,
+                        Err(error @ RuntimeError::InvalidToolParameters { .. })
+                        | Err(error @ RuntimeError::ToolExecution { .. })
+                        | Err(error @ RuntimeError::ToolNotFound(_)) => {
+                            tool_feedback_error(&error, &tool_call.name, &arguments)
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    (tool_call, invocation, output)
                 }
-                Err(error) => return Err(error),
+                PendingToolExecution::Immediate {
+                    tool_call,
+                    invocation,
+                    output,
+                } => (tool_call, invocation, output),
             };
             if let Some(control) = Self::parse_tool_control(&output) {
                 match control {

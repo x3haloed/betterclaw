@@ -621,6 +621,56 @@ impl TidepoolClient {
         let _ = self.inner.run_loop.lock().await.take();
     }
 
+    /// Find messages that mention a specific handle via `@handle` pattern.
+    ///
+    /// Parses message bodies for `@<handle>` mentions (case-insensitive, word-boundary-aware).
+    /// Returns messages sorted by most recent first. Useful for agents to find coordination
+    /// messages directed at them without scanning all domain messages.
+    pub fn find_mentions(
+        &self,
+        handle: &str,
+        domain_id: Option<u64>,
+        limit: usize,
+    ) -> Vec<TidepoolInboundMessage> {
+        let mut messages: Vec<TidepoolInboundMessage> = self
+            .inner
+            .connection
+            .db
+            .my_subscribed_messages()
+            .iter()
+            .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
+            .filter(|row| body_mentions_handle(&row.body, handle))
+            .map(|row| {
+                let subscription = self
+                    .inner
+                    .connection
+                    .db
+                    .my_subscriptions()
+                    .iter()
+                    .find(|s| s.domain_id == row.domain_id);
+                TidepoolInboundMessage {
+                    domain_id: row.domain_id,
+                    domain_title: subscription
+                        .as_ref()
+                        .map(|s| s.title.clone())
+                        .unwrap_or_else(|| format!("Domain {}", row.domain_id)),
+                    domain_slug: subscription
+                        .as_ref()
+                        .map(|s| s.slug.clone())
+                        .unwrap_or_default(),
+                    message_id: row.message_id,
+                    domain_sequence: row.domain_sequence,
+                    author_account_id: row.author_account_id,
+                    body: row.body.clone(),
+                    reply_to_message_id: row.reply_to_message_id,
+                }
+            })
+            .collect();
+        messages.sort_by(|a, b| b.message_id.cmp(&a.message_id));
+        messages.truncate(limit);
+        messages
+    }
+
     /// Compute health status for agents based on Tidepool message activity.
     /// Unlike `agent_presence`, this includes time-since-last-message analysis
     /// and a human-readable health status assessment.
@@ -852,4 +902,66 @@ fn parse_bool_env(name: &str) -> bool {
             .as_deref(),
         Some("1" | "true" | "yes" | "on")
     )
+}
+
+/// Check if a message body mentions a given handle via `@handle` pattern.
+/// Case-insensitive, word-boundary-aware matching.
+pub fn body_mentions_handle(body: &str, handle: &str) -> bool {
+    let handle_lower = handle.to_ascii_lowercase();
+    body.split_whitespace().any(|word| {
+        let stripped = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '@' && c != '_' && c != '-');
+        let mention = stripped.strip_prefix('@').unwrap_or("");
+        mention.to_ascii_lowercase() == handle_lower
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mention_matches_simple_handle() {
+        assert!(body_mentions_handle("hey @buzz can you check this?", "buzz"));
+        assert!(body_mentions_handle("@horus please review", "horus"));
+        assert!(body_mentions_handle("ping @chip", "chip"));
+    }
+
+    #[test]
+    fn mention_is_case_insensitive() {
+        assert!(body_mentions_handle("hey @BUZZ what's up", "buzz"));
+        assert!(body_mentions_handle("@Horus look at this", "horus"));
+        assert!(body_mentions_handle("ping @ChIP", "chip"));
+    }
+
+    #[test]
+    fn mention_matches_with_punctuation() {
+        assert!(body_mentions_handle("@buzz, this is for you", "buzz"));
+        assert!(body_mentions_handle("(@horus)", "horus"));
+        assert!(body_mentions_handle("@buzz.", "buzz"));
+        assert!(body_mentions_handle("@buzz!", "buzz"));
+    }
+
+    #[test]
+    fn mention_does_not_match_substring() {
+        assert!(!body_mentions_handle("the buzzword is important", "buzz"));
+        assert!(!body_mentions_handle("rebugging the system", "bug"));
+    }
+
+    #[test]
+    fn mention_does_not_match_different_handle() {
+        assert!(!body_mentions_handle("hey @chip", "buzz"));
+        assert!(!body_mentions_handle("@horus check this", "chip"));
+    }
+
+    #[test]
+    fn mention_handles_underscore_and_hyphen() {
+        assert!(body_mentions_handle("hey @my_agent check this", "my_agent"));
+        assert!(body_mentions_handle("ping @my-agent", "my-agent"));
+    }
+
+    #[test]
+    fn mention_empty_body_returns_false() {
+        assert!(!body_mentions_handle("", "buzz"));
+        assert!(!body_mentions_handle("no mentions here", "buzz"));
+    }
 }

@@ -37,3 +37,9 @@ Big missing areas left to implement:
   - AgentHealthEntry struct with seconds_since_last_message + health_status
   - TidepoolAgentHealthTool with account_id/domain_id/window_size filters
   - Uses created_at timestamps to compute real-time agent health
+- [x] tidepool_find_mentions tool — mention-based message routing for multi-agent coordination
+  - `body_mentions_handle()` function with case-insensitive @handle parsing
+  - Word-boundary-aware matching (won't match "buzz" inside "buzzword")
+  - Handles punctuation around mentions (@buzz, @horus!, (@chip))
+  - TidepoolFindMentionsTool with handle/domain_id/limit parameters
+  - 12 new tests (7 client-level, 5 tool-level)

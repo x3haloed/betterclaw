@@ -956,6 +956,79 @@ impl Tool for TidepoolSearchMessagesTool {
     }
 }
 
+pub struct TidepoolFindMentionsTool;
+
+#[async_trait]
+impl Tool for TidepoolFindMentionsTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_find_mentions".to_string(),
+            description: "Find messages that mention a specific agent handle via @handle mentions. \
+                Parses message bodies for @handle patterns (case-insensitive). Use this to find \
+                coordination messages directed at you or another agent without scanning all domain \
+                messages. Returns most recent mentions first.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "handle": {
+                        "type": "string",
+                        "description": "The handle to search for (e.g. 'buzz', 'horus', 'chip'). Do NOT include the @ prefix."
+                    },
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Restrict search to a specific domain."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of mention messages to return. Defaults to 20."
+                    }
+                },
+                "required": ["handle"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        let handle = require_string(params, "tidepool_find_mentions", "handle")?;
+        if handle.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_find_mentions".to_string(),
+                reason: "field 'handle' must not be empty".to_string(),
+            });
+        }
+        optional_u64(params, "tidepool_find_mentions", "domain_id")?;
+        optional_u32(params, "tidepool_find_mentions", "limit")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let handle = require_string(&params, "tidepool_find_mentions", "handle")?;
+        let domain_id = optional_u64(&params, "tidepool_find_mentions", "domain_id")?;
+        let limit = optional_u32(&params, "tidepool_find_mentions", "limit")?
+            .map(|v| v as usize)
+            .unwrap_or(20);
+        let client = shared_tidepool_client("tidepool_find_mentions").await?;
+        let mentions = client.find_mentions(&handle, domain_id, limit);
+        Ok(json!({
+            "handle": handle,
+            "mentions": mentions.iter().map(|m| json!({
+                "message_id": m.message_id,
+                "domain_id": m.domain_id,
+                "domain_title": m.domain_title,
+                "domain_slug": m.domain_slug,
+                "author_account_id": m.author_account_id,
+                "body": m.body,
+                "reply_to_message_id": m.reply_to_message_id,
+            })).collect::<Vec<_>>(),
+            "count": mentions.len(),
+            "domain_filter": domain_id,
+        }))
+    }
+}
+
 pub struct TidepoolSystemStatusTool;
 
 #[async_trait]
@@ -1654,6 +1727,53 @@ mod tests {
         let tool = TidepoolSystemStatusTool;
         let error = tool
             .validate(&json!({"recent_message_limit": -5}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn default_registry_includes_find_mentions_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_find_mentions".to_string()));
+    }
+
+    #[test]
+    fn find_mentions_validation_requires_handle() {
+        let tool = TidepoolFindMentionsTool;
+        let error = tool.validate(&json!({})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn find_mentions_validation_rejects_blank_handle() {
+        let tool = TidepoolFindMentionsTool;
+        let error = tool.validate(&json!({"handle": "   "})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn find_mentions_validation_accepts_valid_params() {
+        let tool = TidepoolFindMentionsTool;
+        tool.validate(&json!({"handle": "buzz"})).unwrap();
+        tool.validate(&json!({"handle": "horus", "domain_id": 1, "limit": 50})).unwrap();
+    }
+
+    #[test]
+    fn find_mentions_validation_rejects_invalid_domain_id() {
+        let tool = TidepoolFindMentionsTool;
+        let error = tool
+            .validate(&json!({"handle": "buzz", "domain_id": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn find_mentions_validation_rejects_invalid_limit() {
+        let tool = TidepoolFindMentionsTool;
+        let error = tool
+            .validate(&json!({"handle": "buzz", "limit": "big"}))
             .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }

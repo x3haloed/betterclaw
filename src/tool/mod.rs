@@ -11,7 +11,10 @@ use walkdir::WalkDir;
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::{Event, EventKind};
+use crate::memory::{RecallHit, cosine_similarity};
 use crate::model::normalize_schema_strict;
+use crate::runtime::{EmbeddingClient, env_role};
+use crate::settings::ModelRole;
 use crate::turn::Turn;
 use crate::workspace::Workspace;
 
@@ -136,6 +139,7 @@ impl ToolRegistry {
         registry.register(tool_web::WebSearchTool);
         registry.register(tool_web::WebFetchTool);
         registry.register(tool_ledger::LedgerListTool);
+        registry.register(tool_ledger::LedgerSearchTool);
         registry.register(tool_ledger::LedgerGetTool);
         registry.register(tool_ledger::ConversationSearchTool);
         registry.register(tool_skill::ReadSkillTool);
@@ -603,6 +607,92 @@ async fn tool_collect_ledger_entries(
             .then_with(|| left.entry_id.cmp(&right.entry_id))
     });
     Ok(entries)
+}
+
+async fn tool_search_ledger_entries(
+    db: &Db,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<RecallHit>, RuntimeError> {
+    let mut scores = std::collections::HashMap::<String, RecallHit>::new();
+    let lexical_query = build_fts_query(query);
+    if !lexical_query.trim().is_empty() {
+        for hit in db
+            .search_recall_chunks_keyword("default", &lexical_query, limit as i64 * 2)
+            .await
+            .map_err(RuntimeError::from)?
+            .into_iter()
+            .filter(|hit| hit.source_type == "ledger_entry")
+        {
+            scores
+                .entry(hit.entry_id.clone())
+                .and_modify(|current| current.score += hit.score.max(0.1))
+                .or_insert(hit);
+        }
+    }
+
+    let embedding_role = db
+        .load_runtime_settings("default")
+        .await
+        .map_err(RuntimeError::from)?
+        .and_then(|settings| {
+            settings
+                .model_roles
+                .into_iter()
+                .find(|role| role.role == ModelRole::Embeddings && role.enabled)
+        })
+        .or_else(|| env_role(ModelRole::Embeddings));
+
+    if let Some(role) = embedding_role {
+        let client = EmbeddingClient::new(&role).map_err(RuntimeError::from)?;
+        let query_embedding = client.embed(query).await?;
+        for chunk in db
+            .list_recall_chunks_with_embeddings("default", 256)
+            .await
+            .map_err(RuntimeError::from)?
+            .into_iter()
+            .filter(|chunk| chunk.source_type == "ledger_entry")
+        {
+            let Some(embedding_json) = &chunk.embedding_json else {
+                continue;
+            };
+            let Ok(values) = serde_json::from_str::<Vec<f32>>(embedding_json) else {
+                continue;
+            };
+            let Some(score) = cosine_similarity(&query_embedding, &values) else {
+                continue;
+            };
+            let hit = RecallHit {
+                entry_id: chunk.entry_id.clone(),
+                source_id: chunk.source_id.clone(),
+                source_type: chunk.source_type.clone(),
+                content: chunk.content.clone(),
+                score,
+                citation: Some(chunk.entry_id.clone()),
+            };
+            scores
+                .entry(hit.entry_id.clone())
+                .and_modify(|current| {
+                    if score > current.score {
+                        current.score = score;
+                        current.content = hit.content.clone();
+                        current.citation = hit.citation.clone();
+                    }
+                })
+                .or_insert(hit);
+        }
+    }
+
+    let mut hits = scores.into_values().collect::<Vec<_>>();
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+    hits.truncate(limit);
+    Ok(hits)
 }
 
 mod tool_ledger;

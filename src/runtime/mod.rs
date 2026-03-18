@@ -42,6 +42,7 @@ mod throttle;
 mod types;
 
 use engine::*;
+pub(crate) use engine::{EmbeddingClient, env_role};
 use throttle::*;
 pub use types::*;
 

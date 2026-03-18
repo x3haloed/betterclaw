@@ -12,7 +12,7 @@ impl Tool for LedgerListTool {
         ToolDefinition {
             name: "ledger_list".to_string(),
             description:
-                "List cited ledger entries from runtime history with provenance-aware metadata."
+                "Browse recent ledger entries from runtime history with provenance-aware metadata. Use this to list or skim entries, not to search by content."
                     .to_string(),
             parameters_schema: json!({
                 "type": "object",
@@ -68,6 +68,80 @@ impl Tool for LedgerListTool {
     }
 }
 
+pub struct LedgerSearchTool;
+
+#[async_trait]
+impl Tool for LedgerSearchTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "ledger_search".to_string(),
+            description: "Search ledger entries by meaning and keywords across runtime history, then return matching ledger entries with provenance-aware metadata.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "thread_id": { "type": "string" },
+                    "kind": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1 }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_string(params, "ledger_search", "query")?;
+        optional_string(params, "ledger_search", "thread_id")?;
+        optional_string(params, "ledger_search", "kind")?;
+        optional_usize(params, "ledger_search", "limit")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, context: &ToolContext) -> Result<Value, RuntimeError> {
+        let query = require_string(&params, "ledger_search", "query")?;
+        let thread_id = optional_string(&params, "ledger_search", "thread_id")?;
+        let kind = optional_string(&params, "ledger_search", "kind")?;
+        let limit = optional_usize(&params, "ledger_search", "limit")?.unwrap_or(8);
+        let hits = tool_search_ledger_entries(&context.db, &query, limit * 3).await?;
+        let entries = tool_collect_ledger_entries(&context.db, thread_id.as_deref()).await?;
+        let mut entries_by_id = entries
+            .into_iter()
+            .map(|entry| (entry.entry_id.clone(), entry))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut results = Vec::new();
+        for hit in hits {
+            let Some(entry) = entries_by_id.remove(&hit.entry_id) else {
+                continue;
+            };
+            if kind.as_ref().is_some_and(|value| entry.kind != *value) {
+                continue;
+            }
+            results.push(json!({
+                "entry_id": entry.entry_id,
+                "thread_id": entry.thread_id,
+                "turn_id": entry.turn_id,
+                "kind": entry.kind,
+                "created_at": entry.created_at,
+                "citation": entry.citation,
+                "summary": entry.content.as_deref().map(summarize_entry_content),
+                "content": entry.content,
+                "score": hit.score,
+                "matched_chunk": hit.content,
+            }));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(json!({
+            "query": query,
+            "entries": results,
+            "entry_count": results.len(),
+        }))
+    }
+}
+
 pub struct LedgerGetTool;
 
 #[async_trait]
@@ -113,6 +187,80 @@ impl Tool for LedgerGetTool {
             "content": entry.content,
             "payload": entry.payload,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::db::Db;
+    use crate::tool::Tool;
+    use crate::turn::TurnStatus;
+    use crate::workspace::Workspace;
+
+    #[tokio::test]
+    async fn ledger_search_returns_matching_ledger_entries_from_recall_chunks() {
+        let dir = tempdir().unwrap();
+        let db = Arc::new(Db::open(&dir.path().join("test.db")).await.unwrap());
+        let workspace = Workspace::new("default", dir.path());
+        let context = ToolContext::new(workspace, "thread-1", "thread-1", "web", Arc::clone(&db));
+        let thread = context
+            .db
+            .create_thread("default", "web", "thread-1", "Test Thread")
+            .await
+            .unwrap();
+        let turn = context
+            .db
+            .create_turn(&thread.id, "Who am I on Discord?", None)
+            .await
+            .unwrap();
+        context
+            .db
+            .update_turn(
+                &turn.id,
+                TurnStatus::Succeeded,
+                Some("Noted IcePickle is your Discord username."),
+                None,
+            )
+            .await
+            .unwrap();
+        context
+            .db
+            .replace_recall_chunks_for_source(
+                "default",
+                "ledger_entry",
+                &format!("turn:{}:assistant", turn.id),
+                &format!("turn:{}:assistant", turn.id),
+                &[(
+                    "Noted IcePickle is your Discord username.".to_string(),
+                    None,
+                )],
+            )
+            .await
+            .unwrap();
+
+        let output = LedgerSearchTool
+            .call(json!({"query":"IcePickle Discord username"}), &context)
+            .await
+            .unwrap();
+
+        assert_eq!(output["entry_count"], json!(1));
+        assert_eq!(output["entries"][0]["entry_id"], json!(format!("turn:{}:assistant", turn.id)));
+        assert_eq!(
+            output["entries"][0]["content"],
+            json!("Noted IcePickle is your Discord username.")
+        );
+    }
+
+    #[test]
+    fn ledger_list_definition_marks_it_as_a_browse_tool() {
+        let definition = LedgerListTool.definition();
+        assert!(definition.description.contains("Browse recent ledger entries"));
+        assert!(definition.description.contains("not to search by content"));
     }
 }
 

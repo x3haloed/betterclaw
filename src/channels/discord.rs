@@ -24,6 +24,7 @@ pub struct DiscordConfig {
     pub api_base: String,
     pub gateway_base: String,
     pub allowed_guild_ids: Vec<String>,
+    pub allowed_channel_ids: Vec<String>,
     pub allowed_dm_user_ids: Vec<String>,
     pub allowed_guild_user_ids: Vec<String>,
     pub mention_only: bool,
@@ -39,6 +40,10 @@ impl DiscordConfig {
             gateway_base: std::env::var("DISCORD_GATEWAY_BASE")
                 .unwrap_or_else(|_| DISCORD_WS_BASE.to_string()),
             allowed_guild_ids: parse_csv_env("DISCORD_ALLOWED_GUILD_IDS"),
+            allowed_channel_ids: parse_csv_env_any(&[
+                "DISCORD_ALLOWED_CHANNEL_IDS",
+                "DISCORD_ALLOWED_GUILD_CHANNEL_IDS",
+            ]),
             allowed_dm_user_ids: parse_csv_env("DISCORD_ALLOWED_DM_USER_IDS"),
             allowed_guild_user_ids: parse_csv_env("DISCORD_ALLOWED_GUILD_USER_IDS"),
             mention_only: parse_bool_env("DISCORD_MENTION_ONLY"),
@@ -258,6 +263,9 @@ impl DiscordChannel {
         {
             return None;
         }
+        if !guild_channel_is_allowed(guild_id.as_deref(), &channel_id, &self.config.allowed_channel_ids) {
+            return None;
+        }
 
         let is_dm = guild_id.is_none();
         let allow_list = if is_dm {
@@ -403,15 +411,39 @@ struct DiscordInboundMessage {
 fn parse_csv_env(name: &str) -> Vec<String> {
     std::env::var(name)
         .ok()
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
-        })
+        .map(|value| parse_csv_value(&value))
         .unwrap_or_default()
+}
+
+fn parse_csv_env_any(names: &[&str]) -> Vec<String> {
+    let mut values = Vec::new();
+    for name in names {
+        for entry in parse_csv_env(name) {
+            if !values.contains(&entry) {
+                values.push(entry);
+            }
+        }
+    }
+    values
+}
+
+fn parse_csv_value(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn guild_channel_is_allowed(
+    guild_id: Option<&str>,
+    channel_id: &str,
+    allowed_channel_ids: &[String],
+) -> bool {
+    guild_id.is_none()
+        || allowed_channel_ids.is_empty()
+        || allowed_channel_ids.iter().any(|entry| entry == channel_id)
 }
 
 fn parse_bool_env(name: &str) -> bool {
@@ -527,7 +559,7 @@ fn inbound_agent_id() -> &'static str {
 mod tests {
     use super::{
         append_attachment_lines, discord_thread_key, inbound_agent_id, normalize_message_content,
-        parse_discord_attachments, split_for_discord,
+        guild_channel_is_allowed, parse_csv_value, parse_discord_attachments, split_for_discord,
     };
     use serde_json::json;
 
@@ -590,5 +622,20 @@ mod tests {
     #[test]
     fn discord_inbound_messages_always_target_default_agent() {
         assert_eq!(inbound_agent_id(), "default");
+    }
+
+    #[test]
+    fn parse_csv_value_trims_and_drops_empty_entries() {
+        let values = parse_csv_value(" 1, 2 ,,3 ");
+        assert_eq!(values, vec!["1".to_string(), "2".to_string(), "3".to_string()]);
+    }
+
+    #[test]
+    fn guild_channel_whitelist_blocks_non_whitelisted_guild_channels_only() {
+        let allowed = vec!["123".to_string()];
+        assert!(guild_channel_is_allowed(Some("guild-1"), "123", &allowed));
+        assert!(!guild_channel_is_allowed(Some("guild-1"), "999", &allowed));
+        assert!(guild_channel_is_allowed(None, "999", &allowed));
+        assert!(guild_channel_is_allowed(Some("guild-1"), "999", &[]));
     }
 }

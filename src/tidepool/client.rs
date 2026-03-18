@@ -726,26 +726,36 @@ impl TidepoolClient {
         handle: Option<&str>,
         account_id: Option<u64>,
     ) -> Result<Vec<AccountEntry>> {
-        let config = TidepoolConfig::from_env()
-            .ok_or_else(|| anyhow!("TIDEPOOL_DATABASE and TIDEPOOL_HANDLE must be set"))?;
-        let token = fs::read_to_string(&config.token_path)
+        let token = fs::read_to_string(&self.inner.bootstrap.token_path)
             .context("reading Tidepool token for HTTP API call")?
             .trim()
             .to_string();
 
         let mut sql = String::from("SELECT account_id, handle, status FROM account WHERE 1=1");
         if let Some(h) = handle {
-            sql.push_str(&format!(" AND handle = '{}'", h.replace("'", "''")));
+            sql.push_str(&format!(" AND handle = '{}'", h.replace('\'', "''")));
         }
         if let Some(id) = account_id {
             sql.push_str(&format!(" AND account_id = {}", id));
         }
         sql.push_str(" LIMIT 50");
 
+        // Derive base_url and database from the config used to establish this connection.
+        // Fall back to env vars only if the config is not available.
+        let config = TidepoolConfig::from_env();
+        let base_url = config
+            .as_ref()
+            .map(|c| c.base_url.clone())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let database = config
+            .as_ref()
+            .map(|c| c.database.clone())
+            .unwrap_or_else(|| "tidepool-dev".to_string());
+
         let url = format!(
             "{}/v1/database/{}/sql",
-            config.base_url.trim_end_matches('/'),
-            config.database
+            base_url.trim_end_matches('/'),
+            database
         );
 
         let client = reqwest::Client::new();

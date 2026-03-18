@@ -223,6 +223,7 @@ impl Db {
             stream_blob_id: row.get::<Option<String>>(19)?,
             error_summary: row.get::<Option<String>>(20)?,
         };
+        let request_body = self.fetch_trace_blob_json(&trace.request_blob_id).await?;
         let response_blob = self.fetch_trace_blob_json(&trace.response_blob_id).await?;
         let (response_body, reduced_result) = match response_blob {
             Value::Object(map) => (
@@ -232,7 +233,8 @@ impl Db {
             other => (other, None),
         };
         Ok(Some(TraceDetail {
-            request_body: self.fetch_trace_blob_json(&trace.request_blob_id).await?,
+            trace_role: infer_trace_role(&request_body),
+            request_body,
             response_body,
             stream_body: match &trace.stream_blob_id {
                 Some(blob_id) => Some(self.fetch_trace_blob_json(blob_id).await?),
@@ -251,4 +253,23 @@ impl Db {
         .await?;
         Ok(())
     }
+}
+
+fn infer_trace_role(request_body: &Value) -> String {
+    let response_format_name = request_body
+        .get("response_format")
+        .and_then(|format| format.get("json_schema"))
+        .and_then(|schema| schema.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            request_body
+                .get("text")
+                .and_then(|text| text.get("format"))
+                .and_then(|format| format.get("name"))
+                .and_then(Value::as_str)
+        });
+    if response_format_name == Some("betterclaw_memory_distill") {
+        return "compressor".to_string();
+    }
+    "agent".to_string()
 }

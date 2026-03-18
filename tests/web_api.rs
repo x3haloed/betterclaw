@@ -216,6 +216,7 @@ async fn trace_endpoint_returns_full_payloads() {
         .await
         .unwrap();
     let detail: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(detail["trace_role"], "agent");
     assert!(detail["request_body"].is_object());
     assert!(detail["response_body"].is_object());
 }

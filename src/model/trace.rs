@@ -66,6 +66,7 @@ pub struct ModelTrace {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceDetail {
     pub trace: ModelTrace,
+    pub trace_role: String,
     pub request_body: Value,
     pub response_body: Value,
     pub stream_body: Option<Value>,

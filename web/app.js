@@ -58,7 +58,7 @@ function renderMarkdown(value) {
 }
 
 function traceRole(detail) {
-  return detail?.request_body?.betterclaw_role || "agent";
+  return detail?.trace_role || "agent";
 }
 
 function parseCompressorContent(detail) {

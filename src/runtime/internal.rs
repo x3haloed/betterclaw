@@ -134,7 +134,7 @@ impl Runtime {
                 "message_count": initial_request.messages.len(),
                 "tool_count": initial_request.tools.len(),
                 "model": initial_request.model,
-                "stream": initial_request.stream,
+                "stream": self.effective_stream_for_request(&initial_request),
             }),
         )
         .await?;
@@ -491,6 +491,10 @@ impl Runtime {
                 json!({})
             },
         }
+    }
+
+    pub(crate) fn effective_stream_for_request(&self, request: &ModelExchangeRequest) -> bool {
+        request.stream || self.provider_name == "codex"
     }
 
     pub(crate) async fn run_and_record_exchange(

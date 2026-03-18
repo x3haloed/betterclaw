@@ -161,7 +161,17 @@ impl EmbeddingClient {
         } else {
             config.bearer_token = match role.provider.as_str() {
                 "openrouter" => std::env::var("OPENROUTER_API_KEY").ok(),
-                "codex" => std::env::var("OPENAI_API_KEY").ok(),
+                "codex" => {
+                    let auth_path = std::env::var("OPENAI_CODEX_AUTH_PATH")
+                        .unwrap_or_else(|_| default_openai_codex_auth_path());
+                    let (token, account_id) = load_openai_codex_credentials(&auth_path)?;
+                    if let Some(account_id) = account_id {
+                        config
+                            .extra_headers
+                            .push(("ChatGPT-Account-Id".to_string(), account_id));
+                    }
+                    Some(token)
+                }
                 _ => std::env::var("BETTERCLAW_EMBEDDINGS_API_KEY").ok(),
             };
         }

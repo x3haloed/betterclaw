@@ -542,6 +542,9 @@ async fn api_status_endpoint_returns_runtime_info() {
         .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ok");
+    assert!(json["agent_id"].is_string());
     assert!(json["thread_count"].is_number());
     assert!(json["channels"].is_object());
+    assert!(json["channels"]["tidepool"].is_object());
+    assert!(json["channels"]["discord"].is_object());
 }

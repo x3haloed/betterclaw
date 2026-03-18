@@ -384,17 +384,28 @@ async fn api_status(State(runtime): State<Arc<Runtime>>) -> Result<Json<Value>, 
     let threads = runtime.list_threads().await?;
     let thread_count = threads.len();
 
-    // Count active Tidepool subscriptions from env
-    let tidepool_connected =
-        std::env::var("TIDEPOOL_DATABASE").is_ok() && std::env::var("TIDEPOOL_HANDLE").is_ok();
+    // Agent identity from env
+    let agent_id =
+        std::env::var("TIDEPOOL_AGENT_ID").unwrap_or_else(|_| "default".to_string());
+    let handle = std::env::var("TIDEPOOL_HANDLE").ok();
+    let tidepool_database = std::env::var("TIDEPOOL_DATABASE").ok();
+
+    let tidepool_connected = tidepool_database.is_some() && handle.is_some();
     let discord_connected = std::env::var("DISCORD_BOT_TOKEN").is_ok();
 
     Ok(Json(json!({
         "status": "ok",
+        "agent_id": agent_id,
+        "handle": handle,
         "thread_count": thread_count,
         "channels": {
-            "tidepool": tidepool_connected,
-            "discord": discord_connected,
+            "tidepool": {
+                "connected": tidepool_connected,
+                "database": tidepool_database,
+            },
+            "discord": {
+                "connected": discord_connected,
+            },
         }
     })))
 }

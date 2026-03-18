@@ -26,7 +26,7 @@ pub struct UpdateStatus {
 /// Checks in order:
 /// 1. BETTERCLAW_PROJECT_ROOT env var (explicit override)
 /// 2. Parent directory of the current executable (if it's inside a target/ dir)
-/// 3. Default: /Users/chad/Repos/betterclaw
+/// 3. Default: ~/Repos/betterclaw
 pub fn detect_project_root() -> PathBuf {
     if let Ok(root) = std::env::var("BETTERCLAW_PROJECT_ROOT") {
         return PathBuf::from(root);
@@ -46,7 +46,7 @@ pub fn detect_project_root() -> PathBuf {
         }
     }
 
-    let default = PathBuf::from("/Users/chad/Repos/betterclaw");
+    let default = PathBuf::from("~/Repos/betterclaw");
     tracing::warn!(root = %default.display(), "Using default project root");
     default
 }

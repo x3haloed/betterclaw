@@ -674,7 +674,7 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(
             dir.path().join("AGENTS.md"),
-            "## CONTEXT\n- User: Chad\n- Constraint: keep coordination cost low.",
+            "## CONTEXT\n- User: Champ\n- Constraint: keep coordination cost low.",
         )
         .unwrap();
         fs::write(

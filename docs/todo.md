@@ -43,3 +43,8 @@ Big missing areas left to implement:
   - Handles punctuation around mentions (@buzz, @horus!, (@chip))
   - TidepoolFindMentionsTool with handle/domain_id/limit parameters
   - 12 new tests (7 client-level, 5 tool-level)
+- [x] tidepool_lookup_account tool — resolve handles ↔ account IDs via HTTP API
+  - AccountEntry struct with account_id, handle, status
+  - resolve_accounts() method using Tidepool HTTP SQL API
+  - Accepts handle and/or account_id filters
+  - 8 new tests (validation + registry registration)

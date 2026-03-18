@@ -432,6 +432,53 @@ impl TidepoolClient {
 
     /// Search messages by content. Supports optional domain_id, author_account_id,
     /// and after_message_id filters. Case-insensitive substring match on body.
+    /// Retrieve all replies to a specific message across subscribed domains.
+    /// Returns messages where reply_to_message_id matches the given message_id.
+    pub fn get_thread(
+        &self,
+        root_message_id: u64,
+        domain_id: Option<u64>,
+        limit: usize,
+    ) -> Vec<TidepoolInboundMessage> {
+        let mut messages: Vec<TidepoolInboundMessage> = self
+            .inner
+            .connection
+            .db
+            .my_subscribed_messages()
+            .iter()
+            .filter(|row| row.reply_to_message_id == Some(root_message_id))
+            .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
+            .map(|row| {
+                let subscription = self
+                    .inner
+                    .connection
+                    .db
+                    .my_subscriptions()
+                    .iter()
+                    .find(|s| s.domain_id == row.domain_id);
+                TidepoolInboundMessage {
+                    domain_id: row.domain_id,
+                    domain_title: subscription
+                        .as_ref()
+                        .map(|s| s.title.clone())
+                        .unwrap_or_else(|| format!("Domain {}", row.domain_id)),
+                    domain_slug: subscription
+                        .as_ref()
+                        .map(|s| s.slug.clone())
+                        .unwrap_or_default(),
+                    message_id: row.message_id,
+                    domain_sequence: row.domain_sequence,
+                    author_account_id: row.author_account_id,
+                    body: row.body.clone(),
+                    reply_to_message_id: row.reply_to_message_id,
+                }
+            })
+            .collect();
+        messages.sort_by_key(|m| m.message_id);
+        messages.truncate(limit);
+        messages
+    }
+
     pub fn search_messages(
         &self,
         query: &str,

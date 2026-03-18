@@ -726,6 +726,75 @@ impl Tool for TidepoolAgentPresenceTool {
     }
 }
 
+pub struct TidepoolGetThreadTool;
+
+#[async_trait]
+impl Tool for TidepoolGetThreadTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_get_thread".to_string(),
+            description: "Retrieve all replies to a specific Tidepool message. Use this to read the \
+                full conversation thread for a message, identified by its message_id. Returns \
+                direct replies ordered by message ID. Optionally filter to a specific domain."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "message_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The message_id to retrieve replies for."
+                    },
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Restrict to a specific domain."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of replies to return. Defaults to 50."
+                    }
+                },
+                "required": ["message_id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_u64(params, "tidepool_get_thread", "message_id")?;
+        optional_u64(params, "tidepool_get_thread", "domain_id")?;
+        optional_u32(params, "tidepool_get_thread", "limit")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let message_id = require_u64(&params, "tidepool_get_thread", "message_id")?;
+        let domain_id = optional_u64(&params, "tidepool_get_thread", "domain_id")?;
+        let limit = optional_u32(&params, "tidepool_get_thread", "limit")?
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_READ_MESSAGES_LIMIT);
+        let client = shared_tidepool_client("tidepool_get_thread").await?;
+        let replies = client.get_thread(message_id, domain_id, limit);
+        Ok(json!({
+            "root_message_id": message_id,
+            "replies": replies.iter().map(|m| json!({
+                "message_id": m.message_id,
+                "domain_id": m.domain_id,
+                "domain_title": m.domain_title,
+                "domain_slug": m.domain_slug,
+                "domain_sequence": m.domain_sequence,
+                "author_account_id": m.author_account_id,
+                "body": m.body,
+                "reply_to_message_id": m.reply_to_message_id,
+            })).collect::<Vec<_>>(),
+            "count": replies.len(),
+            "domain_filter": domain_id,
+        }))
+    }
+}
+
 pub struct TidepoolSearchMessagesTool;
 
 #[async_trait]
@@ -946,6 +1015,7 @@ mod tests {
         assert!(names.contains(&"tidepool_list_dm_domains".to_string()));
         assert!(names.contains(&"tidepool_list_domain_members".to_string()));
         assert!(names.contains(&"tidepool_read_messages".to_string()));
+        assert!(names.contains(&"tidepool_get_thread".to_string()));
         assert!(names.contains(&"tidepool_search_messages".to_string()));
     }
 
@@ -1236,6 +1306,38 @@ mod tests {
         let tool = TidepoolAgentPresenceTool;
         let error = tool
             .validate(&json!({"window_size": "big"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn get_thread_validation_requires_message_id() {
+        let tool = TidepoolGetThreadTool;
+        let error = tool.validate(&json!({})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn get_thread_validation_accepts_valid_params() {
+        let tool = TidepoolGetThreadTool;
+        tool.validate(&json!({"message_id": 42})).unwrap();
+        tool.validate(&json!({"message_id": 42, "domain_id": 1, "limit": 100})).unwrap();
+    }
+
+    #[test]
+    fn get_thread_validation_rejects_non_numeric_message_id() {
+        let tool = TidepoolGetThreadTool;
+        let error = tool
+            .validate(&json!({"message_id": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn get_thread_validation_rejects_invalid_domain_id() {
+        let tool = TidepoolGetThreadTool;
+        let error = tool
+            .validate(&json!({"message_id": 1, "domain_id": "abc"}))
             .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }

@@ -28,6 +28,8 @@ Big missing areas left to implement:
 - [x] tidepool_read_messages tool — read message history from subscribed domains
 - [x] Fix Tidepool cursor seeding boundary skip — seed to baseline-1 to avoid losing messages at the boundary
 - [x] tidepool_search_messages tool — content-based message search with domain/author/after_message_id filters
+- [x] tidepool_agent_presence tool — detect active agents from recent message activity
+- [x] tidepool_get_thread tool — retrieve all replies to a message for threaded conversation reading
 - [x] FIX: 2026-03-17T21:47:50.435540Z ERROR betterclaw::channels::discord: Discord inbound turn failed error=SQLite failure: `UNIQUE constraint failed: threads.id`
   - Root cause: concurrent `resolve_thread()` calls both `find_thread()` → None → both `INSERT` with same `id` (external_thread_id)
   - Fix: `INSERT OR IGNORE` in `create_thread()` then always `SELECT` the row back

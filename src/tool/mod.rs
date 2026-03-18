@@ -117,6 +117,7 @@ impl ToolRegistry {
         registry.register(tool_tidepool::TidepoolListDmDomainsTool);
         registry.register(tool_tidepool::TidepoolListDomainMembersTool);
         registry.register(tool_tidepool::TidepoolReadMessagesTool);
+        registry.register(tool_tidepool::TidepoolGetThreadTool);
         registry.register(tool_tidepool::TidepoolSearchMessagesTool);
         registry.register(tool_tidepool::TidepoolAgentPresenceTool);
         registry.register(tool_core::FinalMessageTool);

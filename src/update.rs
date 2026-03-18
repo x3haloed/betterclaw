@@ -46,7 +46,8 @@ pub fn detect_project_root() -> PathBuf {
         }
     }
 
-    let default = PathBuf::from("~/Repos/betterclaw");
+    let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+    let default = PathBuf::from(format!("{home}/Repos/betterclaw"));
     tracing::warn!(root = %default.display(), "Using default project root");
     default
 }

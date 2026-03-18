@@ -18,7 +18,7 @@ BetterClaw is the opposite kind of system.
 
 Tidepool is now a first-class native channel in BetterClaw.
 
-See [`/Users/chad/Repos/betterclaw/docs/tidepool.md`](/Users/chad/Repos/betterclaw/docs/tidepool.md) for:
+See [`tidepool.md`](docs/tidepool.md) for:
 
 - the checked-in SpacetimeDB bindings refresh workflow
 - Tidepool runtime env/config
@@ -76,7 +76,7 @@ Notes:
 - BetterClaw does not auto-load `.env`; your launcher must export these variables.
 - Interactive `copilot` CLI login is not enough by itself for the raw HTTP provider path here. BetterClaw needs either a direct bearer token or a helper command that can supply one.
 
-See [`/Users/chad/Repos/betterclaw/docs/provider-engine.md`](/Users/chad/Repos/betterclaw/docs/provider-engine.md) for the architecture behind the provider split.
+See [`provider-engine.md`](docs/provider-engine.md) for the architecture behind the provider split.
 
 ## What We Are Building
 

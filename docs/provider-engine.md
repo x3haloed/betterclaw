@@ -81,7 +81,7 @@ The old Codex path on `main` used SSE from the Responses API and accumulated:
 That implementation already proved an important point: a usable provider layer must accumulate fragments into a final tool call and final assistant message.
 
 Reference:
-- [`/Users/chad/Repos/betterclaw/src/llm/openai_codex.rs`](\/Users/chad/Repos/betterclaw/src/llm/openai_codex.rs)
+- [`src/llm/openai_codex.rs`](src/llm/openai_codex.rs)
 
 ### LM Studio
 
@@ -103,10 +103,6 @@ Notably:
 - it accumulates full content, reasoning content, and tool calls over the whole stream
 - it merges tool-call fragments by id and concatenates names/arguments until complete
 
-References:
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/base.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/base.py)
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/qwen_dashscope.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/qwen_dashscope.py)
-
 ### Copilot SDK
 
 Copilot does not expose a simple HTTP completion stream. It exposes a session event stream over its own protocol, with events such as:
@@ -118,9 +114,6 @@ Copilot does not expose a simple HTTP completion stream. It exposes a session ev
 - error
 
 That means Copilot fits naturally into an event-normalizing engine, but poorly into an “SSE-first” engine.
-
-Reference:
-- [`/Users/chad/Repos/copilot-sdk/nodejs/src/session.ts`](\/Users/chad/Repos/copilot-sdk/nodejs/src/session.ts)
 
 ## Streaming Accumulation Modes
 
@@ -143,10 +136,6 @@ Examples:
 - Copilot SDK `assistant.message_delta` and `assistant.reasoning_delta`
 - Qwen-Agent `delta_stream=True` mode
 
-References:
-- [`/Users/chad/Repos/copilot-sdk/dotnet/README.md`](\/Users/chad/Repos/copilot-sdk/dotnet/README.md)
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py)
-
 Runtime rule:
 
 - accumulate by appending deltas
@@ -164,11 +153,6 @@ Examples:
 
 - Qwen-Agent `stream=True, delta_stream=False`
 - Qwen DashScope `_full_stream_output`
-
-References:
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/base.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/base.py)
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py)
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/qwen_dashscope.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/qwen_dashscope.py)
 
 Runtime rule:
 
@@ -191,10 +175,6 @@ Examples:
   - final `assistant.message`
   - final `assistant.reasoning`
 
-References:
-- [`/Users/chad/Repos/copilot-sdk/dotnet/README.md`](\/Users/chad/Repos/copilot-sdk/dotnet/README.md)
-- [`/Users/chad/Repos/copilot-sdk/.github/copilot-instructions.md`](\/Users/chad/Repos/copilot-sdk/.github/copilot-instructions.md)
-
 Runtime rule:
 
 - append deltas during streaming
@@ -216,11 +196,6 @@ Examples:
 - Qwen-Agent documents this as `thought_in_content=True`
 - OpenClaw has dedicated utilities to strip and split thinking-tagged text
 
-References:
-- [`/Users/chad/Repos/Qwen-Agent/README.md`](\/Users/chad/Repos/Qwen-Agent/README.md)
-- [`/Users/chad/Repos/openclaw/src/agents/pi-embedded-utils.ts`](\/Users/chad/Repos/openclaw/src/agents/pi-embedded-utils.ts)
-- [`/Users/chad/Repos/openclaw/src/agents/pi-embedded-subscribe.ts`](\/Users/chad/Repos/openclaw/src/agents/pi-embedded-subscribe.ts)
-
 Runtime rule:
 
 - never assume `content` is safe to deliver as-is
@@ -239,11 +214,6 @@ Examples:
 - Qwen-Agent OpenAI-compatible handling of `reasoning_content`
 - Copilot SDK reasoning-specific event stream
 - OpenClaw reasoning visibility model
-
-References:
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/schema.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/schema.py)
-- [`/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py`](\/Users/chad/Repos/Qwen-Agent/qwen_agent/llm/oai.py)
-- [`/Users/chad/Repos/openclaw/src/auto-reply/thinking.ts`](\/Users/chad/Repos/openclaw/src/auto-reply/thinking.ts)
 
 Runtime rule:
 

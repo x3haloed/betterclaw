@@ -7,6 +7,7 @@ BetterClaw currently has multiple parallel implementations of similar behavior:
 - `openai_chatcompletions` and `openai_responses`
 - streaming and non-streaming request/response paths
 - provider-specific compatibility layers layered on top of shared runtime behavior
+- BetterClaw's built-in Tidepool channel/tooling and the OpenClaw Tidepool plugin
 
 When one path is changed and the others are not reviewed, the app regresses in ways that are easy to miss during local debugging. Recent Codex fixes are a good example: a provider compatibility issue can show up first in one transport or one decode mode, while the real requirement applies more broadly.
 
@@ -23,6 +24,10 @@ If you change one of the following:
 - payload construction
 - response decoding
 - provider compatibility behavior
+- `src/channels/tidepool.rs`
+- `src/tool/tool_tidepool.rs`
+- Tidepool thread-keying, cursoring, self-echo, or message-shaping behavior
+- Tidepool account/domain/message semantics exposed to the model
 
 you must explicitly review the sibling implementations for the same issue.
 
@@ -39,6 +44,14 @@ For any model transport change, check all of these:
 
 Do not assume a bug is unique to the path where it was discovered.
 
+For any BetterClaw Tidepool change, check all of these:
+
+1. BetterClaw Tidepool channel behavior in `src/channels/tidepool.rs`
+2. BetterClaw Tidepool tool behavior in `src/tool/tool_tidepool.rs`
+3. OpenClaw Tidepool plugin behavior in the tidepool repo: `plugins/openclaw-tidepool/`
+
+Do not assume a Tidepool bug or policy change is unique to BetterClaw's built-in implementation.
+
 ## Symmetry Expectations
 
 When behavior should be equivalent, keep it equivalent.
@@ -49,6 +62,8 @@ Examples:
 - If a provider requires streaming, verify both the emitted payload and the decode path that handles the reply.
 - If optional tool parameters accept `null` in one path, verify the same contract everywhere tool schemas and validators interact.
 - If a request uses an effective payload value, do not branch later on a stale pre-normalization field.
+- If Tidepool thread IDs, domain mapping, or reply semantics change in BetterClaw, verify whether the OpenClaw Tidepool plugin needs the same change.
+- If Tidepool message filtering, self-echo handling, or cursor behavior changes in BetterClaw, verify whether the OpenClaw Tidepool plugin needs the same change.
 
 ## Streaming vs Non-Streaming
 
@@ -79,6 +94,7 @@ Before finishing a change in this area, answer these:
 3. Am I branching on the effective payload, or on an earlier field that may have been overridden later?
 4. Did I add tests for the affected mode pair(s)?
 5. If I did not mirror the change elsewhere, have I documented the reason?
+6. If I changed BetterClaw Tidepool behavior, did I check whether the OpenClaw Tidepool plugin needs the same update?
 
 ## Bias
 

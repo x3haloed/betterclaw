@@ -878,8 +878,16 @@ impl Runtime {
         });
         let outputs = join_all(executions).await;
 
-        for ((tool_call, invocation, _arguments), output) in batch.into_iter().zip(outputs) {
-            let output = output?;
+        for ((tool_call, invocation, arguments), output) in batch.into_iter().zip(outputs) {
+            let output = match output {
+                Ok(output) => output,
+                Err(error @ RuntimeError::InvalidToolParameters { .. })
+                | Err(error @ RuntimeError::ToolExecution { .. })
+                | Err(error @ RuntimeError::ToolNotFound(_)) => {
+                    tool_feedback_error(&error, &tool_call.name, &arguments)
+                }
+                Err(error) => return Err(error),
+            };
             if let Some(control) = Self::parse_tool_control(&output) {
                 match control {
                     ToolControl::Message { content } => outbound_messages.push(content),

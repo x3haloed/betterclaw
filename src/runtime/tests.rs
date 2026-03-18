@@ -66,6 +66,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_tool_parameters_are_fed_back_to_model() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("invalid-tool-feedback.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-invalid-tool-feedback",
+                "/tool tidepool_my_dashboard {\"domain_id\":\"abc\"}",
+            ))
+            .await
+            .unwrap();
+
+        assert!(outcome.response.contains("invalid_tool_parameters"));
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        let tool_result_payload = timeline
+            .iter()
+            .find(|event| event.kind == EventKind::ToolResult)
+            .map(|event| event.payload.clone())
+            .expect("tool result should be recorded");
+        assert_eq!(
+            tool_result_payload["output"]["error"],
+            json!("invalid_tool_parameters")
+        );
+        assert_eq!(
+            tool_result_payload["output"]["tool"],
+            json!("tidepool_my_dashboard")
+        );
+    }
+
+    #[tokio::test]
     async fn parallel_tool_calls_continue_in_one_batch() {
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("test.db")).await.unwrap();

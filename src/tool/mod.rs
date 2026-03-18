@@ -173,6 +173,39 @@ impl ToolRegistry {
     }
 }
 
+pub fn tool_feedback_error(
+    error: &RuntimeError,
+    tool_name: &str,
+    received_arguments: &Value,
+) -> Value {
+    match error {
+        RuntimeError::InvalidToolParameters { tool, reason } => json!({
+            "error": "invalid_tool_parameters",
+            "tool": tool,
+            "message": reason,
+            "received_arguments": received_arguments,
+        }),
+        RuntimeError::ToolExecution { tool, reason } => json!({
+            "error": "tool_execution_failed",
+            "tool": tool,
+            "message": reason,
+            "received_arguments": received_arguments,
+        }),
+        RuntimeError::ToolNotFound(name) => json!({
+            "error": "tool_not_found",
+            "tool": name,
+            "message": format!("tool '{name}' is not registered"),
+            "received_arguments": received_arguments,
+        }),
+        _ => json!({
+            "error": "tool_runtime_error",
+            "tool": tool_name,
+            "message": error.to_string(),
+            "received_arguments": received_arguments,
+        }),
+    }
+}
+
 fn invalid_tool_parameters(tool: &str, reason: impl Into<String>) -> RuntimeError {
     RuntimeError::InvalidToolParameters {
         tool: tool.to_string(),
@@ -196,6 +229,7 @@ fn optional_string(
     field: &str,
 ) -> Result<Option<String>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => value
             .as_str()
             .map(|text| Some(text.to_string()))
@@ -208,6 +242,7 @@ fn optional_string(
 
 fn optional_bool(params: &Value, tool: &str, field: &str) -> Result<Option<bool>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => value.as_bool().map(Some).ok_or_else(|| {
             invalid_tool_parameters(tool, format!("field '{field}' must be a boolean"))
         }),
@@ -217,6 +252,7 @@ fn optional_bool(params: &Value, tool: &str, field: &str) -> Result<Option<bool>
 
 fn optional_usize(params: &Value, tool: &str, field: &str) -> Result<Option<usize>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => {
             let Some(raw) = value.as_u64() else {
                 return Err(invalid_tool_parameters(

@@ -2120,6 +2120,7 @@ fn require_u64(params: &Value, tool: &str, field: &str) -> Result<u64, RuntimeEr
 
 fn optional_u64(params: &Value, tool: &str, field: &str) -> Result<Option<u64>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => value
             .as_u64()
             .map(Some)
@@ -2133,6 +2134,7 @@ fn optional_u64(params: &Value, tool: &str, field: &str) -> Result<Option<u64>, 
 
 fn optional_u32(params: &Value, tool: &str, field: &str) -> Result<Option<u32>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => {
             let Some(raw) = value.as_u64() else {
                 return Err(RuntimeError::InvalidToolParameters {
@@ -2152,6 +2154,7 @@ fn optional_u32(params: &Value, tool: &str, field: &str) -> Result<Option<u32>, 
 
 fn optional_u16(params: &Value, tool: &str, field: &str) -> Result<Option<u16>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => {
             let Some(raw) = value.as_u64() else {
                 return Err(RuntimeError::InvalidToolParameters {
@@ -3062,6 +3065,12 @@ mod tests {
     fn my_dashboard_validation_accepts_domain_filter() {
         let tool = TidepoolMyDashboardTool;
         tool.validate(&json!({"domain_id": 1})).unwrap();
+    }
+
+    #[test]
+    fn my_dashboard_validation_accepts_null_domain_filter() {
+        let tool = TidepoolMyDashboardTool;
+        tool.validate(&json!({"domain_id": null})).unwrap();
     }
 
     #[test]

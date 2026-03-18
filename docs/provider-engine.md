@@ -81,7 +81,7 @@ The old Codex path on `main` used SSE from the Responses API and accumulated:
 That implementation already proved an important point: a usable provider layer must accumulate fragments into a final tool call and final assistant message.
 
 Reference:
-- [`/Users/chad/Repos/betterclaw/src/llm/openai_codex.rs`](\/Users/chad/Repos/betterclaw/src/llm/openai_codex.rs)
+- [`src/llm/openai_codex.rs`](src/llm/openai_codex.rs)
 
 ### LM Studio
 

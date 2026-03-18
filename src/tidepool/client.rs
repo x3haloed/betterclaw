@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use spacetimedb_sdk::{DbContext as _, Table as _};
@@ -81,6 +81,21 @@ pub struct AgentPresenceEntry {
     pub last_domain_title: String,
     pub message_count: usize,
     pub active_domain_ids: Vec<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentHealthEntry {
+    pub account_id: u64,
+    pub last_message_id: u64,
+    pub last_domain_id: u64,
+    pub last_domain_title: String,
+    pub message_count: usize,
+    pub active_domain_ids: Vec<u64>,
+    /// Seconds since the agent's last message, or None if no messages found.
+    pub seconds_since_last_message: Option<f64>,
+    /// Human-readable health assessment: "active" (<5min), "idle" (<30min),
+    /// "stale" (<2h), "silent" (>2h), or "unknown" (no messages).
+    pub health_status: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -604,6 +619,86 @@ impl TidepoolClient {
         // shutdown"). Simply drop the JoinHandle and let the reconnect
         // delay give the old task time to finish and release sockets.
         let _ = self.inner.run_loop.lock().await.take();
+    }
+
+    /// Compute health status for agents based on Tidepool message activity.
+    /// Unlike `agent_presence`, this includes time-since-last-message analysis
+    /// and a human-readable health status assessment.
+    pub fn agent_health(
+        &self,
+        account_id: Option<u64>,
+        domain_id: Option<u64>,
+        window_size: usize,
+    ) -> Vec<AgentHealthEntry> {
+        let now_micros = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0);
+
+        let mut activity: HashMap<u64, AgentHealthEntry> = HashMap::new();
+
+        for row in self
+            .inner
+            .connection
+            .db
+            .my_subscribed_messages()
+            .iter()
+            .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
+            .filter(|row| account_id.map_or(true, |id| row.author_account_id == id))
+        {
+            let entry = activity
+                .entry(row.author_account_id)
+                .or_insert_with(|| AgentHealthEntry {
+                    account_id: row.author_account_id,
+                    last_message_id: 0,
+                    last_domain_id: 0,
+                    last_domain_title: String::new(),
+                    message_count: 0,
+                    active_domain_ids: Vec::new(),
+                    seconds_since_last_message: None,
+                    health_status: "unknown".to_string(),
+                });
+
+            entry.message_count += 1;
+            if row.message_id > entry.last_message_id {
+                entry.last_message_id = row.message_id;
+                entry.last_domain_id = row.domain_id;
+                let subscription = self
+                    .inner
+                    .connection
+                    .db
+                    .my_subscriptions()
+                    .iter()
+                    .find(|s| s.domain_id == row.domain_id);
+                entry.last_domain_title = subscription
+                    .as_ref()
+                    .map(|s| s.title.clone())
+                    .unwrap_or_else(|| format!("Domain {}", row.domain_id));
+                // Compute age from the last (most recent) message's timestamp.
+                let msg_micros = row.created_at.to_micros_since_unix_epoch();
+                let age_secs = (now_micros - msg_micros) as f64 / 1_000_000.0;
+                entry.seconds_since_last_message = Some(age_secs.max(0.0));
+                entry.health_status = if age_secs < 300.0 {
+                    "active".to_string()
+                } else if age_secs < 1800.0 {
+                    "idle".to_string()
+                } else if age_secs < 7200.0 {
+                    "stale".to_string()
+                } else {
+                    "silent".to_string()
+                };
+            }
+            if !entry.active_domain_ids.contains(&row.domain_id) {
+                entry.active_domain_ids.push(row.domain_id);
+            }
+        }
+
+        let mut entries: Vec<AgentHealthEntry> = activity.into_values().collect();
+        entries.sort_by(|a, b| b.last_message_id.cmp(&a.last_message_id));
+        if entries.len() > window_size {
+            entries.truncate(window_size);
+        }
+        entries
     }
 }
 

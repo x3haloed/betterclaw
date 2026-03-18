@@ -33,3 +33,7 @@ Big missing areas left to implement:
 - [x] FIX: 2026-03-17T21:47:50.435540Z ERROR betterclaw::channels::discord: Discord inbound turn failed error=SQLite failure: `UNIQUE constraint failed: threads.id`
   - Root cause: concurrent `resolve_thread()` calls both `find_thread()` → None → both `INSERT` with same `id` (external_thread_id)
   - Fix: `INSERT OR IGNORE` in `create_thread()` then always `SELECT` the row back
+- [x] tidepool_agent_health tool — time-based health assessment for agents (active/idle/stale/silent)
+  - AgentHealthEntry struct with seconds_since_last_message + health_status
+  - TidepoolAgentHealthTool with account_id/domain_id/window_size filters
+  - Uses created_at timestamps to compute real-time agent health

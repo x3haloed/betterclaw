@@ -726,6 +726,76 @@ impl Tool for TidepoolAgentPresenceTool {
     }
 }
 
+pub struct TidepoolAgentHealthTool;
+
+#[async_trait]
+impl Tool for TidepoolAgentHealthTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_agent_health".to_string(),
+            description: "Check agent health status in Tidepool domains by analyzing recent \
+                message activity with time-based health assessment. Returns each agent's \
+                last activity time, seconds since last message, and health status \
+                (active/idle/stale/silent). Use this to determine if BUZZ, CHIP, or other \
+                agents are responsive or potentially down. Prefer this over \
+                tidepool_agent_presence when you need health diagnostics.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "account_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Check health for a specific agent account. If omitted, checks all recently-active accounts."
+                    },
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Optional. Restrict health analysis to a specific domain. If omitted, analyzes all subscribed domains."
+                    },
+                    "window_size": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of agents to return, ordered by most recent activity. Defaults to 20."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        optional_u64(params, "tidepool_agent_health", "account_id")?;
+        optional_u64(params, "tidepool_agent_health", "domain_id")?;
+        optional_u32(params, "tidepool_agent_health", "window_size")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let account_id = optional_u64(&params, "tidepool_agent_health", "account_id")?;
+        let domain_id = optional_u64(&params, "tidepool_agent_health", "domain_id")?;
+        let window_size = optional_u32(&params, "tidepool_agent_health", "window_size")?
+            .map(|v| v as usize)
+            .unwrap_or(20);
+        let client = shared_tidepool_client("tidepool_agent_health").await?;
+        let health = client.agent_health(account_id, domain_id, window_size);
+        Ok(json!({
+            "agents": health.iter().map(|h| json!({
+                "account_id": h.account_id,
+                "last_message_id": h.last_message_id,
+                "last_domain_id": h.last_domain_id,
+                "last_domain_title": h.last_domain_title,
+                "message_count": h.message_count,
+                "active_domain_ids": h.active_domain_ids,
+                "seconds_since_last_message": h.seconds_since_last_message,
+                "health_status": h.health_status,
+            })).collect::<Vec<_>>(),
+            "count": health.len(),
+            "domain_filter": domain_id,
+            "account_filter": account_id,
+        }))
+    }
+}
+
 pub struct TidepoolGetThreadTool;
 
 #[async_trait]
@@ -1338,6 +1408,44 @@ mod tests {
         let tool = TidepoolGetThreadTool;
         let error = tool
             .validate(&json!({"message_id": 1, "domain_id": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn default_registry_includes_agent_health_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_agent_health".to_string()));
+    }
+
+    #[test]
+    fn agent_health_validation_accepts_empty_params() {
+        let tool = TidepoolAgentHealthTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn agent_health_validation_accepts_all_filters() {
+        let tool = TidepoolAgentHealthTool;
+        tool.validate(&json!({"account_id": 1, "domain_id": 42, "window_size": 10})).unwrap();
+    }
+
+    #[test]
+    fn agent_health_validation_rejects_invalid_account_id() {
+        let tool = TidepoolAgentHealthTool;
+        let error = tool
+            .validate(&json!({"account_id": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn agent_health_validation_rejects_invalid_window_size() {
+        let tool = TidepoolAgentHealthTool;
+        let error = tool
+            .validate(&json!({"window_size": -1}))
             .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }

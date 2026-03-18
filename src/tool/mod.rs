@@ -120,6 +120,7 @@ impl ToolRegistry {
         registry.register(tool_tidepool::TidepoolGetThreadTool);
         registry.register(tool_tidepool::TidepoolSearchMessagesTool);
         registry.register(tool_tidepool::TidepoolAgentPresenceTool);
+        registry.register(tool_tidepool::TidepoolAgentHealthTool);
         registry.register(tool_core::FinalMessageTool);
         registry.register(tool_core::AskUserTool);
         registry.register(tool_web::WebSearchTool);

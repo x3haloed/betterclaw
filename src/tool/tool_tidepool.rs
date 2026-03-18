@@ -956,6 +956,176 @@ impl Tool for TidepoolSearchMessagesTool {
     }
 }
 
+pub struct TidepoolSystemStatusTool;
+
+#[async_trait]
+impl Tool for TidepoolSystemStatusTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_system_status".to_string(),
+            description: "Get a comprehensive single-call overview of the entire Tidepool coordination system. \
+                Returns subscribed domains with per-domain activity stats, agent health across all domains, \
+                and recent thread activity. Use this as the first-call dashboard to understand what's happening \
+                before diving into specific domains or agents. Replaces the need to call tidepool_list_subscriptions, \
+                tidepool_read_messages, tidepool_agent_health, and tidepool_agent_presence separately."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "recent_message_limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Number of most recent messages to include per domain. Defaults to 5."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        optional_u32(params, "tidepool_system_status", "recent_message_limit")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let per_domain_limit = optional_u32(&params, "tidepool_system_status", "recent_message_limit")?
+            .map(|v| v as usize)
+            .unwrap_or(5);
+
+        let client = shared_tidepool_client("tidepool_system_status").await?;
+
+        // 1. Subscriptions
+        let subscriptions = client.subscriptions();
+
+        // 2. All messages for aggregation
+        let all_messages = client.read_messages_filtered(None, None, 500);
+
+        // 3. Per-domain activity
+        let mut domain_stats: std::collections::HashMap<u64, serde_json::Map<String, Value>> =
+            std::collections::HashMap::new();
+        for sub in &subscriptions {
+            let mut stats = serde_json::Map::new();
+            stats.insert("domain_id".into(), json!(sub.domain_id));
+            stats.insert("slug".into(), json!(sub.slug));
+            stats.insert("title".into(), json!(sub.title));
+            stats.insert("message_count".into(), json!(0));
+            stats.insert("last_message_id".into(), json!(null));
+            stats.insert("last_message_preview".into(), json!(null));
+            stats.insert("last_author_account_id".into(), json!(null));
+            stats.insert("unique_authors".into(), json!([]));
+            stats.insert("threaded_messages".into(), json!(0));
+            domain_stats.insert(sub.domain_id, stats);
+        }
+
+        for msg in &all_messages {
+            if let Some(stats) = domain_stats.get_mut(&msg.domain_id) {
+                let count = stats["message_count"].as_u64().unwrap_or(0) + 1;
+                stats.insert("message_count".into(), json!(count));
+
+                if msg.message_id > stats["last_message_id"].as_u64().unwrap_or(0) {
+                    stats.insert("last_message_id".into(), json!(msg.message_id));
+                    stats.insert(
+                        "last_message_preview".into(),
+                        json!(msg.body.chars().take(120).collect::<String>()),
+                    );
+                    stats.insert("last_author_account_id".into(), json!(msg.author_account_id));
+                }
+
+                if msg.reply_to_message_id.is_some() {
+                    let threaded = stats["threaded_messages"].as_u64().unwrap_or(0) + 1;
+                    stats.insert("threaded_messages".into(), json!(threaded));
+                }
+
+                // Track unique authors
+                if let Some(authors) = stats.get_mut("unique_authors") {
+                    if let Some(arr) = authors.as_array_mut() {
+                        if !arr.contains(&json!(msg.author_account_id)) {
+                            arr.push(json!(msg.author_account_id));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build per-domain summaries with recent messages
+        let mut domains: Vec<Value> = Vec::new();
+        for sub in &subscriptions {
+            let mut domain_entry = if let Some(stats) = domain_stats.remove(&sub.domain_id) {
+                stats
+            } else {
+                let mut stats = serde_json::Map::new();
+                stats.insert("domain_id".into(), json!(sub.domain_id));
+                stats.insert("slug".into(), json!(sub.slug));
+                stats.insert("title".into(), json!(sub.title));
+                stats
+            };
+
+            // Recent messages for this domain
+            let recent: Vec<Value> = all_messages
+                .iter()
+                .filter(|m| m.domain_id == sub.domain_id)
+                .rev()
+                .take(per_domain_limit)
+                .map(|m| {
+                    json!({
+                        "message_id": m.message_id,
+                        "author_account_id": m.author_account_id,
+                        "body_preview": m.body.chars().take(100).collect::<String>(),
+                        "reply_to_message_id": m.reply_to_message_id,
+                    })
+                })
+                .collect();
+            domain_entry.insert("recent_messages".into(), json!(recent));
+
+            domains.push(Value::Object(domain_entry));
+        }
+
+        // 4. Agent health
+        let health = client.agent_health(None, None, 20);
+        let agents: Vec<Value> = health
+            .iter()
+            .map(|h| {
+                json!({
+                    "account_id": h.account_id,
+                    "health_status": h.health_status,
+                    "seconds_since_last_message": h.seconds_since_last_message,
+                    "message_count": h.message_count,
+                    "last_domain_id": h.last_domain_id,
+                    "last_domain_title": h.last_domain_title,
+                    "active_domain_ids": h.active_domain_ids,
+                })
+            })
+            .collect();
+
+        // 5. Thread activity (messages that are replies)
+        let threads: Vec<Value> = all_messages
+            .iter()
+            .filter(|m| m.reply_to_message_id.is_some())
+            .rev()
+            .take(10)
+            .map(|m| {
+                json!({
+                    "message_id": m.message_id,
+                    "domain_id": m.domain_id,
+                    "author_account_id": m.author_account_id,
+                    "reply_to_message_id": m.reply_to_message_id,
+                    "body_preview": m.body.chars().take(80).collect::<String>(),
+                })
+            })
+            .collect();
+
+        Ok(json!({
+            "domains": domains,
+            "agents": agents,
+            "recent_threads": threads,
+            "total_messages": all_messages.len(),
+            "total_domains": subscriptions.len(),
+            "total_agents": agents.len(),
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -1446,6 +1616,44 @@ mod tests {
         let tool = TidepoolAgentHealthTool;
         let error = tool
             .validate(&json!({"window_size": -1}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn default_registry_includes_system_status_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_system_status".to_string()));
+    }
+
+    #[test]
+    fn system_status_validation_accepts_empty_params() {
+        let tool = TidepoolSystemStatusTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn system_status_validation_accepts_recent_message_limit() {
+        let tool = TidepoolSystemStatusTool;
+        tool.validate(&json!({"recent_message_limit": 10})).unwrap();
+    }
+
+    #[test]
+    fn system_status_validation_rejects_invalid_limit() {
+        let tool = TidepoolSystemStatusTool;
+        let error = tool
+            .validate(&json!({"recent_message_limit": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn system_status_validation_rejects_invalid_type() {
+        let tool = TidepoolSystemStatusTool;
+        let error = tool
+            .validate(&json!({"recent_message_limit": -5}))
             .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }

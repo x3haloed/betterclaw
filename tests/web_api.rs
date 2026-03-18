@@ -520,6 +520,7 @@ async fn health_endpoint_returns_ok() {
         .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "ok");
+    assert!(json["commit"].is_string());
 }
 
 #[tokio::test]

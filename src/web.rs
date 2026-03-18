@@ -372,10 +372,16 @@ impl From<crate::error::RuntimeError> for ApiError {
     }
 }
 
+/// Build-time git commit hash. Set by build script, falls back to "unknown".
+const GIT_COMMIT: &str = match option_env!("GIT_COMMIT") {
+    Some(hash) => hash,
+    None => "unknown",
+};
+
 /// Simple health check — returns 200 OK immediately.
 /// Used by watchdog scripts to detect if the process is alive and responsive.
 async fn health() -> impl IntoResponse {
-    Json(json!({ "status": "ok" }))
+    Json(json!({ "status": "ok", "commit": GIT_COMMIT }))
 }
 
 /// Runtime status endpoint — returns agent identity, version, and uptime info.

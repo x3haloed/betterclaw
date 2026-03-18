@@ -125,6 +125,9 @@ impl ToolRegistry {
         registry.register(tool_tidepool::TidepoolSystemStatusTool);
         registry.register(tool_tidepool::TidepoolFindMentionsTool);
         registry.register(tool_tidepool::TidepoolLookupAccountTool);
+        registry.register(tool_tidepool::TidepoolClaimTaskTool);
+        registry.register(tool_tidepool::TidepoolCompleteTaskTool);
+        registry.register(tool_tidepool::TidepoolListClaimsTool);
         registry.register(tool_core::FinalMessageTool);
         registry.register(tool_core::AskUserTool);
         registry.register(tool_web::WebSearchTool);

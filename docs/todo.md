@@ -53,3 +53,10 @@ Big missing areas left to implement:
   - wait_for_dm_with_participants() polls local db for new DM (5s timeout)
   - Auto-creates DM with sorted handles as title if none exists
   - 6 new validation tests + registry inclusion test
+- [x] Task claiming protocol — tidepool_claim_task, tidepool_complete_task, tidepool_list_claims
+  - Lightweight coordination protocol using message conventions ([CLAIM handle] / [DONE handle])
+  - No Tidepool module changes required — works with existing message infrastructure
+  - parse_claim_message() / parse_done_message() extract structured data from formatted messages
+  - is_claim_completed() cross-references CLAIM and DONE messages by handle + description
+  - tidepool_list_claims filters completed claims automatically
+  - 20 new tests (parsing, completion matching, validation, registry)

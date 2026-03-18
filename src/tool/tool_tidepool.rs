@@ -1334,6 +1334,340 @@ impl Tool for TidepoolSystemStatusTool {
     }
 }
 
+// ── Task Claiming Protocol ──────────────────────────────────────────────────
+//
+// Lightweight coordination protocol built on message conventions.
+// No Tidepool module changes required — uses formatted messages:
+//
+//   [CLAIM <handle>] <task description>   — claim a task
+//   [DONE <handle>] <task description>    — mark it complete
+//
+// Agents scan CLAIM messages and filter out those with matching DONE messages.
+
+const CLAIM_PREFIX: &str = "[CLAIM ";
+const DONE_PREFIX: &str = "[DONE ";
+
+/// Parsed claim from a message body.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct TaskClaim {
+    message_id: u64,
+    domain_id: u64,
+    domain_sequence: u64,
+    author_account_id: u64,
+    handle: String,
+    description: String,
+}
+
+/// Parse a [CLAIM handle] message. Returns None if not a valid claim.
+fn parse_claim_message(msg: &crate::tidepool::TidepoolInboundMessage) -> Option<TaskClaim> {
+    let body = msg.body.trim();
+    if !body.starts_with(CLAIM_PREFIX) {
+        return None;
+    }
+    let rest = &body[CLAIM_PREFIX.len()..];
+    let end_bracket = rest.find(']')?;
+    let handle = rest[..end_bracket].trim().to_string();
+    if handle.is_empty() {
+        return None;
+    }
+    let description = rest[end_bracket + 1..].trim().to_string();
+    if description.is_empty() {
+        return None;
+    }
+    Some(TaskClaim {
+        message_id: msg.message_id,
+        domain_id: msg.domain_id,
+        domain_sequence: msg.domain_sequence,
+        author_account_id: msg.author_account_id,
+        handle,
+        description,
+    })
+}
+
+/// Parse a [DONE handle] message. Returns (handle, description) or None.
+fn parse_done_message(body: &str) -> Option<(String, String)> {
+    let body = body.trim();
+    if !body.starts_with(DONE_PREFIX) {
+        return None;
+    }
+    let rest = &body[DONE_PREFIX.len()..];
+    let end_bracket = rest.find(']')?;
+    let handle = rest[..end_bracket].trim().to_string();
+    let description = rest[end_bracket + 1..].trim().to_string();
+    if handle.is_empty() || description.is_empty() {
+        return None;
+    }
+    Some((handle, description))
+}
+
+/// Check if a claim has been completed by scanning DONE messages.
+fn is_claim_completed(claim: &TaskClaim, done_messages: &[crate::tidepool::TidepoolInboundMessage]) -> bool {
+    for done_msg in done_messages {
+        if done_msg.domain_id != claim.domain_id {
+            continue;
+        }
+        if let Some((done_handle, done_desc)) = parse_done_message(&done_msg.body) {
+            if done_handle.eq_ignore_ascii_case(&claim.handle)
+                && done_desc.eq_ignore_ascii_case(&claim.description)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// ── tidepool_claim_task ─────────────────────────────────────────────────────
+
+pub struct TidepoolClaimTaskTool;
+
+#[async_trait]
+impl Tool for TidepoolClaimTaskTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_claim_task".to_string(),
+            description: "Claim a task in a Tidepool domain to coordinate with other agents. \
+                Posts a [CLAIM handle] message that signals you are working on this task. \
+                Other agents can see your claim and avoid duplicating effort. \
+                Use tidepool_list_claims to see active claims before starting work. \
+                Use tidepool_complete_task when done."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "required": ["domain_id", "task"],
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "description": "Domain ID to post the claim in."
+                    },
+                    "task": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Brief description of the task you are claiming."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_u64(params, "tidepool_claim_task", "domain_id")?;
+        let task = params
+            .get("task")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RuntimeError::InvalidToolParameters {
+                tool: "tidepool_claim_task".to_string(),
+                reason: "missing or invalid 'task' field".to_string(),
+            })?;
+        if task.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_claim_task".to_string(),
+                reason: "'task' cannot be blank".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = require_u64(&params, "tidepool_claim_task", "domain_id")?;
+        let task = params["task"].as_str().unwrap().trim();
+
+        let client = shared_tidepool_client("tidepool_claim_task").await?;
+        let handle = client
+            .account()
+            .map(|a| a.handle)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let body = format!("[CLAIM {handle}] {task}");
+        client
+            .post_message(domain_id, &body, None)
+            .map_err(|e| tool_execution("tidepool_claim_task", e))?;
+
+        Ok(json!({
+            "status": "claimed",
+            "handle": handle,
+            "domain_id": domain_id,
+            "task": task,
+            "message": body,
+        }))
+    }
+}
+
+// ── tidepool_complete_task ──────────────────────────────────────────────────
+
+pub struct TidepoolCompleteTaskTool;
+
+#[async_trait]
+impl Tool for TidepoolCompleteTaskTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_complete_task".to_string(),
+            description: "Mark a previously claimed task as complete. \
+                Posts a [DONE handle] message matching the original claim. \
+                This removes the task from tidepool_list_claims results. \
+                The task description must exactly match the original claim."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "required": ["domain_id", "task"],
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "description": "Domain ID where the task was claimed."
+                    },
+                    "task": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The exact task description from the original claim."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_u64(params, "tidepool_complete_task", "domain_id")?;
+        let task = params
+            .get("task")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RuntimeError::InvalidToolParameters {
+                tool: "tidepool_complete_task".to_string(),
+                reason: "missing or invalid 'task' field".to_string(),
+            })?;
+        if task.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_complete_task".to_string(),
+                reason: "'task' cannot be blank".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = require_u64(&params, "tidepool_complete_task", "domain_id")?;
+        let task = params["task"].as_str().unwrap().trim();
+
+        let client = shared_tidepool_client("tidepool_complete_task").await?;
+        let handle = client
+            .account()
+            .map(|a| a.handle)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let body = format!("[DONE {handle}] {task}");
+        client
+            .post_message(domain_id, &body, None)
+            .map_err(|e| tool_execution("tidepool_complete_task", e))?;
+
+        Ok(json!({
+            "status": "completed",
+            "handle": handle,
+            "domain_id": domain_id,
+            "task": task,
+            "message": body,
+        }))
+    }
+}
+
+// ── tidepool_list_claims ────────────────────────────────────────────────────
+
+pub struct TidepoolListClaimsTool;
+
+#[async_trait]
+impl Tool for TidepoolListClaimsTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_list_claims".to_string(),
+            description: "List active (incomplete) task claims in a Tidepool domain. \
+                Scans for [CLAIM handle] messages and filters out those with matching \
+                [DONE handle] messages. Shows who is working on what. \
+                Use this before claiming a task to avoid duplication."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "description": "Filter to a specific domain. Omit to scan all subscribed domains."
+                    },
+                    "handle": {
+                        "type": "string",
+                        "description": "Filter claims by a specific agent handle."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Maximum number of claims to return. Defaults to 50."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        optional_u64(params, "tidepool_list_claims", "domain_id")?;
+        optional_u32(params, "tidepool_list_claims", "limit")?;
+        if let Some(handle) = params.get("handle") {
+            if !handle.is_string() {
+                return Err(RuntimeError::InvalidToolParameters {
+                    tool: "tidepool_list_claims".to_string(),
+                    reason: "'handle' must be a string".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = optional_u64(&params, "tidepool_list_claims", "domain_id")?;
+        let handle_filter = params.get("handle").and_then(Value::as_str);
+        let limit = optional_u32(&params, "tidepool_list_claims", "limit")?
+            .unwrap_or(50) as usize;
+
+        let client = shared_tidepool_client("tidepool_list_claims").await?;
+
+        // Search for all CLAIM messages
+        let claim_messages = client.search_messages(CLAIM_PREFIX, domain_id, None, None, 200);
+        // Search for all DONE messages
+        let done_messages = client.search_messages(DONE_PREFIX, domain_id, None, None, 200);
+
+        // Parse claims and filter completed ones
+        let mut active_claims: Vec<Value> = Vec::new();
+        for msg in &claim_messages {
+            if let Some(claim) = parse_claim_message(msg) {
+                // Apply handle filter
+                if let Some(hf) = handle_filter {
+                    if !claim.handle.eq_ignore_ascii_case(hf) {
+                        continue;
+                    }
+                }
+                // Skip completed claims
+                if is_claim_completed(&claim, &done_messages) {
+                    continue;
+                }
+                active_claims.push(json!({
+                    "domain_id": claim.domain_id,
+                    "handle": claim.handle,
+                    "task": claim.description,
+                    "message_id": claim.message_id,
+                    "domain_sequence": claim.domain_sequence,
+                }));
+            }
+            if active_claims.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(json!({
+            "active_claims": active_claims,
+            "total": active_claims.len(),
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -2000,5 +2334,226 @@ mod tests {
         let definitions = registry.definitions();
         let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_message_agent".to_string()));
+    }
+
+    // ── Task Claiming Protocol Tests ─────────────────────────────────────
+
+    #[test]
+    fn parse_claim_message_extracts_handle_and_task() {
+        let msg = crate::tidepool::TidepoolInboundMessage {
+            domain_id: 1,
+            domain_title: "test".into(),
+            domain_slug: "test".into(),
+            message_id: 42,
+            domain_sequence: 10,
+            author_account_id: 1,
+            body: "[CLAIM horus] Fix the cursor seeding bug".into(),
+            reply_to_message_id: None,
+        };
+        let claim = parse_claim_message(&msg).unwrap();
+        assert_eq!(claim.handle, "horus");
+        assert_eq!(claim.description, "Fix the cursor seeding bug");
+        assert_eq!(claim.message_id, 42);
+    }
+
+    #[test]
+    fn parse_claim_message_rejects_non_claim() {
+        let msg = crate::tidepool::TidepoolInboundMessage {
+            domain_id: 1,
+            domain_title: "test".into(),
+            domain_slug: "test".into(),
+            message_id: 1,
+            domain_sequence: 1,
+            author_account_id: 1,
+            body: "Just a normal message".into(),
+            reply_to_message_id: None,
+        };
+        assert!(parse_claim_message(&msg).is_none());
+    }
+
+    #[test]
+    fn parse_claim_message_rejects_empty_task() {
+        let msg = crate::tidepool::TidepoolInboundMessage {
+            domain_id: 1,
+            domain_title: "test".into(),
+            domain_slug: "test".into(),
+            message_id: 1,
+            domain_sequence: 1,
+            author_account_id: 1,
+            body: "[CLAIM horus]   ".into(),
+            reply_to_message_id: None,
+        };
+        assert!(parse_claim_message(&msg).is_none());
+    }
+
+    #[test]
+    fn parse_claim_message_rejects_empty_handle() {
+        let msg = crate::tidepool::TidepoolInboundMessage {
+            domain_id: 1,
+            domain_title: "test".into(),
+            domain_slug: "test".into(),
+            message_id: 1,
+            domain_sequence: 1,
+            author_account_id: 1,
+            body: "[CLAIM ] some task".into(),
+            reply_to_message_id: None,
+        };
+        assert!(parse_claim_message(&msg).is_none());
+    }
+
+    #[test]
+    fn parse_done_message_extracts_handle_and_task() {
+        let result = parse_done_message("[DONE horus] Fix the cursor seeding bug");
+        assert_eq!(result.unwrap(), ("horus".to_string(), "Fix the cursor seeding bug".to_string()));
+    }
+
+    #[test]
+    fn parse_done_message_rejects_non_done() {
+        assert!(parse_done_message("Not a done message").is_none());
+    }
+
+    #[test]
+    fn is_claim_completed_matches_done_message() {
+        let claim = TaskClaim {
+            message_id: 1,
+            domain_id: 1,
+            domain_sequence: 1,
+            author_account_id: 1,
+            handle: "horus".into(),
+            description: "Fix the cursor bug".into(),
+        };
+        let done_messages = vec![crate::tidepool::TidepoolInboundMessage {
+            domain_id: 1,
+            domain_title: "test".into(),
+            domain_slug: "test".into(),
+            message_id: 2,
+            domain_sequence: 2,
+            author_account_id: 1,
+            body: "[DONE horus] Fix the cursor bug".into(),
+            reply_to_message_id: None,
+        }];
+        assert!(is_claim_completed(&claim, &done_messages));
+    }
+
+    #[test]
+    fn is_claim_completed_ignores_different_domain() {
+        let claim = TaskClaim {
+            message_id: 1,
+            domain_id: 1,
+            domain_sequence: 1,
+            author_account_id: 1,
+            handle: "horus".into(),
+            description: "Fix the cursor bug".into(),
+        };
+        let done_messages = vec![crate::tidepool::TidepoolInboundMessage {
+            domain_id: 2, // different domain
+            domain_title: "other".into(),
+            domain_slug: "other".into(),
+            message_id: 2,
+            domain_sequence: 2,
+            author_account_id: 1,
+            body: "[DONE horus] Fix the cursor bug".into(),
+            reply_to_message_id: None,
+        }];
+        assert!(!is_claim_completed(&claim, &done_messages));
+    }
+
+    #[test]
+    fn is_claim_completed_ignores_different_handle() {
+        let claim = TaskClaim {
+            message_id: 1,
+            domain_id: 1,
+            domain_sequence: 1,
+            author_account_id: 1,
+            handle: "horus".into(),
+            description: "Fix the cursor bug".into(),
+        };
+        let done_messages = vec![crate::tidepool::TidepoolInboundMessage {
+            domain_id: 1,
+            domain_title: "test".into(),
+            domain_slug: "test".into(),
+            message_id: 2,
+            domain_sequence: 2,
+            author_account_id: 2,
+            body: "[DONE buzz] Fix the cursor bug".into(), // different handle
+            reply_to_message_id: None,
+        }];
+        assert!(!is_claim_completed(&claim, &done_messages));
+    }
+
+    #[test]
+    fn claim_task_validation_requires_domain_id() {
+        let tool = TidepoolClaimTaskTool;
+        let error = tool.validate(&json!({"task": "test"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn claim_task_validation_requires_task() {
+        let tool = TidepoolClaimTaskTool;
+        let error = tool.validate(&json!({"domain_id": 1})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn claim_task_validation_rejects_blank_task() {
+        let tool = TidepoolClaimTaskTool;
+        let error = tool.validate(&json!({"domain_id": 1, "task": "   "})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn claim_task_validation_accepts_valid_params() {
+        let tool = TidepoolClaimTaskTool;
+        tool.validate(&json!({"domain_id": 1, "task": "Fix the cursor bug"})).unwrap();
+    }
+
+    #[test]
+    fn complete_task_validation_requires_domain_id() {
+        let tool = TidepoolCompleteTaskTool;
+        let error = tool.validate(&json!({"task": "test"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn complete_task_validation_requires_task() {
+        let tool = TidepoolCompleteTaskTool;
+        let error = tool.validate(&json!({"domain_id": 1})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn complete_task_validation_accepts_valid_params() {
+        let tool = TidepoolCompleteTaskTool;
+        tool.validate(&json!({"domain_id": 1, "task": "Fix the cursor bug"})).unwrap();
+    }
+
+    #[test]
+    fn list_claims_validation_accepts_empty_params() {
+        let tool = TidepoolListClaimsTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn list_claims_validation_accepts_all_filters() {
+        let tool = TidepoolListClaimsTool;
+        tool.validate(&json!({"domain_id": 1, "handle": "horus", "limit": 10})).unwrap();
+    }
+
+    #[test]
+    fn list_claims_validation_rejects_invalid_domain_id() {
+        let tool = TidepoolListClaimsTool;
+        let error = tool.validate(&json!({"domain_id": "abc"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn default_registry_includes_claim_tools() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_claim_task".to_string()));
+        assert!(names.contains(&"tidepool_complete_task".to_string()));
+        assert!(names.contains(&"tidepool_list_claims".to_string()));
     }
 }

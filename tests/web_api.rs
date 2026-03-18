@@ -499,3 +499,49 @@ async fn retention_settings_and_prune_endpoint_replace_old_blobs() {
     let detail: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(detail["request_body"]["pruned"], true);
 }
+
+#[tokio::test]
+async fn health_endpoint_returns_ok() {
+    let app = app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+}
+
+#[tokio::test]
+async fn api_status_endpoint_returns_runtime_info() {
+    let app = app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert!(json["thread_count"].is_number());
+    assert!(json["channels"].is_object());
+}

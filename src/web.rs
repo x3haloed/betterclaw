@@ -8,7 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use anyhow::anyhow;
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -50,6 +50,8 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
         .route("/api/traces/{trace_id}", get(get_trace))
         .route("/api/runtime/check-update", get(check_update))
         .route("/api/runtime/self-update", post(self_update))
+        .route("/health", get(health))
+        .route("/api/status", get(api_status))
         .with_state(runtime)
 }
 
@@ -368,6 +370,33 @@ impl From<crate::error::RuntimeError> for ApiError {
     fn from(value: crate::error::RuntimeError) -> Self {
         Self::Runtime(value)
     }
+}
+
+/// Simple health check — returns 200 OK immediately.
+/// Used by watchdog scripts to detect if the process is alive and responsive.
+async fn health() -> impl IntoResponse {
+    Json(json!({ "status": "ok" }))
+}
+
+/// Runtime status endpoint — returns agent identity, version, and uptime info.
+/// Used by coordination tools and watchdog scripts for richer health checks.
+async fn api_status(State(runtime): State<Arc<Runtime>>) -> Result<Json<Value>, ApiError> {
+    let threads = runtime.list_threads().await?;
+    let thread_count = threads.len();
+
+    // Count active Tidepool subscriptions from env
+    let tidepool_connected =
+        std::env::var("TIDEPOOL_DATABASE").is_ok() && std::env::var("TIDEPOOL_HANDLE").is_ok();
+    let discord_connected = std::env::var("DISCORD_BOT_TOKEN").is_ok();
+
+    Ok(Json(json!({
+        "status": "ok",
+        "thread_count": thread_count,
+        "channels": {
+            "tidepool": tidepool_connected,
+            "discord": discord_connected,
+        }
+    })))
 }
 
 impl IntoResponse for ApiError {

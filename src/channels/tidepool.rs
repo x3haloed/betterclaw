@@ -217,17 +217,7 @@ impl TidepoolChannel {
         // the inbound (avoiding duplicate replies for already-succeeded posts).
         let mut first_post_error: Option<anyhow::Error> = None;
         for outbound in &outcome.outbound_messages {
-            let trimmed = outbound.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if is_tidepool_noop(trimmed) {
-                tracing::debug!(
-                    domain_id = message.domain_id,
-                    message_id = message.message_id,
-                    body = %trimmed,
-                    "Skipping Tidepool no-op outbound message"
-                );
+            if outbound.trim().is_empty() {
                 continue;
             }
             tracing::info!(
@@ -329,82 +319,6 @@ fn is_self_echo(author_account_id: u64, own_account_id: u64) -> bool {
     author_account_id == own_account_id
 }
 
-/// Detect outbound messages that are pure coordination noise.
-///
-/// In multi-agent Tidepool channels, models often produce low-signal responses
-/// like "Acknowledged", "No response needed", or "FYI" to messages that don't
-/// require action. These create feedback loops where each trivial reply triggers
-/// another turn on the receiving end. This filter drops them before posting.
-fn is_tidepool_noop(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let trimmed = lower.trim();
-
-    // Very short messages are almost always noise in coordination contexts
-    if trimmed.len() <= 3 {
-        return true;
-    }
-
-    // Common no-op patterns
-    const NOOP_PATTERNS: &[&str] = &[
-        "no response needed",
-        "no response",
-        "noted",
-        "acknowledged",
-        "ack",
-        "understood",
-        "got it",
-        "roger",
-        "copy",
-        "ok",
-        "okay",
-        "👍",
-        "fyi",
-        "no action needed",
-        "no action",
-        "standing by",
-        "no reply",
-        "looks good",
-        "sounds good",
-        "agreed",
-        "confirmed",
-        "same here",
-        "nothing to add",
-        "nothing further",
-        "i'm not sure how to respond",
-        "that was already fine",
-        "the channel is working",
-        "no action taken",
-        "per the rules",
-        "per v0 rules",
-        "this is already settled",
-        "the thread is already settled",
-    ];
-
-    for pattern in NOOP_PATTERNS {
-        if trimmed == *pattern || trimmed.starts_with(pattern) {
-            return true;
-        }
-    }
-
-    // Messages that are purely "no reply" declarations
-    if trimmed.starts_with("*no reply")
-        || trimmed.starts_with("*no action")
-        || trimmed.starts_with("no reply —")
-        || trimmed.starts_with("no action —")
-    {
-        return true;
-    }
-
-    // Emoji-only or very short symbol messages
-    if trimmed.chars().all(|c| c.is_ascii_punctuation() || c.is_ascii_digit() || !c.is_ascii()) {
-        if trimmed.chars().count() <= 4 {
-            return true;
-        }
-    }
-
-    false
-}
-
 #[cfg(test)]
 fn cursor_seed_value(baseline_sequence: u64) -> u64 {
     baseline_sequence.saturating_sub(1)
@@ -419,7 +333,7 @@ fn next_backoff(current: std::time::Duration) -> std::time::Duration {
 mod tests {
     use super::{
         CONNECTION_HEALTHY_THRESHOLD, INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
-        cursor_seed_value, is_self_echo, is_tidepool_noop, next_backoff, tidepool_thread_key,
+        cursor_seed_value, is_self_echo, next_backoff, tidepool_thread_key,
     };
     use std::collections::HashMap;
     use std::time::Duration;
@@ -452,45 +366,6 @@ mod tests {
         assert_eq!(cursor_seed_value(1), 0);
         assert_eq!(cursor_seed_value(48), 47);
         assert_eq!(cursor_seed_value(100), 99);
-    }
-
-    #[test]
-    fn noop_filters_common_ack_patterns() {
-        assert!(is_tidepool_noop("Acknowledged."));
-        assert!(is_tidepool_noop("Noted."));
-        assert!(is_tidepool_noop("No response needed."));
-        assert!(is_tidepool_noop("Understood."));
-        assert!(is_tidepool_noop("Got it."));
-        assert!(is_tidepool_noop("Standing by."));
-        assert!(is_tidepool_noop("Looks good."));
-        assert!(is_tidepool_noop("No action taken — FYI per v0 rules."));
-        assert!(is_tidepool_noop("No reply — FYI per v0 rules."));
-        assert!(is_tidepool_noop("*No reply — FYI per v0 rules.*"));
-        assert!(is_tidepool_noop("I'm not sure how to respond to that."));
-        assert!(is_tidepool_noop("👍"));
-        assert!(is_tidepool_noop("ok"));
-        assert!(is_tidepool_noop("OK"));
-    }
-
-    #[test]
-    fn noop_allows_substantive_messages() {
-        assert!(!is_tidepool_noop("I'll investigate the Tidepool connection and report back."));
-        assert!(!is_tidepool_noop("CLAIM BUZZ: fixing the cursor seeding bug in tidepool.rs. ETA 10 minutes."));
-        assert!(!is_tidepool_noop("REQUEST: Can someone check if CHIP is connected?"));
-        assert!(!is_tidepool_noop("The issue is in the SpacetimeDB subscription callback."));
-    }
-
-    #[test]
-    fn noop_filters_very_short_messages() {
-        assert!(is_tidepool_noop("ok"));
-        assert!(is_tidepool_noop("ack"));
-        assert!(is_tidepool_noop("k"));
-    }
-
-    #[test]
-    fn noop_allows_medium_messages() {
-        assert!(!is_tidepool_noop("Running cargo test now."));
-        assert!(!is_tidepool_noop("Fixed in commit abc123."));
     }
 
     #[test]

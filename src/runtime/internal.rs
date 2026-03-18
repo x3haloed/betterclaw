@@ -18,10 +18,6 @@ use uuid::Uuid;
 
 const SYNTHETIC_TOOL_SUMMARY_PROMPT: &str = "Summarize what you just did for the user in one concise response. If you are done, call final_message with the user-facing summary.";
 
-/// Maximum number of model↔tool iterations per turn.
-/// Prevents runaway loops where the model keeps calling tools forever.
-const MAX_TOOL_LOOP_ITERATIONS: u32 = 32;
-
 impl Runtime {
     pub(crate) fn parse_tool_control(output: &Value) -> Option<ToolControl> {
         let control = output
@@ -148,28 +144,7 @@ impl Runtime {
         let mut visible_reply_segments = Vec::new();
         let mut chain_ends_with_nonterminal_tool = false;
         let mut synthetic_summary_prompt_sent = false;
-        let mut loop_iterations: u32 = 0;
         let (final_response, last_trace_id, final_status) = loop {
-            loop_iterations += 1;
-            if loop_iterations > MAX_TOOL_LOOP_ITERATIONS {
-                tracing::warn!(
-                    loop_iterations,
-                    turn_id = %turn.id,
-                    "Turn exceeded max tool-loop iterations; forcing termination"
-                );
-                break (
-                    compose_visible_reply(
-                        &visible_reply_segments,
-                        Some(format!(
-                            "[Turn terminated: exceeded {} tool-loop iterations]",
-                            MAX_TOOL_LOOP_ITERATIONS
-                        )),
-                    ),
-                    // Use the last known trace_id if we have one; fall back to empty.
-                    String::new(),
-                    TurnStatus::Failed,
-                );
-            }
             let exchange = self
                 .run_and_record_exchange(&turn, &thread, &event.agent_id, &event.channel, request)
                 .await?;

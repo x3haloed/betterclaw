@@ -204,6 +204,39 @@ impl Tool for MessageTool {
     }
 }
 
+pub struct NoOpTool;
+
+#[async_trait]
+impl Tool for NoOpTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "no_op".to_string(),
+            description: "Record that no external action or user-facing reply is needed for this step. Use this when a tool call is required but the correct action is to do nothing and continue or conclude.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "reason": { "type": "string" }
+                },
+                "required": ["reason"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_string(params, "no_op", "reason")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let reason = require_string(&params, "no_op", "reason")?;
+        Ok(json!({
+            "status": "no_op",
+            "reason": reason,
+        }))
+    }
+}
+
 pub struct FinalMessageTool;
 
 #[async_trait]
@@ -250,7 +283,7 @@ mod tests {
 
     use super::super::{Tool, ToolContext, resolve_path};
     use crate::db::Db;
-    use crate::tool::tool_core::{EchoTool, ShellTool};
+    use crate::tool::tool_core::{EchoTool, NoOpTool, ShellTool};
     use crate::tool::tool_fs::{
         CreateFileTool, EditFileTool, FindTool, GrepTool, ListDirTool, ReadFileTool,
     };
@@ -265,6 +298,22 @@ mod tests {
             "web",
             db,
         )
+    }
+
+    #[tokio::test]
+    async fn noop_tool_returns_reason() {
+        let dir = tempdir().unwrap();
+        let context = test_context(dir.path()).await;
+        let tool = NoOpTool;
+        let output = tool
+            .call(json!({"reason":"No reply needed for this coordination ping."}), &context)
+            .await
+            .unwrap();
+        assert_eq!(output["status"], json!("no_op"));
+        assert_eq!(
+            output["reason"],
+            json!("No reply needed for this coordination ping.")
+        );
     }
 
     #[test]

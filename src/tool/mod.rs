@@ -140,6 +140,7 @@ impl ToolRegistry {
         registry.register(tool_ledger::ConversationSearchTool);
         registry.register(tool_skill::ReadSkillTool);
         registry.register(tool_core::MessageTool);
+        registry.register(tool_core::NoOpTool);
         registry
     }
 

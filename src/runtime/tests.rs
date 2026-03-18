@@ -192,6 +192,12 @@ mod tests {
                 .and_then(serde_json::Value::as_str)
                 == Some("final_message")
         }));
+        assert!(request.tools.iter().any(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str)
+                == Some("no_op")
+        }));
     }
 
     #[tokio::test]

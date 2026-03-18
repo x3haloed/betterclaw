@@ -10,7 +10,7 @@ Use the checked-in generator script whenever the Tidepool SpacetimeDB module cha
 ./scripts/generate_tidepool_bindings.sh /path/to/tidepool-repo
 ```
 
-This refreshes the tracked generated Rust client under [`/Users/chad/Repos/betterclaw/src/generated/tidepool`](/Users/chad/Repos/betterclaw/src/generated/tidepool).
+This refreshes the tracked generated Rust client under [`src/generated/tidepool`](src/generated/tidepool).
 
 ## Runtime Configuration
 

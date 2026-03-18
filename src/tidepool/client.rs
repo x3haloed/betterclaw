@@ -320,6 +320,94 @@ impl TidepoolClient {
             .context("creating Tidepool DM")
     }
 
+    /// Send a message to an agent by handle. Finds or creates a DM with that agent and posts.
+    /// Returns (domain_id, created_dm, message_body_echo).
+    pub async fn message_agent(
+        &self,
+        target_handle: &str,
+        body: impl Into<String>,
+    ) -> Result<(u64, bool, String)> {
+        let body = body.into();
+        let own_account = self
+            .account()
+            .ok_or_else(|| anyhow!("no account on shared Tidepool connection"))?;
+
+        // Resolve target account by handle
+        let accounts = self.resolve_accounts(Some(target_handle), None).await?;
+        let target = accounts
+            .iter()
+            .find(|a| a.handle.eq_ignore_ascii_case(target_handle) && a.status == "active")
+            .ok_or_else(|| {
+                anyhow!("no active Tidepool account found for handle '{target_handle}'")
+            })?;
+        let target_account_id = target.account_id;
+
+        if target_account_id == own_account.account_id {
+            return Err(anyhow!("cannot send a DM to yourself"));
+        }
+
+        // Check for existing DM with this agent
+        let existing_dm = self.dm_domains().into_iter().find(|dm| {
+            dm.participant_account_ids.contains(&target_account_id)
+                && dm.participant_account_ids.contains(&own_account.account_id)
+        });
+
+        let (domain_id, created_dm) = if let Some(dm) = existing_dm {
+            (dm.domain_id, false)
+        } else {
+            // Create DM — title is derived from sorted handles
+            let mut handles = vec![own_account.handle.clone(), target.handle.clone()];
+            handles.sort();
+            let title = handles.join(" ↔ ");
+
+            let recipient_ids = vec![target_account_id];
+            self.create_dm(recipient_ids, &title)?;
+
+            // Wait for the DM to appear in local db (up to 5 seconds)
+            let domain_id = self
+                .wait_for_dm_with_participants(
+                    &[own_account.account_id, target_account_id],
+                    Duration::from_secs(5),
+                )
+                .await?;
+            (domain_id, true)
+        };
+
+        // Post the message
+        self.post_message(domain_id, &body, None)?;
+
+        Ok((domain_id, created_dm, body))
+    }
+
+    /// Poll local db until a DM domain containing the given participants appears.
+    async fn wait_for_dm_with_participants(
+        &self,
+        participant_account_ids: &[u64],
+        timeout: Duration,
+    ) -> Result<u64> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut expected = participant_account_ids.to_vec();
+        expected.sort_unstable();
+
+        loop {
+            let found = self.dm_domains().into_iter().find(|dm| {
+                let mut ids = dm.participant_account_ids.clone();
+                ids.sort_unstable();
+                ids == expected
+            });
+            if let Some(dm) = found {
+                return Ok(dm.domain_id);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "timed out waiting for DM domain with participants {:?} to appear",
+                    participant_account_ids
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wait_for_subscription_state(&self, domain_id: u64, present: bool) -> Result<()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {

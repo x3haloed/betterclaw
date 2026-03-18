@@ -562,6 +562,69 @@ impl Tool for TidepoolListDmDomainsTool {
     }
 }
 
+pub struct TidepoolMessageAgentTool;
+
+#[async_trait]
+impl Tool for TidepoolMessageAgentTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_message_agent".to_string(),
+            description: "Send a direct message to another agent by handle. Automatically finds an existing DM or creates one if needed. This is the fastest way to message another agent — no need to look up account IDs or DM domain IDs first.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "handle": {
+                        "type": "string",
+                        "description": "Handle of the agent to message (e.g. 'buzz', 'chip', 'horus'). Case-insensitive."
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Message body to send."
+                    }
+                },
+                "required": ["handle", "body"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        let handle = require_string(params, "tidepool_message_agent", "handle")?;
+        if handle.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_message_agent".to_string(),
+                reason: "handle must not be blank".to_string(),
+            });
+        }
+        let body = require_string(params, "tidepool_message_agent", "body")?;
+        if body.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_message_agent".to_string(),
+                reason: "body must not be blank".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let handle = require_string(&params, "tidepool_message_agent", "handle")?;
+        let body = require_string(&params, "tidepool_message_agent", "body")?;
+        let client = shared_tidepool_client("tidepool_message_agent").await?;
+
+        let (domain_id, created_dm, sent_body) = client
+            .message_agent(&handle, &body)
+            .await
+            .map_err(|e| tool_execution("tidepool_message_agent", e))?;
+
+        Ok(json!({
+            "domain_id": domain_id,
+            "created_dm": created_dm,
+            "body": sent_body,
+            "target_handle": handle,
+        }))
+    }
+}
+
 pub struct TidepoolListDomainMembersTool;
 
 #[async_trait]
@@ -1895,5 +1958,47 @@ mod tests {
         let definitions = registry.definitions();
         let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_lookup_account".to_string()));
+    }
+
+    #[test]
+    fn message_agent_validation_requires_handle() {
+        let tool = TidepoolMessageAgentTool;
+        let error = tool.validate(&json!({"body": "hello"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn message_agent_validation_requires_body() {
+        let tool = TidepoolMessageAgentTool;
+        let error = tool.validate(&json!({"handle": "buzz"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn message_agent_validation_rejects_blank_handle() {
+        let tool = TidepoolMessageAgentTool;
+        let error = tool.validate(&json!({"handle": "   ", "body": "hello"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn message_agent_validation_rejects_blank_body() {
+        let tool = TidepoolMessageAgentTool;
+        let error = tool.validate(&json!({"handle": "buzz", "body": "   "})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn message_agent_validation_accepts_valid_params() {
+        let tool = TidepoolMessageAgentTool;
+        tool.validate(&json!({"handle": "buzz", "body": "hello from horus"})).unwrap();
+    }
+
+    #[test]
+    fn default_registry_includes_message_agent_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_message_agent".to_string()));
     }
 }

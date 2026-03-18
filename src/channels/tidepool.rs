@@ -125,6 +125,33 @@ impl TidepoolChannel {
             return Ok(());
         }
 
+        // Skip messages authored by this agent to prevent self-echo feedback loops.
+        // Without this, an agent subscribed to the same domain as another instance of
+        // itself (or sharing a domain with cross-posting) would receive its own outbound
+        // messages as new inbound events, triggering unnecessary turns.
+        if let Some(account) = client.account() {
+            if is_self_echo(message.author_account_id, account.account_id) {
+                tracing::debug!(
+                    domain_id = message.domain_id,
+                    message_id = message.message_id,
+                    author_account_id = message.author_account_id,
+                    "Skipping Tidepool self-echo message"
+                );
+                // Still advance the cursor so we don't re-process on reconnect.
+                self.runtime
+                    .db()
+                    .upsert_cursor(&ChannelCursor {
+                        channel: "tidepool".to_string(),
+                        cursor_key,
+                        cursor_value: message.domain_sequence.to_string(),
+                        updated_at: Utc::now(),
+                    })
+                    .await
+                    .context("upserting Tidepool cursor after self-echo skip")?;
+                return Ok(());
+            }
+        }
+
         tracing::info!(
             domain_id = message.domain_id,
             message_id = message.message_id,
@@ -296,6 +323,12 @@ fn tidepool_thread_key(domain_id: u64) -> String {
     format!("tidepool:domain:{domain_id}")
 }
 
+/// Returns true if the message was authored by this agent (self-echo).
+/// Prevents an agent from receiving its own outbound messages as new inbound events.
+fn is_self_echo(author_account_id: u64, own_account_id: u64) -> bool {
+    author_account_id == own_account_id
+}
+
 /// Detect outbound messages that are pure coordination noise.
 ///
 /// In multi-agent Tidepool channels, models often produce low-signal responses
@@ -386,7 +419,7 @@ fn next_backoff(current: std::time::Duration) -> std::time::Duration {
 mod tests {
     use super::{
         CONNECTION_HEALTHY_THRESHOLD, INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
-        cursor_seed_value, is_tidepool_noop, next_backoff, tidepool_thread_key,
+        cursor_seed_value, is_self_echo, is_tidepool_noop, next_backoff, tidepool_thread_key,
     };
     use std::collections::HashMap;
     use std::time::Duration;
@@ -486,5 +519,19 @@ mod tests {
     fn healthy_connection_threshold_is_reasonable() {
         // Connections lasting 30+ seconds should reset backoff
         assert_eq!(CONNECTION_HEALTHY_THRESHOLD, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn self_echo_detects_matching_account_ids() {
+        assert!(is_self_echo(42, 42));
+        assert!(is_self_echo(1, 1));
+        assert!(is_self_echo(0, 0));
+    }
+
+    #[test]
+    fn self_echo_allows_other_agents() {
+        assert!(!is_self_echo(42, 99));
+        assert!(!is_self_echo(1, 2));
+        assert!(!is_self_echo(100, 200));
     }
 }

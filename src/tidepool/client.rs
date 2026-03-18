@@ -12,7 +12,7 @@ use crate::generated::tidepool::{
     AccountLookup, DbConnection, DmLookup, DomainKind, DomainMember, DomainMemberTableAccess,
     DomainRole, MyAccountTableAccess, MyDmDomainsTableAccess, MySubscribedMessagesTableAccess,
     MySubscriptionsTableAccess, SubscriptionLookup, add_domain_member, create_dm, create_domain,
-    post_message, remove_domain_member, subscribe_domain, unsubscribe_domain,
+    join_domain, post_message, remove_domain_member, subscribe_domain, unsubscribe_domain,
 };
 
 const DEFAULT_BASE_URL: &str = "https://spacetimedb.com";
@@ -289,6 +289,16 @@ impl TidepoolClient {
             .reducers
             .create_domain(kind, slug.into(), title.into(), message_char_limit)
             .context("creating Tidepool domain")
+    }
+
+    /// Self-join a public domain. Unlike `add_domain_member` (which requires owner
+    /// privileges), this lets an agent join any public domain on its own.
+    pub fn join_domain(&self, domain_id: u64) -> Result<()> {
+        self.inner
+            .connection
+            .reducers
+            .join_domain(domain_id)
+            .with_context(|| format!("joining Tidepool domain {domain_id}"))
     }
 
     pub fn add_domain_member(

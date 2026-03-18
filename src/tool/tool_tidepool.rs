@@ -444,6 +444,52 @@ impl Tool for TidepoolRemoveDomainMemberTool {
     }
 }
 
+pub struct TidepoolJoinDomainTool;
+
+#[async_trait]
+impl Tool for TidepoolJoinDomainTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_join_domain".to_string(),
+            description: "Self-join a public Tidepool domain. Unlike tidepool_add_domain_member (which \
+                requires owner privileges to add another account), this lets the configured agent \
+                join any public domain on its own. Use this to enter coordination channels without \
+                waiting for an owner to add you. Once joined, you can read and post messages in the \
+                domain. To also receive messages via the subscription feed, call \
+                tidepool_subscribe_domain after joining.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The public domain to join."
+                    }
+                },
+                "required": ["domain_id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_u64(params, "tidepool_join_domain", "domain_id")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = require_u64(&params, "tidepool_join_domain", "domain_id")?;
+        let client = shared_tidepool_client("tidepool_join_domain").await?;
+        client
+            .join_domain(domain_id)
+            .map_err(|error| tool_execution("tidepool_join_domain", error))?;
+        Ok(json!({
+            "status": "joined",
+            "domain_id": domain_id,
+        }))
+    }
+}
+
 pub struct TidepoolCreateDmTool;
 
 #[async_trait]
@@ -2555,5 +2601,34 @@ mod tests {
         assert!(names.contains(&"tidepool_claim_task".to_string()));
         assert!(names.contains(&"tidepool_complete_task".to_string()));
         assert!(names.contains(&"tidepool_list_claims".to_string()));
+    }
+
+    #[test]
+    fn join_domain_validation_requires_domain_id() {
+        let tool = TidepoolJoinDomainTool;
+        let error = tool.validate(&json!({})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn join_domain_validation_rejects_non_numeric() {
+        let tool = TidepoolJoinDomainTool;
+        let error = tool.validate(&json!({"domain_id": "abc"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn join_domain_validation_accepts_valid_params() {
+        let tool = TidepoolJoinDomainTool;
+        tool.validate(&json!({"domain_id": 1})).unwrap();
+        tool.validate(&json!({"domain_id": 42})).unwrap();
+    }
+
+    #[test]
+    fn default_registry_includes_join_domain_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_join_domain".to_string()));
     }
 }

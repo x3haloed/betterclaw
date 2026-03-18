@@ -1753,6 +1753,111 @@ impl Tool for TidepoolListClaimsTool {
     }
 }
 
+// ── tidepool_handoff_task ───────────────────────────────────────────────────
+
+pub struct TidepoolHandoffTaskTool;
+
+#[async_trait]
+impl Tool for TidepoolHandoffTaskTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_handoff_task".to_string(),
+            description: "Take over a stale task claim from another agent. \
+                Posts a [HANDOFF from→to] message for audit trail, then claims the task \
+                under your own handle. Use tidepool_list_claims with is_stale=true first \
+                to find claims that can be handed off. Only take over claims where the \
+                claiming agent is clearly stale or silent."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "required": ["domain_id", "from_handle", "task"],
+                "properties": {
+                    "domain_id": {
+                        "type": "integer",
+                        "description": "Domain ID where the task is claimed."
+                    },
+                    "from_handle": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Handle of the agent whose stale claim you are taking over."
+                    },
+                    "task": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "The exact task description from the original claim."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_u64(params, "tidepool_handoff_task", "domain_id")?;
+        let from = params
+            .get("from_handle")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RuntimeError::InvalidToolParameters {
+                tool: "tidepool_handoff_task".to_string(),
+                reason: "missing or invalid 'from_handle' field".to_string(),
+            })?;
+        if from.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_handoff_task".to_string(),
+                reason: "'from_handle' cannot be blank".to_string(),
+            });
+        }
+        let task = params
+            .get("task")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RuntimeError::InvalidToolParameters {
+                tool: "tidepool_handoff_task".to_string(),
+                reason: "missing or invalid 'task' field".to_string(),
+            })?;
+        if task.trim().is_empty() {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_handoff_task".to_string(),
+                reason: "'task' cannot be blank".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let domain_id = require_u64(&params, "tidepool_handoff_task", "domain_id")?;
+        let from_handle = params["from_handle"].as_str().unwrap().trim();
+        let task = params["task"].as_str().unwrap().trim();
+
+        let client = shared_tidepool_client("tidepool_handoff_task").await?;
+        let to_handle = client
+            .account()
+            .map(|a| a.handle)
+            .unwrap_or_else(|| "unknown".to_string());
+
+        // Post handoff audit message
+        let handoff_body = format!("[HANDOFF {from_handle}→{to_handle}] {task}");
+        client
+            .post_message(domain_id, &handoff_body, None)
+            .map_err(|e| tool_execution("tidepool_handoff_task", e))?;
+
+        // Post new claim under our handle
+        let claim_body = format!("[CLAIM {to_handle}] {task}");
+        client
+            .post_message(domain_id, &claim_body, None)
+            .map_err(|e| tool_execution("tidepool_handoff_task", e))?;
+
+        Ok(json!({
+            "status": "handed_off",
+            "from_handle": from_handle,
+            "to_handle": to_handle,
+            "domain_id": domain_id,
+            "task": task,
+            "handoff_message": handoff_body,
+            "claim_message": claim_body,
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -2676,5 +2781,53 @@ mod tests {
         let definitions = registry.definitions();
         let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_join_domain".to_string()));
+    }
+
+    #[test]
+    fn handoff_task_validation_rejects_missing_params() {
+        let tool = TidepoolHandoffTaskTool;
+        assert!(tool.validate(&json!({})).is_err());
+        assert!(tool.validate(&json!({"domain_id": 1})).is_err());
+        assert!(tool.validate(&json!({"domain_id": 1, "from_handle": "buzz"})).is_err());
+    }
+
+    #[test]
+    fn handoff_task_validation_rejects_empty_handle() {
+        let tool = TidepoolHandoffTaskTool;
+        let error = tool.validate(&json!({
+            "domain_id": 1,
+            "from_handle": "",
+            "task": "do something"
+        })).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn handoff_task_validation_rejects_empty_task() {
+        let tool = TidepoolHandoffTaskTool;
+        let error = tool.validate(&json!({
+            "domain_id": 1,
+            "from_handle": "buzz",
+            "task": ""
+        })).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn handoff_task_validation_accepts_valid_params() {
+        let tool = TidepoolHandoffTaskTool;
+        tool.validate(&json!({
+            "domain_id": 1,
+            "from_handle": "buzz",
+            "task": "Fix the rendering bug"
+        })).unwrap();
+    }
+
+    #[test]
+    fn default_registry_includes_handoff_task_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_handoff_task".to_string()));
     }
 }

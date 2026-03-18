@@ -101,6 +101,23 @@ pub struct AccountEntry {
     pub status: String,
 }
 
+fn build_account_lookup_sql(handle: Option<&str>, account_id: Option<u64>) -> String {
+    let mut sql = String::from("SELECT account_id, handle, status FROM account");
+    let mut clauses = Vec::new();
+    if let Some(handle) = handle {
+        clauses.push(format!("handle = '{}'", handle.replace('\'', "''")));
+    }
+    if let Some(account_id) = account_id {
+        clauses.push(format!("account_id = {account_id}"));
+    }
+    if !clauses.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&clauses.join(" AND "));
+    }
+    sql.push_str(" LIMIT 50");
+    sql
+}
+
 fn parse_account_rows(body: &Value) -> Result<Vec<AccountEntry>> {
     let statements = body
         .as_array()
@@ -768,14 +785,7 @@ impl TidepoolClient {
             .trim()
             .to_string();
 
-        let mut sql = String::from("SELECT account_id, handle, status FROM account WHERE 1=1");
-        if let Some(h) = handle {
-            sql.push_str(&format!(" AND handle = '{}'", h.replace('\'', "''")));
-        }
-        if let Some(id) = account_id {
-            sql.push_str(&format!(" AND account_id = {}", id));
-        }
-        sql.push_str(" LIMIT 50");
+        let sql = build_account_lookup_sql(handle, account_id);
 
         // Derive base_url and database from the config used to establish this connection.
         // Fall back to env vars only if the config is not available.
@@ -1198,6 +1208,25 @@ mod tests {
             err.to_string()
                 .contains("array of statement results"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_account_lookup_sql_omits_dummy_literal_where_clause() {
+        let sql = build_account_lookup_sql(Some("chip"), None);
+        assert_eq!(
+            sql,
+            "SELECT account_id, handle, status FROM account WHERE handle = 'chip' LIMIT 50"
+        );
+        assert!(!sql.contains("1=1"));
+    }
+
+    #[test]
+    fn build_account_lookup_sql_escapes_quotes_and_combines_filters() {
+        let sql = build_account_lookup_sql(Some("o'hara"), Some(42));
+        assert_eq!(
+            sql,
+            "SELECT account_id, handle, status FROM account WHERE handle = 'o''hara' AND account_id = 42 LIMIT 50"
         );
     }
 }

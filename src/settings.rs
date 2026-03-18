@@ -30,7 +30,6 @@ fn default_role_enabled() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSettings {
     pub agent_id: String,
-    pub model: String,
     pub system_prompt: String,
     pub max_tokens: u32,
     pub stream: bool,
@@ -73,12 +72,10 @@ pub fn default_system_prompt() -> String {
 }
 
 impl RuntimeSettings {
-    pub fn with_defaults(agent_id: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn with_defaults(agent_id: impl Into<String>) -> Self {
         let now = Utc::now();
-        let model = model.into();
         Self {
             agent_id: agent_id.into(),
-            model: model.clone(),
             system_prompt: default_system_prompt(),
             max_tokens: 1024,
             stream: true,
@@ -90,16 +87,7 @@ impl RuntimeSettings {
             enable_observations: true,
             inject_observations: true,
             inject_skills: true,
-            model_roles: vec![ModelRoleConfig {
-                role: ModelRole::Agent,
-                provider: "local".to_string(),
-                mode: Some("chat".to_string()),
-                model,
-                base_url: None,
-                api_key_env_var: None,
-                extra_headers: Vec::new(),
-                enabled: true,
-            }],
+            model_roles: Vec::new(),
             created_at: now,
             updated_at: now,
         }

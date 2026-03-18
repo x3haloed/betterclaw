@@ -500,7 +500,7 @@ impl Runtime {
         settings: &RuntimeSettings,
     ) -> ModelExchangeRequest {
         ModelExchangeRequest {
-            model: settings.model.clone(),
+            model: self.model_name.clone(),
             messages,
             tools: if allow_tools && settings.allow_tools {
                 self.tool_definitions()

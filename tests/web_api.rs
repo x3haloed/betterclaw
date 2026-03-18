@@ -324,7 +324,7 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
                 .uri("/api/settings/runtime")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"model":"custom-model","system_prompt":"Be extremely concise.","max_tokens":77,"stream":false,"allow_tools":false,"max_history_turns":3}"#,
+                    r#"{"system_prompt":"Be extremely concise.","max_tokens":77,"stream":false,"allow_tools":false,"max_history_turns":3}"#,
                 ))
                 .unwrap(),
         )
@@ -386,8 +386,8 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
         .await
         .unwrap();
     let trace: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(trace["trace"]["model"], "custom-model");
-    assert_eq!(trace["request_body"]["model"], "custom-model");
+    assert_eq!(trace["trace"]["model"], "local-debug-model");
+    assert_eq!(trace["request_body"]["model"], "local-debug-model");
     assert_eq!(trace["request_body"]["max_tokens"], 77);
     assert_eq!(trace["request_body"]["stream"], false);
     assert_eq!(trace["request_body"]["tools"], Value::Array(vec![]));

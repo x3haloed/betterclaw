@@ -84,7 +84,6 @@ async fn get_runtime_settings(
 
 #[derive(Debug, Deserialize)]
 struct UpdateRuntimeSettingsRequest {
-    model: String,
     system_prompt: String,
     max_tokens: u32,
     stream: bool,
@@ -113,7 +112,6 @@ async fn update_runtime_settings(
     let current = runtime.get_runtime_settings("default").await?;
     let updated = crate::settings::RuntimeSettings {
         agent_id: current.agent_id,
-        model: payload.model,
         system_prompt: payload.system_prompt,
         max_tokens: payload.max_tokens,
         stream: payload.stream,

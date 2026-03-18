@@ -53,6 +53,7 @@ pub struct Runtime {
     pub(crate) db: Arc<Db>,
     pub(crate) tools: ToolRegistry,
     pub(crate) model_engine: Arc<ModelEngine>,
+    pub(crate) model_name: String,
     pub(crate) provider_name: String,
     pub(crate) provider_throttle: Arc<ProviderThrottle>,
     pub(crate) provider_request_gate: Arc<tokio::sync::Mutex<()>>,
@@ -105,11 +106,12 @@ impl Runtime {
         provider_name: impl Into<String>,
         base_backoff: Duration,
     ) -> Result<Self, RuntimeError> {
+        let model_name = model_name.into();
         let db = Arc::new(db);
         let (updates, _) = broadcast::channel(512);
         let workspace = Workspace::new("default", default_workspace_root());
         let agent = Agent::new("default", "Default Agent", workspace.id.clone());
-        let mut default_settings = RuntimeSettings::with_defaults("default", model_name.into());
+        let mut default_settings = RuntimeSettings::with_defaults("default");
         if let Some(role) = env_role(ModelRole::Compressor) {
             default_settings.model_roles.push(role);
         }
@@ -131,6 +133,7 @@ impl Runtime {
             db,
             tools: ToolRegistry::with_defaults(),
             model_engine: Arc::new(model_engine),
+            model_name,
             provider_name: provider_name.into(),
             provider_throttle: Arc::new(ProviderThrottle::new(base_backoff)),
             provider_request_gate: Arc::new(tokio::sync::Mutex::new(())),

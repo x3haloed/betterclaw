@@ -260,7 +260,7 @@ impl Runtime {
                 (
                     (*self.model_engine).clone(),
                     self.provider_name.clone(),
-                    settings.model.clone(),
+                    self.model_name.clone(),
                     true,
                 )
             };

@@ -126,7 +126,6 @@ impl Db {
             );
             CREATE TABLE IF NOT EXISTS runtime_settings (
                 agent_id TEXT PRIMARY KEY,
-                model TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
                 max_tokens INTEGER NOT NULL,
                 stream INTEGER NOT NULL,
@@ -236,6 +235,8 @@ impl Db {
             "TEXT NOT NULL DEFAULT '[]'",
         )
         .await?;
+        self.drop_column_if_exists(&conn, "runtime_settings", "model")
+            .await?;
         self.drop_column_if_exists(&conn, "runtime_settings", "temperature")
             .await?;
         self.add_column_if_missing(

@@ -10,10 +10,9 @@ impl Db {
     pub async fn seed_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT OR IGNORE INTO runtime_settings (agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, inject_skills, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO runtime_settings (agent_id, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, inject_skills, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 settings.agent_id.clone(),
-                settings.model.clone(),
                 settings.system_prompt.clone(),
                 settings.max_tokens as i64,
                 if settings.stream { 1 } else { 0 },
@@ -52,28 +51,27 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, COALESCE(enable_observations, 1), COALESCE(inject_observations, 1), COALESCE(inject_skills, 1), model_roles_json, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
+                "SELECT agent_id, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, COALESCE(enable_observations, 1), COALESCE(inject_observations, 1), COALESCE(inject_skills, 1), model_roles_json, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
                 params![agent_id.to_string()],
             )
             .await?;
         Ok(if let Some(row) = rows.next().await? {
             Some(RuntimeSettings {
                 agent_id: row.get::<String>(0)?,
-                model: row.get::<String>(1)?,
-                system_prompt: row.get::<String>(2)?,
-                max_tokens: row.get::<i64>(3)? as u32,
-                stream: row.get::<i64>(4)? != 0,
-                allow_tools: row.get::<i64>(5)? != 0,
-                max_history_turns: row.get::<i64>(6)? as u32,
-                inject_wake_pack: row.get::<i64>(7)? != 0,
-                inject_ledger_recall: row.get::<i64>(8)? != 0,
-                enable_auto_distill: row.get::<i64>(9)? != 0,
-                enable_observations: row.get::<i64>(10)? != 0,
-                inject_observations: row.get::<i64>(11)? != 0,
-                inject_skills: row.get::<i64>(12)? != 0,
-                model_roles: serde_json::from_str(&row.get::<String>(13)?)?,
-                created_at: parse_datetime(&row.get::<String>(14)?)?,
-                updated_at: parse_datetime(&row.get::<String>(15)?)?,
+                system_prompt: row.get::<String>(1)?,
+                max_tokens: row.get::<i64>(2)? as u32,
+                stream: row.get::<i64>(3)? != 0,
+                allow_tools: row.get::<i64>(4)? != 0,
+                max_history_turns: row.get::<i64>(5)? as u32,
+                inject_wake_pack: row.get::<i64>(6)? != 0,
+                inject_ledger_recall: row.get::<i64>(7)? != 0,
+                enable_auto_distill: row.get::<i64>(8)? != 0,
+                enable_observations: row.get::<i64>(9)? != 0,
+                inject_observations: row.get::<i64>(10)? != 0,
+                inject_skills: row.get::<i64>(11)? != 0,
+                model_roles: serde_json::from_str(&row.get::<String>(12)?)?,
+                created_at: parse_datetime(&row.get::<String>(13)?)?,
+                updated_at: parse_datetime(&row.get::<String>(14)?)?,
             })
         } else {
             None
@@ -105,10 +103,9 @@ impl Db {
     pub async fn update_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
         let conn = self.connect()?;
         conn.execute(
-            "INSERT OR REPLACE INTO runtime_settings (agent_id, model, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, inject_skills, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
+            "INSERT OR REPLACE INTO runtime_settings (agent_id, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, inject_skills, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
             params![
                 settings.agent_id.clone(),
-                settings.model.clone(),
                 settings.system_prompt.clone(),
                 settings.max_tokens as i64,
                 if settings.stream { 1 } else { 0 },

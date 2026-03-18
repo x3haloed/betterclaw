@@ -1858,6 +1858,219 @@ impl Tool for TidepoolHandoffTaskTool {
     }
 }
 
+// ── tidepool_my_dashboard ──────────────────────────────────────────────────
+//
+// Single-call personal coordination dashboard. Returns an agent's own claims,
+// mentions directed at them, health status, and recent messages in one call.
+// Replaces the need to call tidepool_list_claims, tidepool_find_mentions,
+// tidepool_agent_health, and tidepool_my_account separately.
+
+pub struct TidepoolMyDashboardTool;
+
+#[async_trait]
+impl Tool for TidepoolMyDashboardTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_my_dashboard".to_string(),
+            description: "Get your personal coordination dashboard in a single call. \
+                Returns your active task claims, mentions directed at you, your health status, \
+                and recent messages across all subscribed domains. \
+                Use this at the start of a turn to quickly understand what needs your attention. \
+                Replaces calling tidepool_my_account, tidepool_list_claims(handle=you), \
+                tidepool_find_mentions(handle=you), and tidepool_agent_health(account_id=you) separately."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "recent_message_limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Number of recent messages to include per domain. Defaults to 3."
+                    },
+                    "domain_id": {
+                        "type": "integer",
+                        "description": "Filter to a specific domain. Omit for all subscribed domains."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        optional_u32(params, "tidepool_my_dashboard", "recent_message_limit")?;
+        optional_u64(params, "tidepool_my_dashboard", "domain_id")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let per_domain_limit = optional_u32(&params, "tidepool_my_dashboard", "recent_message_limit")?
+            .unwrap_or(3) as usize;
+        let domain_filter = optional_u64(&params, "tidepool_my_dashboard", "domain_id")?;
+
+        let client = shared_tidepool_client("tidepool_my_dashboard").await?;
+
+        // 1. Get own identity
+        let account = client.account();
+        let (my_account_id, my_handle) = match &account {
+            Some(a) => (a.account_id, a.handle.clone()),
+            None => {
+                return Ok(json!({
+                    "error": "No account identity available. Tidepool client may not be connected."
+                }));
+            }
+        };
+
+        // 2. Get active claims for this handle
+        let claim_messages = client.search_messages(CLAIM_PREFIX, domain_filter, None, None, 200);
+        let done_messages = client.search_messages(DONE_PREFIX, domain_filter, None, None, 200);
+
+        let mut my_active_claims: Vec<Value> = Vec::new();
+        for msg in &claim_messages {
+            if let Some(claim) = parse_claim_message(msg) {
+                if !claim.handle.eq_ignore_ascii_case(&my_handle) {
+                    continue;
+                }
+                if is_claim_completed(&claim, &done_messages) {
+                    continue;
+                }
+                let claim_age_secs = {
+                    let now_micros = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .map(|d| d.as_micros() as i64)
+                        .unwrap_or(0);
+                    ((now_micros - msg.created_at_micros) as f64 / 1_000_000.0).max(0.0)
+                };
+                my_active_claims.push(json!({
+                    "domain_id": claim.domain_id,
+                    "task": claim.description,
+                    "message_id": claim.message_id,
+                    "age_seconds": claim_age_secs,
+                }));
+            }
+        }
+
+        // 3. Get mentions directed at this agent
+        let my_mentions = client.find_mentions(&my_handle, domain_filter, 20);
+        let mention_entries: Vec<Value> = my_mentions
+            .iter()
+            .map(|m| {
+                json!({
+                    "message_id": m.message_id,
+                    "domain_id": m.domain_id,
+                    "author_account_id": m.author_account_id,
+                    "body_preview": m.body.chars().take(120).collect::<String>(),
+                })
+            })
+            .collect();
+
+        // 4. Get own health
+        let health_entries = client.agent_health(Some(my_account_id), domain_filter, 200);
+        let my_health = health_entries
+            .iter()
+            .find(|h| h.account_id == my_account_id)
+            .map(|h| {
+                json!({
+                    "health_status": h.health_status,
+                    "seconds_since_last_message": h.seconds_since_last_message,
+                    "message_count": h.message_count,
+                    "active_domain_ids": h.active_domain_ids,
+                })
+            })
+            .unwrap_or(json!({
+                "health_status": "unknown",
+                "seconds_since_last_message": null,
+                "message_count": 0,
+                "active_domain_ids": [],
+            }));
+
+        // 5. Get recent messages across domains
+        let all_messages = client.read_messages_filtered(domain_filter, None, 500);
+        let mut recent_by_domain: std::collections::HashMap<u64, Vec<Value>> =
+            std::collections::HashMap::new();
+        let subscriptions = client.subscriptions();
+        for sub in &subscriptions {
+            if let Some(df) = domain_filter {
+                if sub.domain_id != df {
+                    continue;
+                }
+            }
+            let domain_msgs: Vec<Value> = all_messages
+                .iter()
+                .filter(|m| m.domain_id == sub.domain_id)
+                .rev()
+                .take(per_domain_limit)
+                .map(|m| {
+                    json!({
+                        "message_id": m.message_id,
+                        "author_account_id": m.author_account_id,
+                        "body_preview": m.body.chars().take(100).collect::<String>(),
+                        "reply_to_message_id": m.reply_to_message_id,
+                    })
+                })
+                .collect();
+            if !domain_msgs.is_empty() {
+                recent_by_domain.insert(sub.domain_id, domain_msgs);
+            }
+        }
+
+        // 6. Get all active claims for workload context (who else is working on what)
+        let all_active_claims: Vec<Value> = claim_messages
+            .iter()
+            .filter_map(|msg| {
+                parse_claim_message(msg).and_then(|claim| {
+                    if is_claim_completed(&claim, &done_messages) {
+                        return None;
+                    }
+                    Some(json!({
+                        "handle": claim.handle,
+                        "task": claim.description,
+                        "domain_id": claim.domain_id,
+                    }))
+                })
+            })
+            .collect();
+
+        // 7. Detect potential attention items
+        let mut attention_items: Vec<Value> = Vec::new();
+
+        // Mentions from other agents (not self)
+        for mention in &my_mentions {
+            if mention.author_account_id != my_account_id {
+                attention_items.push(json!({
+                    "type": "mention",
+                    "message_id": mention.message_id,
+                    "domain_id": mention.domain_id,
+                    "from_account_id": mention.author_account_id,
+                    "preview": mention.body.chars().take(80).collect::<String>(),
+                }));
+            }
+        }
+
+        // Stale claims by other agents that match task keywords in my claims
+        // (potential duplicate/overlapping work)
+
+        Ok(json!({
+            "identity": {
+                "account_id": my_account_id,
+                "handle": my_handle,
+            },
+            "health": my_health,
+            "my_active_claims": my_active_claims,
+            "my_claim_count": my_active_claims.len(),
+            "mentions_for_me": mention_entries,
+            "mention_count": mention_entries.len(),
+            "attention_items": attention_items,
+            "attention_count": attention_items.len(),
+            "all_active_claims": all_active_claims,
+            "total_active_claims": all_active_claims.len(),
+            "recent_messages_by_domain": recent_by_domain,
+            "domains_with_activity": recent_by_domain.len(),
+        }))
+    }
+}
+
 async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
@@ -2829,5 +3042,61 @@ mod tests {
         let definitions = registry.definitions();
         let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_handoff_task".to_string()));
+    }
+
+    #[test]
+    fn my_dashboard_validation_accepts_empty_params() {
+        let tool = TidepoolMyDashboardTool;
+        tool.validate(&json!({})).unwrap();
+    }
+
+    #[test]
+    fn my_dashboard_validation_accepts_recent_message_limit() {
+        let tool = TidepoolMyDashboardTool;
+        tool.validate(&json!({"recent_message_limit": 5})).unwrap();
+        tool.validate(&json!({"recent_message_limit": 1})).unwrap();
+        tool.validate(&json!({"recent_message_limit": 20})).unwrap();
+    }
+
+    #[test]
+    fn my_dashboard_validation_accepts_domain_filter() {
+        let tool = TidepoolMyDashboardTool;
+        tool.validate(&json!({"domain_id": 1})).unwrap();
+    }
+
+    #[test]
+    fn my_dashboard_validation_accepts_all_params() {
+        let tool = TidepoolMyDashboardTool;
+        tool.validate(&json!({
+            "recent_message_limit": 10,
+            "domain_id": 42
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn my_dashboard_validation_rejects_invalid_limit() {
+        let tool = TidepoolMyDashboardTool;
+        let error = tool
+            .validate(&json!({"recent_message_limit": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn my_dashboard_validation_rejects_invalid_domain() {
+        let tool = TidepoolMyDashboardTool;
+        let error = tool
+            .validate(&json!({"domain_id": "abc"}))
+            .unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn default_registry_includes_my_dashboard_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_my_dashboard".to_string()));
     }
 }

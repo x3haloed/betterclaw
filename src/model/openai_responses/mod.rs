@@ -79,6 +79,13 @@ impl OpenAiResponsesEngine {
         payload
     }
 
+    fn payload_requests_stream(payload: &Value) -> bool {
+        payload
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
     fn new_accumulator(
         &self,
         model: &str,
@@ -431,7 +438,7 @@ impl ModelRunner for OpenAiResponsesEngine {
             });
         }
 
-        if request.stream {
+        if Self::payload_requests_stream(&payload) {
             let exchange = self
                 .decode_sse_response(&request, started_at, payload, provider_request_id, response)
                 .await?;

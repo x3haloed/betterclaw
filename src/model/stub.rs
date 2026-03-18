@@ -57,7 +57,7 @@ impl ModelRunner for StubModelEngine {
         accumulator.push(&events[0]);
 
         let mut response_body = json!({});
-        if request.extra.get("betterclaw_role").and_then(Value::as_str) == Some("compressor") {
+        if is_compressor_request(&request) {
             let text = json!({
                 "wake_pack": "Stub compressor wake pack: preserve recent user intent and tool outcomes.",
                 "invariant_self": [
@@ -452,4 +452,13 @@ impl ModelRunner for StubModelEngine {
         }
         Ok(result)
     }
+}
+
+fn is_compressor_request(request: &ModelExchangeRequest) -> bool {
+    request.response_format.as_ref().and_then(|format| {
+        format
+            .get("json_schema")
+            .and_then(|schema| schema.get("name"))
+            .and_then(Value::as_str)
+    }) == Some("betterclaw_memory_distill")
 }

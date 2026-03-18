@@ -41,11 +41,12 @@ impl OpenAiResponsesEngine {
 
     fn build_payload(&self, request: &ModelExchangeRequest) -> Value {
         let (instructions, input) = split_instructions_and_input(&request.messages);
+        let force_stream = self.config.provider_name == "codex";
         let mut payload = json!({
             "model": request.model,
             "instructions": instructions,
             "input": input,
-            "stream": request.stream,
+            "stream": request.stream || force_stream,
             "store": false,
         });
 

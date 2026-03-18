@@ -348,10 +348,7 @@ impl Runtime {
                     }
                 }
             })),
-            extra: json!({
-                "betterclaw_role": "compressor",
-                "namespace_id": namespace_id,
-            }),
+            extra: json!({}),
         };
 
         let exchange = if used_fallback_engine {

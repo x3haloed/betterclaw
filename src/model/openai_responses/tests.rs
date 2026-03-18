@@ -417,4 +417,29 @@ mod tests {
 
         assert!(payload.get("max_output_tokens").is_none());
     }
+
+    #[test]
+    fn codex_payload_forces_streaming() {
+        let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig {
+            provider_name: "codex".to_string(),
+            ..OpenAiCompatibleConfig::default()
+        })
+        .expect("engine");
+        let payload = engine.build_payload(&ModelExchangeRequest {
+            model: "gpt-5.4-mini".to_string(),
+            messages: vec![ModelMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("hello".to_string())),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            max_tokens: None,
+            stream: false,
+            response_format: None,
+            extra: json!({}),
+        });
+
+        assert_eq!(payload["stream"], json!(true));
+    }
 }

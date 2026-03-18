@@ -98,6 +98,14 @@ pub struct AgentHealthEntry {
     pub health_status: String,
 }
 
+/// Account information resolved from the Tidepool `account` table via HTTP API.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AccountEntry {
+    pub account_id: u64,
+    pub handle: String,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TidepoolBootstrapOutcome {
     pub account_id: u64,
@@ -608,6 +616,84 @@ impl TidepoolClient {
             entries.truncate(window_size);
         }
         entries
+    }
+
+    /// Resolve accounts from the Tidepool `account` table via the HTTP API.
+    ///
+    /// Returns account entries matching the given filter. At least one of `handle` or
+    /// `account_id` must be provided. Uses the same base_url, database, and token as
+    /// the SDK connection for authentication.
+    pub async fn resolve_accounts(
+        &self,
+        handle: Option<&str>,
+        account_id: Option<u64>,
+    ) -> Result<Vec<AccountEntry>> {
+        let config = TidepoolConfig::from_env()
+            .ok_or_else(|| anyhow!("TIDEPOOL_DATABASE and TIDEPOOL_HANDLE must be set"))?;
+        let token = fs::read_to_string(&config.token_path)
+            .context("reading Tidepool token for HTTP API call")?
+            .trim()
+            .to_string();
+
+        let mut sql = String::from("SELECT account_id, handle, status FROM account WHERE 1=1");
+        if let Some(h) = handle {
+            sql.push_str(&format!(" AND handle = '{}'", h.replace("'", "''")));
+        }
+        if let Some(id) = account_id {
+            sql.push_str(&format!(" AND account_id = {}", id));
+        }
+        sql.push_str(" LIMIT 50");
+
+        let url = format!(
+            "{}/v1/database/{}/sql",
+            config.base_url.trim_end_matches('/'),
+            config.database
+        );
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "text/plain")
+            .body(sql)
+            .send()
+            .await
+            .context("sending Tidepool HTTP API query")?;
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .context("parsing Tidepool HTTP API response")?;
+
+        let rows = body
+            .get("rows")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow!("Tidepool HTTP API response missing 'rows' array"))?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            let arr = row
+                .as_array()
+                .ok_or_else(|| anyhow!("expected array row"))?;
+            if arr.len() < 3 {
+                continue;
+            }
+            let account_id = arr[0].as_u64().unwrap_or(0);
+            let handle_str = arr[1].as_str().unwrap_or("").to_string();
+            // Status is [variant_index, []] — 0 = active, 1 = suspended
+            let status = match arr[2].get(0).and_then(|v| v.as_u64()) {
+                Some(0) => "active",
+                Some(1) => "suspended",
+                _ => "unknown",
+            };
+            entries.push(AccountEntry {
+                account_id,
+                handle: handle_str,
+                status: status.to_string(),
+            });
+        }
+
+        Ok(entries)
     }
 
     pub async fn shutdown(&self) {

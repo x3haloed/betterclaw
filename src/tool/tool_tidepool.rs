@@ -1029,6 +1029,78 @@ impl Tool for TidepoolFindMentionsTool {
     }
 }
 
+pub struct TidepoolLookupAccountTool;
+
+#[async_trait]
+impl Tool for TidepoolLookupAccountTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_lookup_account".to_string(),
+            description: "Resolve Tidepool account information by handle or account_id. \
+                Use this to convert between agent handles (e.g. 'buzz', 'horus', 'chip') \
+                and their numeric account IDs. At least one of handle or account_id must \
+                be provided. Returns matching accounts with their ID, handle, and status."
+                .to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "handle": {
+                        "type": "string",
+                        "description": "The account handle to look up (e.g. 'buzz', 'horus'). Case-sensitive."
+                    },
+                    "account_id": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "The numeric account ID to look up."
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        let has_handle = params.get("handle").is_some();
+        let has_account_id = params.get("account_id").is_some();
+        if !has_handle && !has_account_id {
+            return Err(RuntimeError::InvalidToolParameters {
+                tool: "tidepool_lookup_account".to_string(),
+                reason: "at least one of 'handle' or 'account_id' must be provided".to_string(),
+            });
+        }
+        if let Some(handle) = params.get("handle") {
+            if handle.as_str().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                return Err(RuntimeError::InvalidToolParameters {
+                    tool: "tidepool_lookup_account".to_string(),
+                    reason: "field 'handle' must not be empty".to_string(),
+                });
+            }
+        }
+        optional_u64(params, "tidepool_lookup_account", "account_id")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let handle = params.get("handle").and_then(|v| v.as_str());
+        let account_id = params.get("account_id").and_then(|v| v.as_u64());
+        let client = shared_tidepool_client("tidepool_lookup_account").await?;
+        let accounts = client
+            .resolve_accounts(handle, account_id)
+            .await
+            .map_err(|error| tool_execution("tidepool_lookup_account", error))?;
+        Ok(json!({
+            "accounts": accounts.iter().map(|a| json!({
+                "account_id": a.account_id,
+                "handle": a.handle,
+                "status": a.status,
+            })).collect::<Vec<_>>(),
+            "count": accounts.len(),
+            "handle_filter": handle,
+            "account_id_filter": account_id,
+        }))
+    }
+}
+
 pub struct TidepoolSystemStatusTool;
 
 #[async_trait]
@@ -1776,5 +1848,52 @@ mod tests {
             .validate(&json!({"handle": "buzz", "limit": "big"}))
             .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn lookup_account_validation_requires_at_least_one_param() {
+        let tool = TidepoolLookupAccountTool;
+        let error = tool.validate(&json!({})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn lookup_account_validation_accepts_handle_only() {
+        let tool = TidepoolLookupAccountTool;
+        tool.validate(&json!({"handle": "buzz"})).unwrap();
+    }
+
+    #[test]
+    fn lookup_account_validation_accepts_account_id_only() {
+        let tool = TidepoolLookupAccountTool;
+        tool.validate(&json!({"account_id": 1})).unwrap();
+    }
+
+    #[test]
+    fn lookup_account_validation_accepts_both_params() {
+        let tool = TidepoolLookupAccountTool;
+        tool.validate(&json!({"handle": "buzz", "account_id": 1})).unwrap();
+    }
+
+    #[test]
+    fn lookup_account_validation_rejects_blank_handle() {
+        let tool = TidepoolLookupAccountTool;
+        let error = tool.validate(&json!({"handle": "   "})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn lookup_account_validation_rejects_invalid_account_id() {
+        let tool = TidepoolLookupAccountTool;
+        let error = tool.validate(&json!({"account_id": "abc"})).unwrap_err();
+        assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
+    }
+
+    #[test]
+    fn default_registry_includes_lookup_account_tool() {
+        let registry = ToolRegistry::with_defaults();
+        let definitions = registry.definitions();
+        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        assert!(names.contains(&"tidepool_lookup_account".to_string()));
     }
 }

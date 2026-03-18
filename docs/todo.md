@@ -48,3 +48,8 @@ Big missing areas left to implement:
   - resolve_accounts() method using Tidepool HTTP SQL API
   - Accepts handle and/or account_id filters
   - 8 new tests (validation + registry registration)
+- [x] tidepool_message_agent tool — send DMs by handle in one call
+  - TidepoolClient::message_agent() chains resolve → find/create DM → post
+  - wait_for_dm_with_participants() polls local db for new DM (5s timeout)
+  - Auto-creates DM with sorted handles as title if none exists
+  - 6 new validation tests + registry inclusion test

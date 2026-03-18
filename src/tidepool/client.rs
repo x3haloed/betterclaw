@@ -70,6 +70,8 @@ pub struct TidepoolInboundMessage {
     pub author_account_id: u64,
     pub body: String,
     pub reply_to_message_id: Option<u64>,
+    /// Message creation time as microseconds since Unix epoch.
+    pub created_at_micros: i64,
 }
 
 /// Presence information for a single agent/account based on recent message activity.
@@ -480,6 +482,7 @@ impl TidepoolClient {
                     author_account_id: row.author_account_id,
                     body: row.body.clone(),
                     reply_to_message_id: row.reply_to_message_id,
+                    created_at_micros: row.created_at.to_micros_since_unix_epoch(),
                 }
             })
             .collect();
@@ -533,6 +536,7 @@ impl TidepoolClient {
                     author_account_id: row.author_account_id,
                     body: row.body.clone(),
                     reply_to_message_id: row.reply_to_message_id,
+                    created_at_micros: row.created_at.to_micros_since_unix_epoch(),
                 }
             })
             .collect();
@@ -592,6 +596,7 @@ impl TidepoolClient {
                     author_account_id: row.author_account_id,
                     body: row.body.clone(),
                     reply_to_message_id: row.reply_to_message_id,
+                    created_at_micros: row.created_at.to_micros_since_unix_epoch(),
                 }
             })
             .collect();
@@ -646,6 +651,7 @@ impl TidepoolClient {
                     author_account_id: row.author_account_id,
                     body: row.body.clone(),
                     reply_to_message_id: row.reply_to_message_id,
+                    created_at_micros: row.created_at.to_micros_since_unix_epoch(),
                 }
             })
             .collect();
@@ -857,6 +863,7 @@ impl TidepoolClient {
                     author_account_id: row.author_account_id,
                     body: row.body.clone(),
                     reply_to_message_id: row.reply_to_message_id,
+                    created_at_micros: row.created_at.to_micros_since_unix_epoch(),
                 }
             })
             .collect();
@@ -983,6 +990,7 @@ fn register_callbacks(
                 author_account_id: row.author_account_id,
                 body: row.body.clone(),
                 reply_to_message_id: row.reply_to_message_id,
+                    created_at_micros: row.created_at.to_micros_since_unix_epoch(),
             };
             let _ = message_tx.send(TidepoolClientEvent::Message(message));
         });

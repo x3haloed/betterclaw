@@ -1680,6 +1680,16 @@ impl Tool for TidepoolListClaimsTool {
         // Search for all DONE messages
         let done_messages = client.search_messages(DONE_PREFIX, domain_id, None, None, 200);
 
+        // Pre-fetch agent health for staleness detection (by account_id)
+        let health_entries = client.agent_health(None, domain_id, 200);
+        let health_map: std::collections::HashMap<u64, &crate::tidepool::AgentHealthEntry> =
+            health_entries.iter().map(|h| (h.account_id, h)).collect();
+
+        let now_micros = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0);
+
         // Parse claims and filter completed ones
         let mut active_claims: Vec<Value> = Vec::new();
         for msg in &claim_messages {
@@ -1694,12 +1704,38 @@ impl Tool for TidepoolListClaimsTool {
                 if is_claim_completed(&claim, &done_messages) {
                     continue;
                 }
+
+                // Compute claim age in seconds from message timestamp
+                let claim_age_secs =
+                    ((now_micros - msg.created_at_micros) as f64 / 1_000_000.0).max(0.0);
+
+                // Detect staleness via agent health (matched by author_account_id)
+                let (agent_health_status, agent_seconds_since_active, is_stale) =
+                    if let Some(health) = health_map.get(&msg.author_account_id) {
+                        let stale = matches!(
+                            health.health_status.as_str(),
+                            "stale" | "silent" | "unknown"
+                        );
+                        (
+                            Some(health.health_status.clone()),
+                            health.seconds_since_last_message,
+                            stale,
+                        )
+                    } else {
+                        // No health data — consider stale if claim is > 30min old
+                        (None, None, claim_age_secs > 1800.0)
+                    };
+
                 active_claims.push(json!({
                     "domain_id": claim.domain_id,
                     "handle": claim.handle,
                     "task": claim.description,
                     "message_id": claim.message_id,
                     "domain_sequence": claim.domain_sequence,
+                    "age_seconds": claim_age_secs,
+                    "agent_health_status": agent_health_status,
+                    "agent_seconds_since_active": agent_seconds_since_active,
+                    "is_stale": is_stale,
                 }));
             }
             if active_claims.len() >= limit {
@@ -1707,9 +1743,12 @@ impl Tool for TidepoolListClaimsTool {
             }
         }
 
+        let stale_count = active_claims.iter().filter(|c| c["is_stale"].as_bool().unwrap_or(false)).count();
+
         Ok(json!({
             "active_claims": active_claims,
             "total": active_claims.len(),
+            "stale_count": stale_count,
         }))
     }
 }
@@ -2395,6 +2434,7 @@ mod tests {
             author_account_id: 1,
             body: "[CLAIM horus] Fix the cursor seeding bug".into(),
             reply_to_message_id: None,
+                created_at_micros: 0,
         };
         let claim = parse_claim_message(&msg).unwrap();
         assert_eq!(claim.handle, "horus");
@@ -2413,6 +2453,7 @@ mod tests {
             author_account_id: 1,
             body: "Just a normal message".into(),
             reply_to_message_id: None,
+                created_at_micros: 0,
         };
         assert!(parse_claim_message(&msg).is_none());
     }
@@ -2428,6 +2469,7 @@ mod tests {
             author_account_id: 1,
             body: "[CLAIM horus]   ".into(),
             reply_to_message_id: None,
+                created_at_micros: 0,
         };
         assert!(parse_claim_message(&msg).is_none());
     }
@@ -2443,6 +2485,7 @@ mod tests {
             author_account_id: 1,
             body: "[CLAIM ] some task".into(),
             reply_to_message_id: None,
+                created_at_micros: 0,
         };
         assert!(parse_claim_message(&msg).is_none());
     }
@@ -2477,6 +2520,7 @@ mod tests {
             author_account_id: 1,
             body: "[DONE horus] Fix the cursor bug".into(),
             reply_to_message_id: None,
+                created_at_micros: 0,
         }];
         assert!(is_claim_completed(&claim, &done_messages));
     }
@@ -2500,6 +2544,7 @@ mod tests {
             author_account_id: 1,
             body: "[DONE horus] Fix the cursor bug".into(),
             reply_to_message_id: None,
+                created_at_micros: 0,
         }];
         assert!(!is_claim_completed(&claim, &done_messages));
     }
@@ -2523,6 +2568,7 @@ mod tests {
             author_account_id: 2,
             body: "[DONE buzz] Fix the cursor bug".into(), // different handle
             reply_to_message_id: None,
+                created_at_micros: 0,
         }];
         assert!(!is_claim_completed(&claim, &done_messages));
     }

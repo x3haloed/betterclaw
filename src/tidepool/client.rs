@@ -16,7 +16,6 @@ use crate::generated::tidepool::{
 };
 
 const DEFAULT_BASE_URL: &str = "https://spacetimedb.com";
-const DEFAULT_BATCH_WINDOW_SECONDS: u32 = 30;
 const DEFAULT_AGENT_ID: &str = "default";
 
 #[derive(Debug, Clone)]
@@ -26,9 +25,7 @@ pub struct TidepoolConfig {
     pub base_url: String,
     pub database: String,
     pub token_path: PathBuf,
-    pub seed_domain_ids: Vec<u64>,
     pub emit_self_messages: bool,
-    pub batch_window_seconds: u32,
 }
 
 impl TidepoolConfig {
@@ -46,12 +43,7 @@ impl TidepoolConfig {
                 .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string()),
             database,
             token_path,
-            seed_domain_ids: parse_seed_domains("TIDEPOOL_SEED_DOMAIN_IDS"),
             emit_self_messages: parse_bool_env("TIDEPOOL_EMIT_SELF_MESSAGES"),
-            batch_window_seconds: std::env::var("TIDEPOOL_BATCH_WINDOW_SECONDS")
-                .ok()
-                .and_then(|value| value.parse::<u32>().ok())
-                .unwrap_or(DEFAULT_BATCH_WINDOW_SECONDS),
         })
     }
 
@@ -1024,27 +1016,12 @@ async fn bootstrap_account(
             )
         })?;
 
-    let mut subscribed_domain_ids = connection
+    let subscribed_domain_ids = connection
         .db
         .my_subscriptions()
         .iter()
         .map(|item| item.domain_id)
         .collect::<Vec<_>>();
-
-    for domain_id in &config.seed_domain_ids {
-        if subscribed_domain_ids.iter().any(|item| item == domain_id) {
-            continue;
-        }
-        tracing::info!(
-            domain_id = *domain_id,
-            "Subscribing Tidepool agent to seed domain"
-        );
-        connection
-            .reducers
-            .subscribe_domain(*domain_id, config.batch_window_seconds)
-            .with_context(|| format!("subscribing to Tidepool domain {}", domain_id))?;
-        subscribed_domain_ids.push(*domain_id);
-    }
 
     Ok(TidepoolBootstrapOutcome {
         account_id: account.account_id,
@@ -1081,18 +1058,6 @@ fn load_token(path: &PathBuf) -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(token))
-}
-
-fn parse_seed_domains(name: &str) -> Vec<u64> {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            value
-                .split(',')
-                .filter_map(|item| item.trim().parse::<u64>().ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn parse_bool_env(name: &str) -> bool {

@@ -169,6 +169,7 @@ impl TidepoolChannel {
             "domain_sequence": message.domain_sequence,
             "author_account_id": message.author_account_id,
             "reply_to_message_id": message.reply_to_message_id,
+            "created_at_micros": message.created_at_micros,
             "tidepool_target": external_thread_id,
         });
 
@@ -187,16 +188,16 @@ impl TidepoolChannel {
         {
             Ok(outcome) => outcome,
             Err(error) => {
-                // Model API errors (rate limits, bad responses, etc.) are logged
-                // and the cursor is advanced so we don't retry forever. The Tidepool
-                // connection stays alive — this is a runtime issue, not a connectivity
-                // issue. Tearing down the connection would amplify the failure.
+                let error_text = error.to_string();
                 tracing::error!(
-                    error = %error,
+                    error = %error_text,
                     domain_id = message.domain_id,
                     message_id = message.message_id,
-                    "Tidepool inbound turn failed — skipping message, advancing cursor"
+                    "Tidepool inbound turn failed — notifying model, then advancing cursor"
                 );
+                self
+                    .notify_model_of_inbound_failure(&message, &metadata, &error_text)
+                    .await;
                 self.runtime
                     .db()
                     .upsert_cursor(&ChannelCursor {
@@ -262,6 +263,51 @@ impl TidepoolChannel {
         }
 
         Ok(())
+    }
+
+    async fn notify_model_of_inbound_failure(
+        &self,
+        message: &TidepoolInboundMessage,
+        metadata: &serde_json::Value,
+        error_text: &str,
+    ) {
+        let external_thread_id = tidepool_thread_key(message.domain_id);
+        let mut error_metadata = metadata.clone();
+        if let Some(object) = error_metadata.as_object_mut() {
+            object.insert("tidepool_runtime_error".to_string(), json!(true));
+            object.insert(
+                "tidepool_runtime_error_message".to_string(),
+                json!(error_text),
+            );
+            object.insert(
+                "tidepool_runtime_error_source_message_id".to_string(),
+                json!(message.message_id),
+            );
+        }
+        let content = format!(
+            "System note: handling Tidepool message {} in domain {} failed before the model completed the turn. Error: {}. Please account for that failure in your ongoing coordination state.",
+            message.message_id, message.domain_id, error_text
+        );
+        if let Err(notify_error) = self
+            .runtime
+            .handle_inbound(InboundEvent {
+                agent_id: self.config.agent_id.clone(),
+                channel: "tidepool".to_string(),
+                external_thread_id,
+                content,
+                metadata: Some(error_metadata),
+                attachments: Vec::new(),
+                received_at: Utc::now(),
+            })
+            .await
+        {
+            tracing::error!(
+                error = %notify_error,
+                domain_id = message.domain_id,
+                message_id = message.message_id,
+                "Failed to notify model of Tidepool runtime error"
+            );
+        }
     }
 
     async fn seed_attach_cursors(

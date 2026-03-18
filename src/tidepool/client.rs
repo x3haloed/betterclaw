@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use spacetimedb_sdk::{DbContext as _, Table as _};
+use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::generated::tidepool::{
@@ -98,6 +99,44 @@ pub struct AccountEntry {
     pub account_id: u64,
     pub handle: String,
     pub status: String,
+}
+
+fn parse_account_rows(body: &Value) -> Result<Vec<AccountEntry>> {
+    let statements = body
+        .as_array()
+        .ok_or_else(|| anyhow!("expected Tidepool SQL response to be an array of statement results"))?;
+    let first = statements
+        .first()
+        .ok_or_else(|| anyhow!("Tidepool SQL response contained no statement results"))?;
+    let rows = first
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow!("Tidepool SQL statement result missing 'rows' array"))?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        let arr = row.as_array().ok_or_else(|| anyhow!("expected SQL row to be an array"))?;
+        if arr.len() < 3 {
+            continue;
+        }
+        let account_id = arr[0].as_u64().unwrap_or(0);
+        let handle = arr[1].as_str().unwrap_or("").to_string();
+        let status = match arr[2].as_str() {
+            Some(status) => status.to_string(),
+            None => match arr[2].get(0).and_then(|v| v.as_u64()) {
+                Some(0) => "active".to_string(),
+                Some(1) => "suspended".to_string(),
+                _ => "unknown".to_string(),
+            },
+        };
+        entries.push(AccountEntry {
+            account_id,
+            handle,
+            status,
+        });
+    }
+
+    Ok(entries)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -766,40 +805,21 @@ impl TidepoolClient {
             .await
             .context("sending Tidepool HTTP API query")?;
 
-        let body: serde_json::Value = response
-            .json()
+        let status = response.status();
+        let response_text = response
+            .text()
             .await
-            .context("parsing Tidepool HTTP API response")?;
-
-        let rows = body
-            .get("rows")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| anyhow!("Tidepool HTTP API response missing 'rows' array"))?;
-
-        let mut entries = Vec::new();
-        for row in rows {
-            let arr = row
-                .as_array()
-                .ok_or_else(|| anyhow!("expected array row"))?;
-            if arr.len() < 3 {
-                continue;
-            }
-            let account_id = arr[0].as_u64().unwrap_or(0);
-            let handle_str = arr[1].as_str().unwrap_or("").to_string();
-            // Status is [variant_index, []] — 0 = active, 1 = suspended
-            let status = match arr[2].get(0).and_then(|v| v.as_u64()) {
-                Some(0) => "active",
-                Some(1) => "suspended",
-                _ => "unknown",
-            };
-            entries.push(AccountEntry {
-                account_id,
-                handle: handle_str,
-                status: status.to_string(),
-            });
+            .context("reading Tidepool HTTP API response body")?;
+        if !status.is_success() {
+            return Err(anyhow!(
+                "Tidepool HTTP API query failed with {}: {}",
+                status,
+                response_text
+            ));
         }
-
-        Ok(entries)
+        let body: Value =
+            serde_json::from_str(&response_text).context("parsing Tidepool HTTP API response")?;
+        parse_account_rows(&body)
     }
 
     pub async fn shutdown(&self) {
@@ -1130,5 +1150,54 @@ mod tests {
     fn mention_empty_body_returns_false() {
         assert!(!body_mentions_handle("", "buzz"));
         assert!(!body_mentions_handle("no mentions here", "buzz"));
+    }
+
+    #[test]
+    fn parse_account_rows_accepts_statement_result_array() {
+        let body = serde_json::json!([
+            {
+                "schema": { "elements": [] },
+                "rows": [
+                    [293210979062513665u64, "chip", [0, []]],
+                    [42, "horus", [1, []]]
+                ]
+            }
+        ]);
+
+        let rows = parse_account_rows(&body).expect("rows should parse");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].handle, "chip");
+        assert_eq!(rows[0].status, "active");
+        assert_eq!(rows[1].status, "suspended");
+    }
+
+    #[test]
+    fn parse_account_rows_accepts_string_statuses() {
+        let body = serde_json::json!([
+            {
+                "rows": [
+                    [293210979062513665u64, "chip", "active"]
+                ]
+            }
+        ]);
+
+        let rows = parse_account_rows(&body).expect("rows should parse");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].handle, "chip");
+        assert_eq!(rows[0].status, "active");
+    }
+
+    #[test]
+    fn parse_account_rows_rejects_legacy_object_shape() {
+        let body = serde_json::json!({
+            "rows": [[293210979062513665u64, "chip", [0, []]]]
+        });
+
+        let err = parse_account_rows(&body).expect_err("legacy shape should fail");
+        assert!(
+            err.to_string()
+                .contains("array of statement results"),
+            "unexpected error: {err}"
+        );
     }
 }

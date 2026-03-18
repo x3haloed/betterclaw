@@ -58,7 +58,9 @@ impl OpenAiResponsesEngine {
                     .collect::<Vec<_>>(),
             );
         }
-        if let Some(max_tokens) = request.max_tokens {
+        if self.config.provider_name != "codex"
+            && let Some(max_tokens) = request.max_tokens
+        {
             payload["max_output_tokens"] = json!(max_tokens);
         }
         if let Some(response_format) = &request.response_format {

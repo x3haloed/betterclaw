@@ -392,4 +392,29 @@ mod tests {
         )
         .expect("normalized payload schema should validate");
     }
+
+    #[test]
+    fn codex_payload_omits_max_output_tokens() {
+        let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig {
+            provider_name: "codex".to_string(),
+            ..OpenAiCompatibleConfig::default()
+        })
+        .expect("engine");
+        let payload = engine.build_payload(&ModelExchangeRequest {
+            model: "gpt-5.4-mini".to_string(),
+            messages: vec![ModelMessage {
+                role: "user".to_string(),
+                content: Some(MessageContent::Text("hello".to_string())),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            max_tokens: Some(128),
+            stream: false,
+            response_format: None,
+            extra: json!({}),
+        });
+
+        assert!(payload.get("max_output_tokens").is_none());
+    }
 }

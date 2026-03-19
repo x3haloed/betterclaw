@@ -11,6 +11,7 @@ pub struct SubscribedMessageLookup {
     pub domain_id: u64,
     pub domain_sequence: u64,
     pub author_account_id: u64,
+    pub author_handle: String,
     pub body: String,
     pub created_at: __sdk::Timestamp,
     pub reply_to_message_id: Option<u64>,
@@ -28,6 +29,7 @@ pub struct SubscribedMessageLookupCols {
     pub domain_id: __sdk::__query_builder::Col<SubscribedMessageLookup, u64>,
     pub domain_sequence: __sdk::__query_builder::Col<SubscribedMessageLookup, u64>,
     pub author_account_id: __sdk::__query_builder::Col<SubscribedMessageLookup, u64>,
+    pub author_handle: __sdk::__query_builder::Col<SubscribedMessageLookup, String>,
     pub body: __sdk::__query_builder::Col<SubscribedMessageLookup, String>,
     pub created_at: __sdk::__query_builder::Col<SubscribedMessageLookup, __sdk::Timestamp>,
     pub reply_to_message_id: __sdk::__query_builder::Col<SubscribedMessageLookup, Option<u64>>,
@@ -41,6 +43,7 @@ impl __sdk::__query_builder::HasCols for SubscribedMessageLookup {
             domain_id: __sdk::__query_builder::Col::new(table_name, "domain_id"),
             domain_sequence: __sdk::__query_builder::Col::new(table_name, "domain_sequence"),
             author_account_id: __sdk::__query_builder::Col::new(table_name, "author_account_id"),
+            author_handle: __sdk::__query_builder::Col::new(table_name, "author_handle"),
             body: __sdk::__query_builder::Col::new(table_name, "body"),
             created_at: __sdk::__query_builder::Col::new(table_name, "created_at"),
             reply_to_message_id: __sdk::__query_builder::Col::new(

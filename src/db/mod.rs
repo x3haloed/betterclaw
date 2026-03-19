@@ -54,6 +54,7 @@ impl Db {
                 channel TEXT NOT NULL,
                 external_thread_id TEXT NOT NULL,
                 title TEXT NOT NULL,
+                metadata_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(agent_id, channel, external_thread_id)
@@ -205,6 +206,8 @@ impl Db {
             "#,
         )
         .await?;
+        self.add_column_if_missing(&conn, "threads", "metadata_json", "TEXT")
+            .await?;
         self.add_column_if_missing(&conn, "outbound_messages", "metadata_json", "TEXT")
             .await?;
         self.add_column_if_missing(

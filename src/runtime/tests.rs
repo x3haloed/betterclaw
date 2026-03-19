@@ -770,9 +770,14 @@ mod tests {
         let runtime = Runtime::new(db).await.unwrap();
         let settings = runtime.get_runtime_settings("default").await.unwrap();
         let workspace = Workspace::new("default", dir.path());
+        let thread = runtime
+            .db
+            .create_thread("default", "web", "thread-1", "Thread", None)
+            .await
+            .unwrap();
 
         let messages = runtime
-            .build_system_messages(&settings, &workspace, Some("hello"))
+            .build_system_messages(&thread, &settings, &workspace, Some("hello"))
             .await
             .unwrap();
         let system_prompt: String = messages
@@ -785,6 +790,42 @@ mod tests {
         assert!(system_prompt.contains("## Core Values"));
         assert!(system_prompt.contains("Prefer reversible probes."));
         assert!(system_prompt.contains("You are BetterClaw Agent, a secure autonomous assistant."));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_includes_stable_channel_metadata_for_non_web_threads() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("channel-context.db")).await.unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let settings = runtime.get_runtime_settings("default").await.unwrap();
+        let workspace = Workspace::new("default", dir.path());
+        let metadata = json!({
+            "betterclaw_channel": "Tidepool",
+            "self_account_id": 1,
+            "self_handle": "buzz",
+            "domain_id": 7,
+            "domain_title": "Coord Lab"
+        });
+        let thread = runtime
+            .db
+            .create_thread("default", "tidepool", "tidepool:domain:7", "Coord Lab", Some(&metadata))
+            .await
+            .unwrap();
+
+        let messages = runtime
+            .build_system_messages(&thread, &settings, &workspace, Some("hello"))
+            .await
+            .unwrap();
+        let joined = messages
+            .iter()
+            .filter_map(|message| message.content.as_ref().and_then(|c| c.text()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        assert!(joined.contains("## BetterClaw Channel Context (trusted metadata)"));
+        assert!(joined.contains("\"betterclaw_channel\": \"Tidepool\""));
+        assert!(joined.contains("\"self_account_id\": 1"));
+        assert!(joined.contains("\"domain_title\": \"Coord Lab\""));
     }
 }
 

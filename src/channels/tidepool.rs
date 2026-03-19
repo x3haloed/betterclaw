@@ -162,13 +162,21 @@ impl TidepoolChannel {
 
         let inbound_context = client.inbound_context(&message);
         let external_thread_id = tidepool_thread_key(message.domain_id);
+        let (self_account_id, self_handle) = client
+            .account()
+            .map(|account| (account.account_id, account.handle.clone()))
+            .unwrap_or((0, "unknown".to_string()));
         let metadata = json!({
+            "betterclaw_channel": "Tidepool",
             "domain_id": message.domain_id,
             "domain_title": message.domain_title,
             "domain_slug": message.domain_slug,
             "message_id": message.message_id,
             "domain_sequence": message.domain_sequence,
             "author_account_id": message.author_account_id,
+            "author_handle": message.author_handle,
+            "self_account_id": self_account_id,
+            "self_handle": self_handle,
             "reply_to_message_id": message.reply_to_message_id,
             "created_at_micros": message.created_at_micros,
             "auto_subscribed_dm_first_message": inbound_context.auto_subscribed_dm_first_message,
@@ -371,14 +379,21 @@ fn render_inbound_content(
     message: &TidepoolInboundMessage,
     context: &TidepoolInboundContext,
 ) -> String {
-    if !context.auto_subscribed_dm_first_message {
-        return message.body.clone();
+    let mut body = message.body.clone();
+    if context.auto_subscribed_dm_first_message {
+        body = format!(
+            "[System note: This message is the first inbound message from a DM domain you were auto-subscribed to when it was created. If you do not want further messages from this DM, call {}.]\n\n{}",
+            unsubscribe_tool_call(message.domain_id),
+            body
+        );
     }
-
     format!(
-        "[System note: This message is the first inbound message from a DM domain you were auto-subscribed to when it was created. If you do not want further messages from this DM, call {}.]\n\n{}",
-        unsubscribe_tool_call(message.domain_id),
-        message.body
+        "[Tidepool {} (domain {})] {} ({}): {}",
+        message.domain_title,
+        message.domain_id,
+        message.author_handle,
+        message.author_account_id,
+        body
     )
 }
 
@@ -431,6 +446,7 @@ mod tests {
             message_id: 7,
             domain_sequence: 2,
             author_account_id: 99,
+            author_handle: "chad".to_string(),
             body: "hello".to_string(),
             reply_to_message_id: None,
             created_at_micros: 0,
@@ -438,7 +454,10 @@ mod tests {
         let context = TidepoolInboundContext {
             auto_subscribed_dm_first_message: false,
         };
-        assert_eq!(render_inbound_content(&message, &context), "hello");
+        assert_eq!(
+            render_inbound_content(&message, &context),
+            "[Tidepool DM (domain 42)] chad (99): hello"
+        );
     }
 
     #[test]
@@ -450,6 +469,7 @@ mod tests {
             message_id: 7,
             domain_sequence: 1,
             author_account_id: 99,
+            author_handle: "chad".to_string(),
             body: "hello".to_string(),
             reply_to_message_id: None,
             created_at_micros: 0,
@@ -458,6 +478,7 @@ mod tests {
             auto_subscribed_dm_first_message: true,
         };
         let rendered = render_inbound_content(&message, &context);
+        assert!(rendered.starts_with("[Tidepool DM (domain 42)] chad (99): "));
         assert!(rendered.contains("auto-subscribed"));
         assert!(rendered.contains("tidepool_unsubscribe_domain({\"domain_id\":42})"));
         assert!(rendered.ends_with("\n\nhello"));

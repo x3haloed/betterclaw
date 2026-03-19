@@ -16,6 +16,7 @@ impl Db {
         channel: &str,
         external_thread_id: &str,
         title: &str,
+        metadata: Option<&serde_json::Value>,
     ) -> Result<Thread> {
         let conn = self.connect()?;
         let id = external_thread_id.to_string();
@@ -23,13 +24,14 @@ impl Db {
         // INSERT OR IGNORE handles concurrent resolve_thread() calls racing
         // to create the same thread (same id = external_thread_id).
         conn.execute(
-            "INSERT OR IGNORE INTO threads (id, agent_id, channel, external_thread_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO threads (id, agent_id, channel, external_thread_id, title, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id.clone(),
                 agent_id.to_string(),
                 channel.to_string(),
                 external_thread_id.to_string(),
                 title.to_string(),
+                metadata.map(|value| value.to_string()),
                 now.to_rfc3339(),
                 now.to_rfc3339()
             ],
@@ -53,7 +55,7 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT id, agent_id, channel, external_thread_id, title, created_at, updated_at FROM threads WHERE agent_id = ? AND channel = ? AND external_thread_id = ?",
+                "SELECT id, agent_id, channel, external_thread_id, title, metadata_json, created_at, updated_at FROM threads WHERE agent_id = ? AND channel = ? AND external_thread_id = ?",
                 params![agent_id.to_string(), channel.to_string(), external_thread_id.to_string()],
             )
             .await?;
@@ -64,11 +66,30 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT id, agent_id, channel, external_thread_id, title, created_at, updated_at FROM threads WHERE id = ?",
+                "SELECT id, agent_id, channel, external_thread_id, title, metadata_json, created_at, updated_at FROM threads WHERE id = ?",
                 params![thread_id.to_string()],
             )
             .await?;
         self.read_thread(&mut rows).await
+    }
+
+    pub async fn update_thread_metadata(
+        &self,
+        thread_id: &str,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let conn = self.connect()?;
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE threads SET metadata_json = ?, updated_at = ? WHERE id = ?",
+            params![
+                metadata.map(|value| value.to_string()),
+                now,
+                thread_id.to_string()
+            ],
+        )
+        .await?;
+        Ok(())
     }
 
     async fn read_thread(&self, rows: &mut Rows) -> Result<Option<Thread>> {
@@ -79,8 +100,11 @@ impl Db {
                 channel: row.get::<String>(2)?,
                 external_thread_id: row.get::<String>(3)?,
                 title: row.get::<String>(4)?,
-                created_at: parse_datetime(&row.get::<String>(5)?)?,
-                updated_at: parse_datetime(&row.get::<String>(6)?)?,
+                metadata: row
+                    .get::<Option<String>>(5)?
+                    .and_then(|value| serde_json::from_str(&value).ok()),
+                created_at: parse_datetime(&row.get::<String>(6)?)?,
+                updated_at: parse_datetime(&row.get::<String>(7)?)?,
             })
         } else {
             None
@@ -115,7 +139,7 @@ impl Db {
         let conn = self.connect()?;
         let mut rows = conn
             .query(
-                "SELECT id, agent_id, channel, external_thread_id, title, created_at, updated_at FROM threads ORDER BY updated_at DESC",
+                "SELECT id, agent_id, channel, external_thread_id, title, metadata_json, created_at, updated_at FROM threads ORDER BY updated_at DESC",
                 params![],
             )
             .await?;
@@ -127,8 +151,11 @@ impl Db {
                 channel: row.get::<String>(2)?,
                 external_thread_id: row.get::<String>(3)?,
                 title: row.get::<String>(4)?,
-                created_at: parse_datetime(&row.get::<String>(5)?)?,
-                updated_at: parse_datetime(&row.get::<String>(6)?)?,
+                metadata: row
+                    .get::<Option<String>>(5)?
+                    .and_then(|value| serde_json::from_str(&value).ok()),
+                created_at: parse_datetime(&row.get::<String>(6)?)?,
+                updated_at: parse_datetime(&row.get::<String>(7)?)?,
             });
         }
         Ok(threads)

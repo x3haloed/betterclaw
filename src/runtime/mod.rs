@@ -241,7 +241,7 @@ impl Runtime {
         let external_thread_id = Uuid::new_v4().to_string();
         let title = title.unwrap_or_else(|| "New Thread".to_string());
         self.db
-            .create_thread("default", "web", &external_thread_id, &title)
+            .create_thread("default", "web", &external_thread_id, &title, None)
             .await
             .map_err(RuntimeError::from)
     }

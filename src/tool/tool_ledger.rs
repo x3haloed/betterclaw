@@ -210,7 +210,7 @@ mod tests {
         let context = ToolContext::new(workspace, "thread-1", "thread-1", "web", Arc::clone(&db));
         let thread = context
             .db
-            .create_thread("default", "web", "thread-1", "Test Thread")
+            .create_thread("default", "web", "thread-1", "Test Thread", None)
             .await
             .unwrap();
         let turn = context

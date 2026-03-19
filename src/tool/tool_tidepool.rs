@@ -2869,9 +2869,10 @@ mod tests {
             message_id: 42,
             domain_sequence: 10,
             author_account_id: 1,
+            author_handle: "buzz".into(),
             body: "[CLAIM horus] Fix the cursor seeding bug".into(),
             reply_to_message_id: None,
-                created_at_micros: 0,
+            created_at_micros: 0,
         };
         let claim = parse_claim_message(&msg).unwrap();
         assert_eq!(claim.handle, "horus");
@@ -2888,9 +2889,10 @@ mod tests {
             message_id: 1,
             domain_sequence: 1,
             author_account_id: 1,
+            author_handle: "buzz".into(),
             body: "Just a normal message".into(),
             reply_to_message_id: None,
-                created_at_micros: 0,
+            created_at_micros: 0,
         };
         assert!(parse_claim_message(&msg).is_none());
     }
@@ -2904,9 +2906,10 @@ mod tests {
             message_id: 1,
             domain_sequence: 1,
             author_account_id: 1,
+            author_handle: "buzz".into(),
             body: "[CLAIM horus]   ".into(),
             reply_to_message_id: None,
-                created_at_micros: 0,
+            created_at_micros: 0,
         };
         assert!(parse_claim_message(&msg).is_none());
     }
@@ -2920,9 +2923,10 @@ mod tests {
             message_id: 1,
             domain_sequence: 1,
             author_account_id: 1,
+            author_handle: "buzz".into(),
             body: "[CLAIM ] some task".into(),
             reply_to_message_id: None,
-                created_at_micros: 0,
+            created_at_micros: 0,
         };
         assert!(parse_claim_message(&msg).is_none());
     }
@@ -2955,9 +2959,10 @@ mod tests {
             message_id: 2,
             domain_sequence: 2,
             author_account_id: 1,
+            author_handle: "horus".into(),
             body: "[DONE horus] Fix the cursor bug".into(),
             reply_to_message_id: None,
-                created_at_micros: 0,
+            created_at_micros: 0,
         }];
         assert!(is_claim_completed(&claim, &done_messages));
     }
@@ -2979,9 +2984,10 @@ mod tests {
             message_id: 2,
             domain_sequence: 2,
             author_account_id: 1,
+            author_handle: "horus".into(),
             body: "[DONE horus] Fix the cursor bug".into(),
             reply_to_message_id: None,
-                created_at_micros: 0,
+            created_at_micros: 0,
         }];
         assert!(!is_claim_completed(&claim, &done_messages));
     }
@@ -3003,9 +3009,10 @@ mod tests {
             message_id: 2,
             domain_sequence: 2,
             author_account_id: 2,
+            author_handle: "buzz".into(),
             body: "[DONE buzz] Fix the cursor bug".into(), // different handle
             reply_to_message_id: None,
-                created_at_micros: 0,
+            created_at_micros: 0,
         }];
         assert!(!is_claim_completed(&claim, &done_messages));
     }

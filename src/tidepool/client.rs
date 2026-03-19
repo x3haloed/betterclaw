@@ -499,15 +499,14 @@ impl TidepoolClient {
     async fn wait_for_subscription_state(&self, domain_id: u64, present: bool) -> Result<()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            let currently_present = self
-                .inner
-                .connection
-                .db
-                .my_subscriptions()
-                .iter()
-                .any(|item| item.domain_id == domain_id);
+            let currently_present = self.local_subscription_state(domain_id);
             if currently_present == present {
                 return Ok(());
+            }
+            if let Ok(server_present) = self.subscription_state_via_http(domain_id).await {
+                if server_present == present {
+                    return Ok(());
+                }
             }
             if std::time::Instant::now() >= deadline {
                 let target_state = if present {
@@ -521,6 +520,31 @@ impl TidepoolClient {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    fn local_subscription_state(&self, domain_id: u64) -> bool {
+        self.inner
+            .connection
+            .db
+            .my_subscriptions()
+            .iter()
+            .any(|item| item.domain_id == domain_id)
+    }
+
+    async fn subscription_state_via_http(&self, domain_id: u64) -> Result<bool> {
+        let sql = format!("SELECT domain_id FROM my_subscriptions WHERE domain_id = {domain_id} LIMIT 1");
+        let body = self.run_http_sql(&sql).await?;
+        let statements = body
+            .as_array()
+            .ok_or_else(|| anyhow!("expected Tidepool SQL response to be an array of statement results"))?;
+        let first = statements
+            .first()
+            .ok_or_else(|| anyhow!("Tidepool SQL response contained no statement results"))?;
+        let rows = first
+            .get("rows")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| anyhow!("Tidepool SQL statement result missing 'rows' array"))?;
+        Ok(!rows.is_empty())
     }
 
     pub fn read_messages(
@@ -808,15 +832,17 @@ impl TidepoolClient {
         handle: Option<&str>,
         account_id: Option<u64>,
     ) -> Result<Vec<AccountEntry>> {
+        let sql = build_account_lookup_sql(handle, account_id);
+        let body = self.run_http_sql(&sql).await?;
+        parse_account_rows(&body)
+    }
+
+    async fn run_http_sql(&self, sql: &str) -> Result<Value> {
         let token = fs::read_to_string(&self.inner.bootstrap.token_path)
             .context("reading Tidepool token for HTTP API call")?
             .trim()
             .to_string();
 
-        let sql = build_account_lookup_sql(handle, account_id);
-
-        // Derive base_url and database from the config used to establish this connection.
-        // Fall back to env vars only if the config is not available.
         let config = TidepoolConfig::from_env();
         let base_url = config
             .as_ref()
@@ -833,12 +859,11 @@ impl TidepoolClient {
             database
         );
 
-        let client = reqwest::Client::new();
-        let response = client
+        let response = reqwest::Client::new()
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "text/plain")
-            .body(sql)
+            .body(sql.to_string())
             .send()
             .await
             .context("sending Tidepool HTTP API query")?;
@@ -855,9 +880,7 @@ impl TidepoolClient {
                 response_text
             ));
         }
-        let body: Value =
-            serde_json::from_str(&response_text).context("parsing Tidepool HTTP API response")?;
-        parse_account_rows(&body)
+        serde_json::from_str(&response_text).context("parsing Tidepool HTTP API response")
     }
 
     pub async fn shutdown(&self) {

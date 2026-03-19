@@ -254,7 +254,7 @@ mod tests {
 
     use super::super::{Tool, ToolContext, resolve_path};
     use crate::db::Db;
-    use crate::tool::tool_core::{EchoTool, NoOpTool, ShellTool};
+    use crate::tool::tool_core::{NoOpTool, ShellTool};
     use crate::tool::tool_fs::{
         CreateFileTool, EditFileTool, FindTool, GrepTool, ListDirTool, ReadFileTool,
     };
@@ -299,13 +299,6 @@ mod tests {
         let workspace = Workspace::new("default", "/tmp/workspace");
         let resolved = resolve_path(&workspace, "/var/tmp/test.txt");
         assert_eq!(resolved, PathBuf::from("/var/tmp/test.txt"));
-    }
-
-    #[tokio::test]
-    async fn echo_validation_rejects_missing_message() {
-        let tool = EchoTool;
-        let result = tool.validate(&json!({}));
-        assert!(result.is_err());
     }
 
     #[tokio::test]

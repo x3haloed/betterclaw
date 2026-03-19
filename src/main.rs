@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
 
     let db_path = env::var("BETTERCLAW_DB_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("betterclaw.db"));
+        .unwrap_or_else(|_| default_db_path());
     let db = Db::open(&db_path).await?;
     let runtime = Arc::new(Runtime::from_env(db).await?);
 
@@ -94,13 +94,25 @@ fn default_env_path() -> Option<PathBuf> {
     dirs::home_dir().map(|path| path.join(".betterclaw").join(".env"))
 }
 
+fn default_db_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|path| path.join(".betterclaw").join("betterclaw.db"))
+        .unwrap_or_else(|| PathBuf::from("betterclaw.db"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::default_env_path;
+    use super::{default_db_path, default_env_path};
 
     #[test]
     fn default_env_path_targets_betterclaw_home() {
         let path = default_env_path().expect("home directory should exist in test environment");
         assert!(path.ends_with(".betterclaw/.env"));
+    }
+
+    #[test]
+    fn default_db_path_targets_betterclaw_home() {
+        let path = default_db_path();
+        assert!(path.ends_with(".betterclaw/betterclaw.db"));
     }
 }

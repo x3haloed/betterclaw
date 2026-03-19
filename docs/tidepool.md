@@ -22,7 +22,7 @@ Set these env vars to enable the Tidepool channel:
 Optional:
 
 - `TIDEPOOL_BASE_URL`
-- `TIDEPOOL_TOKEN_PATH`
+- `TIDEPOOL_TOKEN_PATH` (defaults to `~/.betterclaw/tidepool_token`)
 - `TIDEPOOL_EMIT_SELF_MESSAGES`
 - `TIDEPOOL_AGENT_ID`
 

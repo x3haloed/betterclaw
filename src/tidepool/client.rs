@@ -35,7 +35,7 @@ impl TidepoolConfig {
         let handle = std::env::var("TIDEPOOL_HANDLE").ok()?;
         let token_path = std::env::var("TIDEPOOL_TOKEN_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(".betterclaw/tidepool_token"));
+            .unwrap_or_else(|_| default_tidepool_token_path());
         Some(Self {
             agent_id: std::env::var("TIDEPOOL_AGENT_ID")
                 .unwrap_or_else(|_| DEFAULT_AGENT_ID.to_string()),
@@ -51,6 +51,12 @@ impl TidepoolConfig {
     pub fn token_exists(&self) -> bool {
         self.token_path.is_file()
     }
+}
+
+fn default_tidepool_token_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|path| path.join(".betterclaw").join("tidepool_token"))
+        .unwrap_or_else(|| PathBuf::from(".betterclaw/tidepool_token"))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1182,6 +1188,12 @@ mod tests {
     fn mention_empty_body_returns_false() {
         assert!(!body_mentions_handle("", "buzz"));
         assert!(!body_mentions_handle("no mentions here", "buzz"));
+    }
+
+    #[test]
+    fn default_tidepool_token_path_targets_betterclaw_home() {
+        let path = default_tidepool_token_path();
+        assert!(path.ends_with(".betterclaw/tidepool_token"));
     }
 
     #[test]

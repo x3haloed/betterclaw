@@ -6,35 +6,6 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::process::Command;
 
-pub struct EchoTool;
-
-#[async_trait]
-impl Tool for EchoTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "echo".to_string(),
-            description: "Return the provided message. Useful for testing the tool loop."
-                .to_string(),
-            parameters_schema: json!({
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string" }
-                },
-                "required": ["message"],
-                "additionalProperties": false
-            }),
-        }
-    }
-
-    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
-        require_string(params, "echo", "message").map(|_| ())
-    }
-
-    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
-        Ok(json!({ "message": require_string(&params, "echo", "message")? }))
-    }
-}
-
 pub struct ShellTool;
 
 #[async_trait]

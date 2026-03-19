@@ -99,7 +99,6 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     pub fn with_defaults() -> Self {
         let mut registry = Self::default();
-        registry.register(tool_core::EchoTool);
         registry.register(tool_core::ShellTool);
         registry.register(tool_fs::ReadFileTool);
         registry.register(tool_fs::WriteFileTool);

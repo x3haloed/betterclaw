@@ -50,7 +50,7 @@ impl Db {
         unresolved_only: bool,
         limit: i64,
     ) -> Result<Vec<Observation>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let kind_value = kind
             .map(|k| k.as_str().to_string())
             .unwrap_or_default();
@@ -146,7 +146,7 @@ impl Db {
         namespace_id: &str,
         max_age_hours: i64,
     ) -> Result<Vec<String>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let cutoff = (Utc::now() - chrono::Duration::hours(max_age_hours)).to_rfc3339();
         let mut rows = conn
             .query(
@@ -166,7 +166,7 @@ impl Db {
         namespace_id: &str,
         kind: &ObservationKind,
     ) -> Result<i64> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT COUNT(*) FROM observations WHERE namespace_id = ? AND kind = ? AND resolved = 0",

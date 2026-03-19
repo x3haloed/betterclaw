@@ -52,7 +52,7 @@ impl Db {
         channel: &str,
         external_thread_id: &str,
     ) -> Result<Option<Thread>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, agent_id, channel, external_thread_id, title, metadata_json, created_at, updated_at FROM threads WHERE agent_id = ? AND channel = ? AND external_thread_id = ?",
@@ -63,7 +63,7 @@ impl Db {
     }
 
     pub async fn get_thread(&self, thread_id: &str) -> Result<Option<Thread>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, agent_id, channel, external_thread_id, title, metadata_json, created_at, updated_at FROM threads WHERE id = ?",
@@ -111,7 +111,7 @@ impl Db {
         })
     }
     pub async fn get_turn(&self, turn_id: &str) -> Result<Option<Turn>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, thread_id, status, user_message, attachments_json, assistant_message, error, created_at, updated_at FROM turns WHERE id = ?",
@@ -136,7 +136,7 @@ impl Db {
     }
 
     pub async fn list_threads(&self) -> Result<Vec<Thread>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, agent_id, channel, external_thread_id, title, metadata_json, created_at, updated_at FROM threads ORDER BY updated_at DESC",
@@ -219,7 +219,7 @@ impl Db {
     }
 
     pub async fn list_thread_turns(&self, thread_id: &str) -> Result<Vec<Turn>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, thread_id, status, user_message, attachments_json, assistant_message, error, created_at, updated_at FROM turns WHERE thread_id = ? ORDER BY created_at ASC",
@@ -243,7 +243,7 @@ impl Db {
         Ok(turns)
     }
     pub async fn list_running_turns(&self) -> Result<Vec<Turn>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, thread_id, status, user_message, attachments_json, assistant_message, error, created_at, updated_at FROM turns WHERE status = ? ORDER BY created_at ASC",

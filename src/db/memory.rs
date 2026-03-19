@@ -73,7 +73,7 @@ impl Db {
         kind: Option<MemoryArtifactKind>,
         limit: i64,
     ) -> Result<Vec<MemoryArtifact>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let kind_value = kind
             .map(|item| item.as_str().to_string())
             .unwrap_or_default();
@@ -132,7 +132,7 @@ impl Db {
     }
 
     pub async fn get_memory_state(&self, namespace_id: &str, key: &str) -> Result<Option<Value>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT value_json FROM memory_state WHERE namespace_id = ? AND key = ?",
@@ -204,7 +204,7 @@ impl Db {
         query: &str,
         limit: i64,
     ) -> Result<Vec<RecallHit>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT chunk_id, source_id, source_type, entry_id, content, bm25(memory_recall_chunks_fts) AS rank FROM memory_recall_chunks_fts WHERE namespace_id = ? AND memory_recall_chunks_fts MATCH ? ORDER BY rank ASC LIMIT ?",
@@ -229,7 +229,7 @@ impl Db {
         namespace_id: &str,
         limit: i64,
     ) -> Result<Vec<RecallChunk>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT chunk_id, namespace_id, source_type, source_id, entry_id, chunk_index, content, embedding_json, created_at, updated_at FROM memory_recall_chunks WHERE namespace_id = ? AND embedding_json IS NOT NULL ORDER BY updated_at DESC LIMIT ?",
@@ -258,7 +258,7 @@ impl Db {
         channel: &str,
         cursor_key: &str,
     ) -> Result<Option<ChannelCursor>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT channel, cursor_key, cursor_value, updated_at FROM channel_cursors WHERE channel = ? AND cursor_key = ?",

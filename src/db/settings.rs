@@ -48,7 +48,7 @@ impl Db {
         Ok(())
     }
     pub async fn load_runtime_settings(&self, agent_id: &str) -> Result<Option<RuntimeSettings>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT agent_id, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, COALESCE(enable_observations, 1), COALESCE(inject_observations, 1), COALESCE(inject_skills, 1), model_roles_json, created_at, updated_at FROM runtime_settings WHERE agent_id = ?",
@@ -82,7 +82,7 @@ impl Db {
         &self,
         agent_id: &str,
     ) -> Result<Option<RetentionSettings>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT agent_id, trace_blob_retention_days, created_at, updated_at FROM retention_settings WHERE agent_id = ?",

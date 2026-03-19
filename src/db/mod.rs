@@ -24,6 +24,8 @@ pub struct Db {
 }
 
 impl Db {
+    const BUSY_TIMEOUT_MS: u64 = 5_000;
+
     pub async fn open(path: &Path) -> Result<Self> {
         let database = Builder::new_local(path).build().await?;
         let db = Self {
@@ -34,13 +36,27 @@ impl Db {
         Ok(db)
     }
 
-    pub(crate) fn connect(&self) -> Result<Connection> {
-        Ok(self.database.connect()?)
+    async fn configure_connection(&self, conn: &Connection) -> Result<()> {
+        let pragma = format!(
+            r#"
+            PRAGMA busy_timeout = {};
+            PRAGMA foreign_keys = ON;
+            "#,
+            Self::BUSY_TIMEOUT_MS
+        );
+        conn.execute_batch(&pragma).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn connect(&self) -> Result<Connection> {
+        let conn = self.database.connect()?;
+        self.configure_connection(&conn).await?;
+        Ok(conn)
     }
 
     pub(crate) async fn write_connection(&self) -> Result<(MutexGuard<'_, ()>, Connection)> {
         let guard = self.write_lock.lock().await;
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         Ok((guard, conn))
     }
 
@@ -349,7 +365,7 @@ impl Db {
     }
 
     pub async fn load_agent(&self, agent_id: &str) -> Result<Option<Agent>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, display_name, workspace_id FROM agents WHERE id = ?",
@@ -368,7 +384,7 @@ impl Db {
     }
 
     pub async fn load_workspace(&self, workspace_id: &str) -> Result<Option<Workspace>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, root FROM workspaces WHERE id = ?",

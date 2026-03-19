@@ -55,7 +55,7 @@ impl Db {
     }
 
     pub async fn list_thread_events(&self, thread_id: &str) -> Result<Vec<Event>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, turn_id, thread_id, sequence, kind, payload, created_at FROM events WHERE thread_id = ? ORDER BY created_at ASC, sequence ASC",

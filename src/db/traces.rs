@@ -48,7 +48,7 @@ impl Db {
     }
 
     pub async fn fetch_trace_blob_json(&self, blob_id: &str) -> Result<Value> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT body FROM trace_blobs WHERE id = ?",
@@ -154,7 +154,7 @@ impl Db {
         Ok(())
     }
     pub async fn list_turn_traces(&self, turn_id: &str) -> Result<Vec<ModelTrace>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary FROM model_traces WHERE turn_id = ? ORDER BY request_started_at ASC",
@@ -190,7 +190,7 @@ impl Db {
         Ok(traces)
     }
     pub async fn get_trace_detail(&self, trace_id: &str) -> Result<Option<TraceDetail>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary FROM model_traces WHERE id = ?",

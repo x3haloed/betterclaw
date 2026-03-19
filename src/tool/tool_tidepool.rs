@@ -4,10 +4,126 @@ use serde_json::{Value, json};
 use super::*;
 use crate::error::RuntimeError;
 use crate::generated::tidepool::{DomainKind, DomainRole, SubscriptionLookup};
-use crate::tidepool::require_shared_client;
+use crate::tidepool::{TidepoolConfig, require_shared_client};
 
 const DEFAULT_SUBSCRIBE_BATCH_WINDOW_SECONDS: u32 = 30;
 const DEFAULT_CREATE_DOMAIN_MESSAGE_CHAR_LIMIT: u16 = 4096;
+
+pub fn registration_tool_should_be_available() -> bool {
+    TidepoolConfig::from_env()
+        .map(|config| !config.token_exists())
+        .unwrap_or(false)
+}
+
+pub struct TidepoolCompleteRegistrationTool;
+
+#[async_trait]
+impl Tool for TidepoolCompleteRegistrationTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "tidepool_complete_registration".to_string(),
+            description: "Create and save the Tidepool registration token for this BetterClaw runtime using the configured Tidepool env. Use this only when Tidepool is configured but no saved token file exists yet.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        validate_empty_object(params, "tidepool_complete_registration")
+    }
+
+    async fn call(&self, _params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let config = TidepoolConfig::from_env().ok_or_else(|| RuntimeError::ToolExecution {
+            tool: "tidepool_complete_registration".to_string(),
+            reason: "Tidepool is not configured in env; TIDEPOOL_DATABASE, TIDEPOOL_HANDLE, and TIDEPOOL_TOKEN_PATH are required".to_string(),
+        })?;
+
+        if config.token_exists() {
+            return Err(RuntimeError::ToolExecution {
+                tool: "tidepool_complete_registration".to_string(),
+                reason: format!(
+                    "a Tidepool token is already saved at {}; registration is not needed",
+                    config.token_path.display()
+                ),
+            });
+        }
+
+        if let Some(parent) = config.token_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| RuntimeError::ToolExecution {
+                tool: "tidepool_complete_registration".to_string(),
+                reason: format!(
+                    "creating Tidepool token directory {}: {error}",
+                    parent.display()
+                ),
+            })?;
+        }
+
+        let url = format!(
+            "{}/v1/database/{}/call/create_account",
+            config.base_url.trim_end_matches('/'),
+            config.database
+        );
+        let response = reqwest::Client::new()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&vec![config.handle.clone()])
+            .send()
+            .await
+            .map_err(|error| RuntimeError::ToolExecution {
+                tool: "tidepool_complete_registration".to_string(),
+                reason: format!("sending Tidepool registration request: {error}"),
+            })?;
+
+        let status = response.status();
+        let token = response
+            .headers()
+            .get("spacetime-identity-token")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let body = response
+            .text()
+            .await
+            .map_err(|error| RuntimeError::ToolExecution {
+                tool: "tidepool_complete_registration".to_string(),
+                reason: format!("reading Tidepool registration response: {error}"),
+            })?;
+
+        if !status.is_success() {
+            return Err(RuntimeError::ToolExecution {
+                tool: "tidepool_complete_registration".to_string(),
+                reason: format!("Tidepool registration failed with {status}: {body}"),
+            });
+        }
+
+        let token = token.ok_or_else(|| RuntimeError::ToolExecution {
+            tool: "tidepool_complete_registration".to_string(),
+            reason: "Tidepool registration succeeded but no spacetime-identity-token header was returned".to_string(),
+        })?;
+
+        std::fs::write(&config.token_path, format!("{token}\n")).map_err(|error| {
+            RuntimeError::ToolExecution {
+                tool: "tidepool_complete_registration".to_string(),
+                reason: format!(
+                    "writing Tidepool token to {}: {error}",
+                    config.token_path.display()
+                ),
+            }
+        })?;
+
+        Ok(json!({
+            "status": "registered",
+            "handle": config.handle,
+            "token_path": config.token_path,
+            "base_url": config.base_url,
+            "database": config.database,
+            "channel_restart_required": true,
+        }))
+    }
+}
 
 pub struct TidepoolMyAccountTool;
 

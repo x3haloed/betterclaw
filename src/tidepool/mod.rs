@@ -7,7 +7,7 @@ pub mod client;
 
 pub use client::{
     AgentHealthEntry, AgentPresenceEntry, TidepoolBootstrapOutcome, TidepoolClient, TidepoolConfig,
-    TidepoolInboundMessage,
+    TidepoolInboundContext, TidepoolInboundMessage,
 };
 
 pub use crate::generated::tidepool::DomainKind;

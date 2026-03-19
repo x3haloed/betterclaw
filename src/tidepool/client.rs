@@ -67,6 +67,11 @@ pub struct TidepoolInboundMessage {
     pub created_at_micros: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct TidepoolInboundContext {
+    pub auto_subscribed_dm_first_message: bool,
+}
+
 /// Presence information for a single agent/account based on recent message activity.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentPresenceEntry {
@@ -266,6 +271,23 @@ impl TidepoolClient {
             .collect::<Vec<_>>();
         dm_domains.sort_by_key(|item| item.domain_id);
         dm_domains
+    }
+
+    pub fn inbound_context(&self, message: &TidepoolInboundMessage) -> TidepoolInboundContext {
+        let auto_subscribed_dm_first_message = message.domain_sequence == 1
+            && self
+                .subscriptions()
+                .into_iter()
+                .find(|item| item.domain_id == message.domain_id)
+                .map(|item| item.auto_subscribed)
+                .unwrap_or(false)
+            && self
+                .dm_domains()
+                .into_iter()
+                .any(|item| item.domain_id == message.domain_id);
+        TidepoolInboundContext {
+            auto_subscribed_dm_first_message,
+        }
     }
 
     pub fn domain_members(&self, domain_id: Option<u64>) -> Vec<DomainMember> {

@@ -108,6 +108,9 @@ impl ToolRegistry {
         registry.register(tool_fs::ListDirTool);
         registry.register(tool_fs::GrepTool);
         registry.register(tool_fs::FindTool);
+        if tool_tidepool::registration_tool_should_be_available() {
+            registry.register(tool_tidepool::TidepoolCompleteRegistrationTool);
+        }
         registry.register(tool_tidepool::TidepoolMyAccountTool);
         registry.register(tool_tidepool::TidepoolListSubscriptionsTool);
         registry.register(tool_tidepool::TidepoolSubscribeDomainTool);

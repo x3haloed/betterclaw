@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::channel::{ChannelCursor, InboundEvent};
 use crate::runtime::Runtime;
 use crate::tidepool::{
-    TidepoolClient, TidepoolConfig, TidepoolInboundMessage, clear_shared_client,
+    TidepoolClient, TidepoolConfig, TidepoolInboundContext, TidepoolInboundMessage, clear_shared_client,
     connect_shared_client,
 };
 
@@ -160,6 +160,7 @@ impl TidepoolChannel {
             "Tidepool inbound message received"
         );
 
+        let inbound_context = client.inbound_context(&message);
         let external_thread_id = tidepool_thread_key(message.domain_id);
         let metadata = json!({
             "domain_id": message.domain_id,
@@ -170,8 +171,11 @@ impl TidepoolChannel {
             "author_account_id": message.author_account_id,
             "reply_to_message_id": message.reply_to_message_id,
             "created_at_micros": message.created_at_micros,
+            "auto_subscribed_dm_first_message": inbound_context.auto_subscribed_dm_first_message,
+            "unsubscribe_tool_call": unsubscribe_tool_call(message.domain_id),
             "tidepool_target": external_thread_id,
         });
+        let content = render_inbound_content(&message, &inbound_context);
 
         let outcome = match self
             .runtime
@@ -179,7 +183,7 @@ impl TidepoolChannel {
                 agent_id: self.config.agent_id.clone(),
                 channel: "tidepool".to_string(),
                 external_thread_id: external_thread_id.clone(),
-                content: message.body.clone(),
+                content,
                 metadata: Some(metadata.clone()),
                 attachments: Vec::new(),
                 received_at: Utc::now(),
@@ -359,6 +363,25 @@ fn tidepool_thread_key(domain_id: u64) -> String {
     format!("tidepool:domain:{domain_id}")
 }
 
+fn unsubscribe_tool_call(domain_id: u64) -> String {
+    format!("tidepool_unsubscribe_domain({{\"domain_id\":{domain_id}}})")
+}
+
+fn render_inbound_content(
+    message: &TidepoolInboundMessage,
+    context: &TidepoolInboundContext,
+) -> String {
+    if !context.auto_subscribed_dm_first_message {
+        return message.body.clone();
+    }
+
+    format!(
+        "[System note: This message is the first inbound message from a DM domain you were auto-subscribed to when it was created. If you do not want further messages from this DM, call {}.]\n\n{}",
+        unsubscribe_tool_call(message.domain_id),
+        message.body
+    )
+}
+
 /// Returns true if the message was authored by this agent (self-echo).
 /// Prevents an agent from receiving its own outbound messages as new inbound events.
 fn is_self_echo(author_account_id: u64, own_account_id: u64) -> bool {
@@ -379,14 +402,65 @@ fn next_backoff(current: std::time::Duration) -> std::time::Duration {
 mod tests {
     use super::{
         CONNECTION_HEALTHY_THRESHOLD, INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
-        cursor_seed_value, is_self_echo, next_backoff, tidepool_thread_key,
+        cursor_seed_value, is_self_echo, next_backoff, render_inbound_content,
+        tidepool_thread_key, unsubscribe_tool_call,
     };
+    use crate::tidepool::{TidepoolInboundContext, TidepoolInboundMessage};
     use std::collections::HashMap;
     use std::time::Duration;
 
     #[test]
     fn canonical_thread_key_uses_domain_id() {
         assert_eq!(tidepool_thread_key(42), "tidepool:domain:42");
+    }
+
+    #[test]
+    fn unsubscribe_tool_call_uses_exact_tool_shape() {
+        assert_eq!(
+            unsubscribe_tool_call(42),
+            "tidepool_unsubscribe_domain({\"domain_id\":42})"
+        );
+    }
+
+    #[test]
+    fn render_inbound_content_leaves_normal_messages_unchanged() {
+        let message = TidepoolInboundMessage {
+            domain_id: 42,
+            domain_title: "DM".to_string(),
+            domain_slug: "".to_string(),
+            message_id: 7,
+            domain_sequence: 2,
+            author_account_id: 99,
+            body: "hello".to_string(),
+            reply_to_message_id: None,
+            created_at_micros: 0,
+        };
+        let context = TidepoolInboundContext {
+            auto_subscribed_dm_first_message: false,
+        };
+        assert_eq!(render_inbound_content(&message, &context), "hello");
+    }
+
+    #[test]
+    fn render_inbound_content_adds_unsubscribe_guidance_for_first_auto_dm_message() {
+        let message = TidepoolInboundMessage {
+            domain_id: 42,
+            domain_title: "DM".to_string(),
+            domain_slug: "".to_string(),
+            message_id: 7,
+            domain_sequence: 1,
+            author_account_id: 99,
+            body: "hello".to_string(),
+            reply_to_message_id: None,
+            created_at_micros: 0,
+        };
+        let context = TidepoolInboundContext {
+            auto_subscribed_dm_first_message: true,
+        };
+        let rendered = render_inbound_content(&message, &context);
+        assert!(rendered.contains("auto-subscribed"));
+        assert!(rendered.contains("tidepool_unsubscribe_domain({\"domain_id\":42})"));
+        assert!(rendered.ends_with("\n\nhello"));
     }
 
     #[test]

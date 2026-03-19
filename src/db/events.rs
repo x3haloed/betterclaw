@@ -17,7 +17,7 @@ impl Db {
         kind: EventKind,
         payload: &Value,
     ) -> Result<Event> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let mut rows = conn
             .query(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE turn_id = ?",

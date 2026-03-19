@@ -16,15 +16,20 @@ use anyhow::Result;
 use chrono::Utc;
 use libsql::{Builder, Connection, Database, params};
 use std::path::Path;
+use tokio::sync::{Mutex, MutexGuard};
 
 pub struct Db {
     database: Database,
+    write_lock: Mutex<()>,
 }
 
 impl Db {
     pub async fn open(path: &Path) -> Result<Self> {
         let database = Builder::new_local(path).build().await?;
-        let db = Self { database };
+        let db = Self {
+            database,
+            write_lock: Mutex::new(()),
+        };
         db.migrate().await?;
         Ok(db)
     }
@@ -33,8 +38,23 @@ impl Db {
         Ok(self.database.connect()?)
     }
 
-    async fn migrate(&self) -> Result<()> {
+    pub(crate) async fn write_connection(&self) -> Result<(MutexGuard<'_, ()>, Connection)> {
+        let guard = self.write_lock.lock().await;
         let conn = self.connect()?;
+        Ok((guard, conn))
+    }
+
+    async fn migrate(&self) -> Result<()> {
+        let (_write_guard, conn) = self.write_connection().await?;
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA foreign_keys = ON;
+            "#
+        )
+        .await?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS agents (
@@ -309,7 +329,7 @@ impl Db {
     }
 
     pub async fn seed_default_agent(&self, agent: &Agent, workspace: &Workspace) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT OR IGNORE INTO workspaces (id, root, created_at) VALUES (?, ?, ?)",

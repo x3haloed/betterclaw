@@ -8,7 +8,7 @@ use super::internal::*;
 
 impl Db {
     pub async fn seed_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT OR IGNORE INTO runtime_settings (agent_id, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, inject_skills, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -34,7 +34,7 @@ impl Db {
     }
 
     pub async fn seed_retention_settings(&self, settings: &RetentionSettings) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT OR IGNORE INTO retention_settings (agent_id, trace_blob_retention_days, created_at, updated_at) VALUES (?, ?, ?, ?)",
             params![
@@ -101,7 +101,7 @@ impl Db {
         })
     }
     pub async fn update_runtime_settings(&self, settings: &RuntimeSettings) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT OR REPLACE INTO runtime_settings (agent_id, system_prompt, max_tokens, stream, allow_tools, max_history_turns, inject_wake_pack, inject_ledger_recall, enable_auto_distill, enable_observations, inject_observations, inject_skills, model_roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM runtime_settings WHERE agent_id = ?), ?), ?)",
             params![
@@ -128,7 +128,7 @@ impl Db {
     }
 
     pub async fn update_retention_settings(&self, settings: &RetentionSettings) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT OR REPLACE INTO retention_settings (agent_id, trace_blob_retention_days, created_at, updated_at) VALUES (?, ?, COALESCE((SELECT created_at FROM retention_settings WHERE agent_id = ?), ?), ?)",
             params![

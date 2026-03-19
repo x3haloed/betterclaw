@@ -32,7 +32,7 @@ impl Db {
             body,
             created_at,
         };
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT INTO trace_blobs (id, encoding, content_type, body, created_at) VALUES (?, ?, ?, ?, ?)",
             params![
@@ -69,7 +69,7 @@ impl Db {
     ) -> Result<TraceBlobPruneReport> {
         const PRUNED_CONTENT_TYPE: &str = "application/vnd.betterclaw.pruned+json";
 
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let mut rows = conn
             .query(
                 "SELECT id, encoding, content_type, body, created_at FROM trace_blobs WHERE created_at < ? AND content_type != ?",
@@ -123,7 +123,7 @@ impl Db {
         Ok(report)
     }
     pub async fn record_model_trace(&self, trace: &ModelTrace) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT INTO model_traces (id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -245,7 +245,7 @@ impl Db {
         }))
     }
     pub async fn backdate_all_trace_blobs(&self, created_at: DateTime<Utc>) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "UPDATE trace_blobs SET created_at = ?",
             params![created_at.to_rfc3339()],

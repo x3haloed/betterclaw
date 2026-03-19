@@ -9,7 +9,7 @@ use super::Db;
 
 impl Db {
     pub async fn upsert_observation(&self, new: &NewObservation) -> Result<Observation> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         conn.execute(
@@ -86,7 +86,7 @@ impl Db {
     }
 
     pub async fn resolve_observation(&self, observation_id: &str) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "UPDATE observations SET resolved = 1, updated_at = ? WHERE id = ?",
             params![Utc::now().to_rfc3339(), observation_id.to_string()],
@@ -103,7 +103,7 @@ impl Db {
         if entry_ids.is_empty() {
             return Ok(0);
         }
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let mut resolved = 0;
         for entry_id in entry_ids {
             let rows_affected = conn

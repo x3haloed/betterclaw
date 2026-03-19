@@ -18,7 +18,7 @@ impl Db {
         title: &str,
         metadata: Option<&serde_json::Value>,
     ) -> Result<Thread> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let id = external_thread_id.to_string();
         let now = Utc::now();
         // INSERT OR IGNORE handles concurrent resolve_thread() calls racing
@@ -78,7 +78,7 @@ impl Db {
         thread_id: &str,
         metadata: Option<&serde_json::Value>,
     ) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE threads SET metadata_json = ?, updated_at = ? WHERE id = ?",
@@ -166,7 +166,7 @@ impl Db {
         user_message: &str,
         attachments_json: Option<&str>,
     ) -> Result<Turn> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         conn.execute(
@@ -202,7 +202,7 @@ impl Db {
         assistant_message: Option<&str>,
         error: Option<&str>,
     ) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "UPDATE turns SET status = ?, assistant_message = ?, error = ?, updated_at = ? WHERE id = ?",

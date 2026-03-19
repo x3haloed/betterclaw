@@ -14,7 +14,7 @@ use super::internal::*;
 
 impl Db {
     pub async fn record_outbound_message(&self, outbound: &OutboundMessage) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT INTO outbound_messages (id, turn_id, thread_id, channel, external_thread_id, content, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -35,7 +35,7 @@ impl Db {
         &self,
         artifact: &NewMemoryArtifact,
     ) -> Result<MemoryArtifact> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let now = Utc::now();
         let id = Uuid::new_v4().to_string();
         conn.execute(
@@ -117,7 +117,7 @@ impl Db {
         key: &str,
         value: &Value,
     ) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT OR REPLACE INTO memory_state (namespace_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)",
             params![
@@ -153,7 +153,7 @@ impl Db {
         entry_id: &str,
         chunks: &[(String, Option<String>)],
     ) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "DELETE FROM memory_recall_chunks WHERE namespace_id = ? AND source_type = ? AND source_id = ?",
             params![namespace_id.to_string(), source_type.to_string(), source_id.to_string()],
@@ -276,7 +276,7 @@ impl Db {
         Ok(None)
     }
     pub async fn upsert_cursor(&self, cursor: &ChannelCursor) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT OR REPLACE INTO channel_cursors (channel, cursor_key, cursor_value, updated_at) VALUES (?, ?, ?, ?)",
             params![

@@ -391,12 +391,19 @@ mod tests {
             .await
             .unwrap();
 
-        let wake_pack = runtime
-            .db()
-            .latest_memory_artifact("default", crate::memory::MemoryArtifactKind::WakePackV0)
-            .await
-            .unwrap()
-            .unwrap();
+        let mut wake_pack = None;
+        for _ in 0..20 {
+            wake_pack = runtime
+                .db()
+                .latest_memory_artifact("default", crate::memory::MemoryArtifactKind::WakePackV0)
+                .await
+                .unwrap();
+            if wake_pack.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let wake_pack = wake_pack.expect("wake pack should be persisted asynchronously");
         assert!(wake_pack.content.contains("Stub compressor wake pack"));
 
         let self_invariants = runtime

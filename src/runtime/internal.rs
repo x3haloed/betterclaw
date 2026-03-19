@@ -290,20 +290,6 @@ impl Runtime {
             None,
         )
         .await?;
-        let completed_turn = self
-            .get_turn(&turn.id)
-            .await?
-            .ok_or_else(|| RuntimeError::TurnNotFound(turn.id.clone()))?;
-        self.sync_memory_for_turn(&thread, &completed_turn, &settings)
-            .await?;
-        if settings.enable_observations {
-            let _ = self
-                .run_observation_routines(
-                    &default_memory_namespace(),
-                    &RoutineConfig::default(),
-                )
-                .await;
-        }
         if final_status == TurnStatus::AwaitingUser {
             self.append_event_and_publish(
                 &turn.id,
@@ -318,6 +304,11 @@ impl Runtime {
         if !final_response.trim().is_empty() {
             outbound_messages.push(final_response.clone());
         }
+        let completed_turn = self
+            .get_turn(&turn.id)
+            .await?
+            .ok_or_else(|| RuntimeError::TurnNotFound(turn.id.clone()))?;
+        self.spawn_post_turn_maintenance(thread.clone(), completed_turn, settings.clone());
 
         Ok(TurnOutcome {
             thread,
@@ -327,6 +318,36 @@ impl Runtime {
             status: final_status,
             outbound_messages,
         })
+    }
+
+    fn spawn_post_turn_maintenance(
+        &self,
+        thread: Thread,
+        completed_turn: Turn,
+        settings: RuntimeSettings,
+    ) {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runtime
+                .sync_memory_for_turn(&thread, &completed_turn, &settings)
+                .await
+            {
+                tracing::error!(
+                    error = %error,
+                    thread_id = %thread.id,
+                    turn_id = %completed_turn.id,
+                    "Post-turn memory sync failed"
+                );
+            }
+            if settings.enable_observations {
+                let _ = runtime
+                    .run_observation_routines(
+                        &default_memory_namespace(),
+                        &RoutineConfig::default(),
+                    )
+                    .await;
+            }
+        });
     }
 
     pub(crate) async fn build_conversation_history(

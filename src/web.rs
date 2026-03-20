@@ -31,6 +31,10 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
             get(get_runtime_settings).put(update_runtime_settings),
         )
         .route(
+            "/api/settings/runtime/wake-pack-preview",
+            get(get_wake_pack_preview),
+        )
+        .route(
             "/api/settings/retention",
             get(get_retention_settings).put(update_retention_settings),
         )
@@ -80,6 +84,23 @@ async fn get_runtime_settings(
     State(runtime): State<Arc<Runtime>>,
 ) -> Result<Json<crate::settings::RuntimeSettings>, ApiError> {
     Ok(Json(runtime.get_runtime_settings("default").await?))
+}
+
+#[derive(Debug, Serialize)]
+struct WakePackPreviewResponse {
+    enabled: bool,
+    content: Option<String>,
+}
+
+async fn get_wake_pack_preview(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<WakePackPreviewResponse>, ApiError> {
+    let settings = runtime.get_runtime_settings("default").await?;
+    let content = runtime.current_wake_pack_preview("default").await?;
+    Ok(Json(WakePackPreviewResponse {
+        enabled: settings.inject_wake_pack,
+        content,
+    }))
 }
 
 #[derive(Debug, Deserialize)]

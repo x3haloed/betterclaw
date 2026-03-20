@@ -424,16 +424,10 @@ impl Runtime {
             });
         }
         let namespace = default_memory_namespace();
-        if settings.inject_wake_pack
-            && let Some(wake_pack) = self
-                .db
-                .latest_memory_artifact(&namespace, MemoryArtifactKind::WakePackV0)
-                .await
-                .map_err(RuntimeError::from)?
-        {
+        if let Some(wake_pack_block) = self.current_wake_pack_block(settings).await? {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(MessageContent::Text(format!("<wake_pack>\n{}\n</wake_pack>", wake_pack.content))),
+                content: Some(MessageContent::Text(wake_pack_block)),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -475,6 +469,28 @@ impl Runtime {
             }
         }
         Ok(messages)
+    }
+
+    pub(crate) async fn current_wake_pack_block(
+        &self,
+        settings: &RuntimeSettings,
+    ) -> Result<Option<String>, RuntimeError> {
+        if !settings.inject_wake_pack {
+            return Ok(None);
+        }
+        let namespace = default_memory_namespace();
+        let Some(wake_pack) = self
+            .db
+            .latest_memory_artifact(&namespace, MemoryArtifactKind::WakePackV0)
+            .await
+            .map_err(RuntimeError::from)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(format!(
+            "<wake_pack>\n{}\n</wake_pack>",
+            wake_pack.content
+        )))
     }
 
     async fn compose_system_prompt(

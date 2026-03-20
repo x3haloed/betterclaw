@@ -160,6 +160,14 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.to_string()))
     }
 
+    pub async fn current_wake_pack_preview(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        let settings = self.get_runtime_settings(agent_id).await?;
+        self.current_wake_pack_block(&settings).await
+    }
+
     pub async fn update_runtime_settings(
         &self,
         mut settings: RuntimeSettings,

@@ -8,6 +8,7 @@ const state = {
   runtimeSettings: null,
   retentionSettings: null,
   inspectorView: "compressor",
+  wakePackPreview: null,
 };
 
 async function request(path, options = {}) {
@@ -302,9 +303,35 @@ function renderSettings(settings) {
   document.getElementById("settings-allow-tools").checked = settings.allow_tools;
 }
 
+function renderWakePackPreview(preview) {
+  state.wakePackPreview = preview;
+  const meta = document.getElementById("wake-pack-preview-meta");
+  const body = document.getElementById("wake-pack-preview");
+  if (!preview.enabled) {
+    meta.textContent = "Wake-pack injection is currently disabled.";
+    body.textContent = "";
+    return;
+  }
+  if (!preview.content) {
+    meta.textContent = "Wake-pack injection is enabled, but no wake pack has been persisted yet.";
+    body.textContent = "";
+    return;
+  }
+  meta.textContent = "Literal system-message block currently injected into the prompt.";
+  body.textContent = preview.content;
+}
+
+async function loadWakePackPreview() {
+  const body = document.getElementById("wake-pack-preview");
+  body.textContent = "Loading...";
+  const preview = await request("/api/settings/runtime/wake-pack-preview");
+  renderWakePackPreview(preview);
+}
+
 async function loadSettings() {
   const settings = await request("/api/settings/runtime");
   renderSettings(settings);
+  await loadWakePackPreview();
   const retention = await request("/api/settings/retention");
   renderRetentionSettings(retention);
 }
@@ -458,10 +485,21 @@ document.getElementById("settings-form").onsubmit = async (event) => {
     body: JSON.stringify(payload),
   });
   renderSettings(settings);
+  await loadWakePackPreview();
   status.textContent = "Saved";
   setTimeout(() => {
     if (status.textContent === "Saved") status.textContent = "";
   }, 1500);
+};
+
+document.getElementById("refresh-wake-pack-preview").onclick = async () => {
+  await loadWakePackPreview();
+};
+
+document.getElementById("copy-wake-pack-preview").onclick = async () => {
+  const value = state.wakePackPreview?.content || "";
+  if (!value) return;
+  await navigator.clipboard.writeText(value);
 };
 
 document.getElementById("retention-form").onsubmit = async (event) => {

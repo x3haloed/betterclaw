@@ -47,13 +47,6 @@ impl Tool for WebSearchTool {
         if let Some(count) = optional_usize(params, "web_search", "count")? {
             validate_result_count(count)?;
         }
-        if params.get("limit").is_some() && params.get("count").is_some() {
-            return Err(invalid_tool_parameters(
-                "web_search",
-                "provide either 'limit' or 'count', not both",
-            ));
-        }
-
         let language = optional_string(params, "web_search", "language")?;
         let search_lang = optional_string(params, "web_search", "search_lang")?;
         if language.is_some() && search_lang.is_some() {
@@ -347,27 +340,33 @@ fn build_brave_request(params: &Value) -> Result<BraveSearchRequest, RuntimeErro
 
     let language = optional_string(params, "web_search", "language")?;
     let search_lang = optional_string(params, "web_search", "search_lang")?;
-    let normalized_search_lang = match (language.as_deref(), search_lang.as_deref()) {
-        (Some(_), Some(_)) => {
-            return Err(invalid_tool_parameters(
-                "web_search",
-                "provide either 'language' or 'search_lang', not both",
-            ));
+    let normalized_search_lang = match (
+        language.as_deref().and_then(normalize_search_lang),
+        search_lang.as_deref().and_then(normalize_search_lang),
+    ) {
+        (Some(language), Some(search_lang)) => {
+            if language == search_lang {
+                Some(search_lang)
+            } else {
+                Some(search_lang)
+            }
         }
-        (Some(language), None) => Some(normalize_search_lang(language).ok_or_else(|| {
-            invalid_tool_parameters(
-                "web_search",
-                format!("invalid 'language': expected a supported code like 'en' or 'de'"),
-            )
-        })?),
-        (None, Some(search_lang)) => Some(normalize_search_lang(search_lang).ok_or_else(|| {
-            invalid_tool_parameters(
-                "web_search",
-                "invalid 'search_lang': expected a supported Brave language code".to_string(),
-            )
-        })?),
+        (Some(language), None) => Some(language),
+        (None, Some(search_lang)) => Some(search_lang),
         (None, None) => None,
     };
+    if language.is_some() && normalized_search_lang.is_none() {
+        return Err(invalid_tool_parameters(
+            "web_search",
+            format!("invalid 'language': expected a supported code like 'en' or 'de'"),
+        ));
+    }
+    if search_lang.is_some() && normalized_search_lang.is_none() {
+        return Err(invalid_tool_parameters(
+            "web_search",
+            "invalid 'search_lang': expected a supported Brave language code".to_string(),
+        ));
+    }
 
     let country = optional_string(params, "web_search", "country")?
         .map(|value| {
@@ -664,6 +663,18 @@ mod tests {
                 freshness: Some("pw".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn build_request_accepts_both_count_and_limit() {
+        let request = build_brave_request(&json!({
+            "query": "rust async",
+            "limit": 3,
+            "count": 5
+        }))
+        .unwrap();
+
+        assert_eq!(request.count, 5);
     }
 
     #[test]

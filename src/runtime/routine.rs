@@ -488,22 +488,17 @@ impl Runtime {
         _entries: &[LedgerEntry],
         _config: &RoutineConfig,
     ) -> Result<Vec<Observation>, RuntimeError> {
-        use crate::memory::MemoryArtifactKind;
         let mut observations = Vec::new();
 
         // Check for drift flags/contradictions produced by the compressor
         let drift_flags = self
             .db
-            .list_memory_artifacts(namespace_id, Some(MemoryArtifactKind::DriftFlagV0), 16)
+            .list_memory_drift_items(namespace_id, Some("flag"), 16)
             .await
             .map_err(RuntimeError::from)?;
         let drift_contradictions = self
             .db
-            .list_memory_artifacts(
-                namespace_id,
-                Some(MemoryArtifactKind::DriftContradictionV0),
-                16,
-            )
+            .list_memory_drift_items(namespace_id, Some("contradiction"), 16)
             .await
             .map_err(RuntimeError::from)?;
 
@@ -520,7 +515,7 @@ impl Runtime {
                     .any(|c| c == &flag.id || flag.citations.contains(c))
             });
             if !already_observed {
-                let severity = if matches!(flag.kind, MemoryArtifactKind::DriftContradictionV0) {
+                let severity = if flag.kind == "contradiction" {
                     Severity::High
                 } else {
                     Severity::Medium
@@ -532,12 +527,13 @@ impl Runtime {
                             namespace_id: namespace_id.to_string(),
                             kind: ObservationKind::Contradiction,
                             severity,
-                            summary: flag.content.clone(),
-                            detail: Some(format!("Source: compressor ({})", flag.kind.as_str())),
+                            summary: flag.claim.clone(),
+                            detail: Some(format!("Source: compressor drift ({})", flag.kind)),
                             citations: flag.citations.clone(),
                             payload: json!({
-                                "source_artifact_id": flag.id,
-                                "artifact_kind": flag.kind.as_str(),
+                                "source_drift_item_id": flag.id,
+                                "drift_kind": flag.kind,
+                                "fact_ids": flag.fact_ids,
                             }),
                         },
                     )
@@ -628,6 +624,9 @@ fn compute_word_frequency(texts: &[String], min_length: usize) -> Vec<(String, u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::Db;
+    use crate::runtime::Runtime;
+    use tempfile::tempdir;
 
     #[test]
     fn word_frequency_filters_stop_words() {
@@ -671,5 +670,41 @@ mod tests {
             let parsed: Severity = s.parse().unwrap();
             assert_eq!(sev, parsed);
         }
+    }
+
+    #[tokio::test]
+    async fn contradiction_detection_reads_new_drift_table() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("routine-drift.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        runtime
+            .db
+            .insert_memory_drift_item(
+                "default",
+                "contradiction",
+                "Two recent runtime claims contradict each other.",
+                Some("Recent history contains directly incompatible claims."),
+                Some("The claims are reconciled by later evidence."),
+                &["turn:1:user".to_string()],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let observations = runtime
+            .detect_contradictions("default", &[], &RoutineConfig::default())
+            .await
+            .unwrap();
+
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].kind, ObservationKind::Contradiction);
+        assert_eq!(observations[0].severity, Severity::High);
+        assert_eq!(
+            observations[0].summary,
+            "Two recent runtime claims contradict each other."
+        );
     }
 }

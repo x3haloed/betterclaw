@@ -238,6 +238,126 @@ impl Db {
                 ON observations(namespace_id, kind, resolved);
             CREATE INDEX IF NOT EXISTS idx_observations_created
                 ON observations(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_facts (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                fact_key TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT NOT NULL,
+                falsifier TEXT NOT NULL,
+                confidence REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_facts_namespace_created
+                ON memory_facts(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_fact_evidence (
+                fact_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                PRIMARY KEY(fact_id, entry_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_invariant_candidates (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                classifier TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT,
+                falsifier TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_invariant_candidates_namespace_created
+                ON memory_invariant_candidates(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_candidate_facts (
+                candidate_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                PRIMARY KEY(candidate_id, fact_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_invariants (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT NOT NULL,
+                falsifier TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_invariants_namespace_status
+                ON memory_invariants(namespace_id, status, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_invariant_facts (
+                invariant_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                PRIMARY KEY(invariant_id, fact_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_invariant_supersedes (
+                invariant_id TEXT NOT NULL,
+                superseded_invariant_id TEXT NOT NULL,
+                PRIMARY KEY(invariant_id, superseded_invariant_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_policies (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                evidence_note TEXT,
+                candidate_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_preferences (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                evidence_note TEXT,
+                candidate_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_hypotheses (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT,
+                falsifier TEXT,
+                candidate_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_drift_items (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT,
+                falsifier TEXT,
+                citations_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_drift_items_namespace_kind_created
+                ON memory_drift_items(namespace_id, kind, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_drift_item_facts (
+                drift_item_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                PRIMARY KEY(drift_item_id, fact_id)
+            );
+            CREATE TABLE IF NOT EXISTS wake_packs (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_wake_packs_namespace_created
+                ON wake_packs(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS wake_pack_invariants (
+                wake_pack_id TEXT NOT NULL,
+                invariant_id TEXT NOT NULL,
+                PRIMARY KEY(wake_pack_id, invariant_id)
+            );
 
             "#,
         )

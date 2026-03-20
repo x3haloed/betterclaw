@@ -76,4 +76,27 @@ impl Db {
         }
         Ok(events)
     }
+
+    pub async fn list_turn_events(&self, turn_id: &str) -> Result<Vec<Event>> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, turn_id, thread_id, sequence, kind, payload, created_at FROM events WHERE turn_id = ? ORDER BY created_at ASC, sequence ASC",
+                params![turn_id.to_string()],
+            )
+            .await?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().await? {
+            events.push(Event {
+                id: row.get::<String>(0)?,
+                turn_id: row.get::<String>(1)?,
+                thread_id: row.get::<String>(2)?,
+                sequence: row.get::<i64>(3)?,
+                kind: serde_json::from_str(&row.get::<String>(4)?)?,
+                payload: serde_json::from_str(&row.get::<String>(5)?)?,
+                created_at: parse_datetime(&row.get::<String>(6)?)?,
+            });
+        }
+        Ok(events)
+    }
 }

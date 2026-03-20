@@ -404,11 +404,7 @@ mod tests {
 
         let mut wake_pack = None;
         for _ in 0..20 {
-            wake_pack = runtime
-                .db()
-                .latest_memory_artifact("default", crate::memory::MemoryArtifactKind::WakePackV0)
-                .await
-                .unwrap();
+            wake_pack = runtime.db().latest_wake_pack("default").await.unwrap();
             if wake_pack.is_some() {
                 break;
             }
@@ -416,17 +412,41 @@ mod tests {
         }
         let wake_pack = wake_pack.expect("wake pack should be persisted asynchronously");
         assert!(wake_pack.content.contains("Stub compressor wake pack"));
+    }
 
-        let self_invariants = runtime
-            .db()
-            .list_memory_artifacts(
-                "default",
-                Some(crate::memory::MemoryArtifactKind::InvariantSelfV0),
-                10,
-            )
+    #[tokio::test]
+    async fn model_driven_catchup_runs_even_when_auto_distill_is_disabled() {
+        let _guard = env_mutex().lock().await;
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("compressor-catchup.db"))
             .await
             .unwrap();
-        assert!(!self_invariants.is_empty());
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let mut settings = runtime.get_runtime_settings("default").await.unwrap();
+        settings.enable_auto_distill = false;
+        runtime.update_runtime_settings(settings).await.unwrap();
+
+        runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-compressor-catchup",
+                "Please remember this behavior too.",
+            ))
+            .await
+            .unwrap();
+
+        let mut wake_pack = None;
+        for _ in 0..20 {
+            wake_pack = runtime.db().latest_wake_pack("default").await.unwrap();
+            if wake_pack.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        let wake_pack = wake_pack.expect("wake pack should be persisted by catch-up distill");
+        assert!(wake_pack.content.contains("Stub compressor wake pack"));
     }
 
     #[tokio::test]
@@ -866,15 +886,12 @@ mod tests {
         let runtime = Runtime::new(db).await.unwrap();
         runtime
             .db
-            .upsert_memory_artifact(&crate::memory::NewMemoryArtifact {
-                namespace_id: "default".to_string(),
-                kind: crate::memory::MemoryArtifactKind::WakePackV0,
-                source: "test".to_string(),
-                content: "# Wake Pack\n\nPreserve this literally.".to_string(),
-                payload: json!({}),
-                citations: Vec::new(),
-                supersedes_id: None,
-            })
+            .insert_wake_pack_v2(
+                "default",
+                "# Wake Pack\n\nPreserve this literally.",
+                None,
+                &Vec::new(),
+            )
             .await
             .unwrap();
 

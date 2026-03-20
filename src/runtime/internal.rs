@@ -482,7 +482,7 @@ impl Runtime {
         let namespace = default_memory_namespace();
         let Some(wake_pack) = self
             .db
-            .latest_memory_artifact(&namespace, MemoryArtifactKind::WakePackV0)
+            .latest_wake_pack(&namespace)
             .await
             .map_err(RuntimeError::from)?
         else {

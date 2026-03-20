@@ -25,6 +25,20 @@ async fn main() -> Result<()> {
     let db_path = env::var("BETTERCLAW_DB_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| default_db_path());
+    if matches!(env::args().nth(1).as_deref(), Some("memory-rebuild")) {
+        let db = Db::open(&db_path).await?;
+        let runtime = Runtime::from_env(db).await?;
+        let namespace = env::args()
+            .skip(2)
+            .find_map(|arg| arg.strip_prefix("--namespace=").map(str::to_string))
+            .unwrap_or_else(|| "default".to_string());
+        let report = runtime.rebuild_memory_namespace(&namespace).await?;
+        println!(
+            "memory rebuild complete: namespace={} turns_processed={}",
+            report.namespace_id, report.turns_processed
+        );
+        return Ok(());
+    }
     let db = Db::open(&db_path).await?;
     let runtime = Arc::new(Runtime::from_env(db).await?);
 

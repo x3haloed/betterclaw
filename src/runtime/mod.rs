@@ -12,7 +12,7 @@ use crate::channel::{InboundAttachment, InboundEvent, OutboundMessage};
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
-use crate::memory::{MemoryArtifactKind, chunk_text, cosine_similarity};
+use crate::memory::{chunk_text, cosine_similarity};
 use crate::model::{
     ModelEngine, ModelMessage, ModelTrace, StubModelEngine, TraceDetail, TraceOutcome,
     strip_reasoning_tags,

@@ -1408,9 +1408,14 @@ fn is_thread_ledger_kind(kind: &str) -> bool {
 fn map_memory_artifact_kind(kind: &str) -> &str {
     match kind {
         "wake_pack.v0" => "wake_pack.v0",
+        "fact.v0" => "fact.v0",
+        "invariant.candidate.v0" => "invariant.candidate.v0",
         "invariant.self.v0" => "invariant.self.v0",
         "invariant.user.v0" => "invariant.user.v0",
         "invariant.relationship.v0" => "invariant.relationship.v0",
+        "policy.v0" => "policy.v0",
+        "preference.v0" => "preference.v0",
+        "hypothesis.v0" => "hypothesis.v0",
         "drift.flag.v0" => "drift.flag.v0",
         "drift.contradiction.v0" => "drift.contradiction.v0",
         "drift.merge.v0" => "drift.merge.v0",

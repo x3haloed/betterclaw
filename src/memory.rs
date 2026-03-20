@@ -6,9 +6,14 @@ use serde_json::Value;
 #[serde(rename_all = "snake_case")]
 pub enum MemoryArtifactKind {
     WakePackV0,
+    FactV0,
+    InvariantCandidateV0,
     InvariantSelfV0,
     InvariantUserV0,
     InvariantRelationshipV0,
+    PolicyV0,
+    PreferenceV0,
+    HypothesisV0,
     DriftFlagV0,
     DriftContradictionV0,
     DriftMergeV0,
@@ -19,9 +24,14 @@ impl MemoryArtifactKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::WakePackV0 => "wake_pack.v0",
+            Self::FactV0 => "fact.v0",
+            Self::InvariantCandidateV0 => "invariant.candidate.v0",
             Self::InvariantSelfV0 => "invariant.self.v0",
             Self::InvariantUserV0 => "invariant.user.v0",
             Self::InvariantRelationshipV0 => "invariant.relationship.v0",
+            Self::PolicyV0 => "policy.v0",
+            Self::PreferenceV0 => "preference.v0",
+            Self::HypothesisV0 => "hypothesis.v0",
             Self::DriftFlagV0 => "drift.flag.v0",
             Self::DriftContradictionV0 => "drift.contradiction.v0",
             Self::DriftMergeV0 => "drift.merge.v0",
@@ -40,6 +50,46 @@ pub struct MemoryArtifact {
     pub payload: Value,
     pub citations: Vec<String>,
     pub supersedes_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryInvariantRecord {
+    pub id: String,
+    pub namespace_id: String,
+    pub scope: String,
+    pub claim: String,
+    pub support_excerpt: String,
+    pub falsifier: String,
+    pub status: String,
+    pub fact_ids: Vec<String>,
+    pub supersedes_ids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WakePackRecord {
+    pub id: String,
+    pub namespace_id: String,
+    pub content: String,
+    pub summary: Option<String>,
+    pub invariant_ids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftRecord {
+    pub id: String,
+    pub namespace_id: String,
+    pub kind: String,
+    pub claim: String,
+    pub support_excerpt: Option<String>,
+    pub falsifier: Option<String>,
+    pub fact_ids: Vec<String>,
+    pub citations: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

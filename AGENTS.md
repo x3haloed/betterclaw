@@ -73,6 +73,27 @@ Streaming and non-streaming are separate execution modes and both need deliberat
 - A decode fix is not complete until the payload construction that triggers that mode is checked.
 - If the app can force or override streaming, downstream decode logic must follow the effective payload, not the original request input.
 
+## Codex JSON Schema
+
+Codex `response_format` / `text.format` JSON Schema validation is stricter than it looks. Treat schema changes as provider-compatibility work, not prompt-only work.
+
+Rules:
+
+- Keep schemas simple. Prefer flat object/array shapes over clever `$defs` indirection unless reuse is clearly necessary.
+- Only put fields in `required` when they are truly always present.
+- If a field is optional, do not also require it just because its type includes `null`.
+- For arrays, prefer `"type": "array"` with optional omission. Do not use nullable arrays unless there is a real provider-tested need.
+- Do not assume Codex accepts every JSON Schema shape accepted by other validators or providers.
+- When adding or changing a Codex schema, inspect the exact request payload that BetterClaw emits, not just the Rust-side `json!` source.
+- If Codex returns `invalid_json_schema` / HTTP 400, reduce the schema first before adding complexity back.
+
+Required checks for Codex schema changes:
+
+1. Verify the emitted schema in the recorded trace/request blob.
+2. Run a real Codex request against the changed schema, not just unit tests.
+3. Prefer proving the minimal accepted shape first, then extend carefully.
+4. If a schema works for one response path, review sibling paths for the same constraint.
+
 ## Tests
 
 Prefer paired tests over one-off tests.

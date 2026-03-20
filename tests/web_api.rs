@@ -7,7 +7,6 @@ use tempfile::tempdir;
 use tower::ServiceExt;
 
 use betterclaw::db::Db;
-use betterclaw::memory::{MemoryArtifactKind, NewMemoryArtifact};
 use betterclaw::runtime::Runtime;
 use betterclaw::web;
 
@@ -517,15 +516,12 @@ async fn wake_pack_preview_endpoint_returns_literal_current_block() {
     let (app, runtime) = app_with_runtime().await;
     runtime
         .db()
-        .upsert_memory_artifact(&NewMemoryArtifact {
-            namespace_id: "default".to_string(),
-            kind: MemoryArtifactKind::WakePackV0,
-            source: "test".to_string(),
-            content: "Current wake pack line 1\nline 2".to_string(),
-            payload: serde_json::json!({}),
-            citations: Vec::new(),
-            supersedes_id: None,
-        })
+        .insert_wake_pack_v2(
+            "default",
+            "Current wake pack line 1\nline 2",
+            None,
+            &Vec::new(),
+        )
         .await
         .unwrap();
 

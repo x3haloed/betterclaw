@@ -634,6 +634,14 @@ impl Runtime {
         exchange: &ModelExchangeResult,
     ) -> Result<Option<CompressorOutput>, RuntimeError> {
         let primary_content = exchange.content.as_deref();
+        tracing::info!(
+            target: "betterclaw::memory",
+            kind = "compressor_primary_attempt",
+            thread_id = %thread.id,
+            turn_id = %turn.id,
+            engine = %engine.kind_name(),
+            "starting primary compressor parse/validation"
+        );
         let parse_error = match primary_content {
             Some(content) => match parse_compressor_output(content) {
                 Ok(parsed) if !parsed.wake_pack.trim().is_empty() => return Ok(Some(parsed)),
@@ -642,6 +650,16 @@ impl Runtime {
             },
             None => RuntimeError::ModelParse("compressor returned no content".to_string()),
         };
+
+        tracing::info!(
+            target: "betterclaw::memory",
+            kind = "compressor_primary_parse_failed",
+            thread_id = %thread.id,
+            turn_id = %turn.id,
+            engine = %engine.kind_name(),
+            parse_error = %format!("{}", parse_error),
+            "primary parse failed; attempting one-shot repair"
+        );
 
         let repair_request = build_compressor_repair_request(
             request,
@@ -660,13 +678,60 @@ impl Runtime {
             )
             .await?
         else {
+            tracing::warn!(
+                target: "betterclaw::memory",
+                kind = "compressor_repair_skipped",
+                thread_id = %thread.id,
+                turn_id = %turn.id,
+                engine = %engine.kind_name(),
+                "repair exchange could not be run or recorded"
+            );
             return Ok(None);
         };
+        tracing::info!(
+            target: "betterclaw::memory",
+            kind = "compressor_repair_attempt",
+            thread_id = %thread.id,
+            turn_id = %turn.id,
+            engine = %engine.kind_name(),
+            "repair exchange completed; parsing repair content"
+        );
+
         let Some(repair_content) = repair_exchange.content.as_deref() else {
+            tracing::warn!(
+                target: "betterclaw::memory",
+                kind = "compressor_repair_no_content",
+                thread_id = %thread.id,
+                turn_id = %turn.id,
+                engine = %engine.kind_name(),
+                "repair exchange returned no content"
+            );
             return Ok(None);
         };
-        let parsed = parse_compressor_output(repair_content)?;
+        let parsed = match parse_compressor_output(repair_content) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                tracing::warn!(
+                    target: "betterclaw::memory",
+                    kind = "compressor_repair_parse_failed",
+                    thread_id = %thread.id,
+                    turn_id = %turn.id,
+                    engine = %engine.kind_name(),
+                    parse_error = %format!("{}", err),
+                    "repair parse failed; skipping this distill pass"
+                );
+                return Ok(None);
+            }
+        };
         if parsed.wake_pack.trim().is_empty() {
+            tracing::info!(
+                target: "betterclaw::memory",
+                kind = "compressor_repair_empty_wakepack",
+                thread_id = %thread.id,
+                turn_id = %turn.id,
+                engine = %engine.kind_name(),
+                "repair produced empty wake_pack; skipping"
+            );
             return Ok(None);
         }
         Ok(Some(parsed))

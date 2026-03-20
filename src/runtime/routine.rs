@@ -510,9 +510,8 @@ impl Runtime {
                 .await
                 .map_err(RuntimeError::from)?;
             let already_observed = existing.iter().any(|o| {
-                o.citations
-                    .iter()
-                    .any(|c| c == &flag.id || flag.citations.contains(c))
+                let payload_match = o.payload.get("source_drift_item_id").and_then(|v| v.as_str()) == Some(&flag.id);
+                payload_match || o.citations.iter().any(|c| c == &flag.id || flag.citations.contains(c))
             });
             if !already_observed {
                 let severity = if flag.kind == "contradiction" {
@@ -706,5 +705,12 @@ mod tests {
             observations[0].summary,
             "Two recent runtime claims contradict each other."
         );
+
+        // Running it again should not produce a new observation
+        let repeat_observations = runtime
+            .detect_contradictions("default", &[], &RoutineConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(repeat_observations.len(), 0);
     }
 }

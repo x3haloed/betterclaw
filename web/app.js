@@ -301,6 +301,8 @@ function renderSettings(settings) {
   document.getElementById("settings-max-history-turns").value = settings.max_history_turns;
   document.getElementById("settings-stream").checked = settings.stream;
   document.getElementById("settings-allow-tools").checked = settings.allow_tools;
+  document.getElementById("settings-enable-auto-distill").checked = settings.enable_auto_distill;
+  document.getElementById("settings-enable-observations").checked = settings.enable_observations;
 }
 
 function renderWakePackPreview(preview) {
@@ -479,6 +481,8 @@ document.getElementById("settings-form").onsubmit = async (event) => {
     max_history_turns: Number(document.getElementById("settings-max-history-turns").value),
     stream: document.getElementById("settings-stream").checked,
     allow_tools: document.getElementById("settings-allow-tools").checked,
+    enable_auto_distill: document.getElementById("settings-enable-auto-distill").checked,
+    enable_observations: document.getElementById("settings-enable-observations").checked,
   };
   const settings = await request("/api/settings/runtime", {
     method: "PUT",

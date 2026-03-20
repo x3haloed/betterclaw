@@ -109,13 +109,14 @@ impl Tool for WebSearchTool {
 
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
         let request = build_brave_request(&params)?;
-        let api_key = std::env::var(BRAVE_API_KEY_ENV_VAR).map_err(|_| RuntimeError::ToolExecution {
-            tool: "web_search".to_string(),
-            reason: format!(
-                "Brave Search API key not configured. Set {}.",
-                BRAVE_API_KEY_ENV_VAR
-            ),
-        })?;
+        let api_key =
+            std::env::var(BRAVE_API_KEY_ENV_VAR).map_err(|_| RuntimeError::ToolExecution {
+                tool: "web_search".to_string(),
+                reason: format!(
+                    "Brave Search API key not configured. Set {}.",
+                    BRAVE_API_KEY_ENV_VAR
+                ),
+            })?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(BRAVE_SEARCH_TIMEOUT_SECS))
             .build()
@@ -155,17 +156,26 @@ impl Tool for WebSearchTool {
             })?;
 
         let status = response.status();
-        let response_text = response.text().await.map_err(|error| RuntimeError::ToolExecution {
-            tool: "web_search".to_string(),
-            reason: format!("failed to read Brave Search response: {error}"),
-        })?;
+        let response_text = response
+            .text()
+            .await
+            .map_err(|error| RuntimeError::ToolExecution {
+                tool: "web_search".to_string(),
+                reason: format!("failed to read Brave Search response: {error}"),
+            })?;
 
         if !status.is_success() {
             let detail = summarize_http_error_body(&response_text);
             let reason = match status.as_u16() {
-                401 | 403 => format!("Brave Search authentication failed (HTTP {}): {}", status.as_u16(), detail),
+                401 | 403 => format!(
+                    "Brave Search authentication failed (HTTP {}): {}",
+                    status.as_u16(),
+                    detail
+                ),
                 429 => format!("Brave Search rate limit reached (HTTP 429): {}", detail),
-                code if code >= 500 => format!("Brave Search server error (HTTP {}): {}", code, detail),
+                code if code >= 500 => {
+                    format!("Brave Search server error (HTTP {}): {}", code, detail)
+                }
                 code => format!("Brave Search returned HTTP {}: {}", code, detail),
             };
             return Err(RuntimeError::ToolExecution {
@@ -471,8 +481,7 @@ fn normalize_search_lang(value: &str) -> Option<String> {
 fn is_supported_search_lang(value: &str) -> bool {
     matches!(
         value,
-        "ar"
-            | "eu"
+        "ar" | "eu"
             | "bn"
             | "bg"
             | "ca"
@@ -763,8 +772,14 @@ mod tests {
         assert_eq!(result["provider"], "brave");
         assert_eq!(result["result_count"], 1);
         assert_eq!(result["results"][0]["title"], "Rust Async Patterns");
-        assert_eq!(result["results"][0]["url"], "https://example.com/rust-async");
-        assert_eq!(result["results"][0]["description"], "A guide to async Rust.");
+        assert_eq!(
+            result["results"][0]["url"],
+            "https://example.com/rust-async"
+        );
+        assert_eq!(
+            result["results"][0]["description"],
+            "A guide to async Rust."
+        );
         assert_eq!(result["results"][0]["site_name"], "example.com");
         assert_eq!(result["results"][0]["published"], "2 days ago");
 
@@ -778,7 +793,12 @@ mod tests {
     async fn web_search_surfaces_auth_and_http_failures() {
         let app = Router::new().route(
             "/res/v1/web/search",
-            get(|| async { (axum::http::StatusCode::UNAUTHORIZED, Json(json!({"message": "bad key"}))) }),
+            get(|| async {
+                (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    Json(json!({"message": "bad key"})),
+                )
+            }),
         );
         let address = spawn_test_server(app).await;
         unsafe {

@@ -249,7 +249,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(output["entry_count"], json!(1));
-        assert_eq!(output["entries"][0]["entry_id"], json!(format!("turn:{}:assistant", turn.id)));
+        assert_eq!(
+            output["entries"][0]["entry_id"],
+            json!(format!("turn:{}:assistant", turn.id))
+        );
         assert_eq!(
             output["entries"][0]["content"],
             json!("Noted IcePickle is your Discord username.")
@@ -259,7 +262,11 @@ mod tests {
     #[test]
     fn ledger_list_definition_marks_it_as_a_browse_tool() {
         let definition = LedgerListTool.definition();
-        assert!(definition.description.contains("Browse recent ledger entries"));
+        assert!(
+            definition
+                .description
+                .contains("Browse recent ledger entries")
+        );
         assert!(definition.description.contains("not to search by content"));
     }
 }

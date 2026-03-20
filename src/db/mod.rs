@@ -68,7 +68,7 @@ impl Db {
             PRAGMA synchronous = NORMAL;
             PRAGMA temp_store = MEMORY;
             PRAGMA foreign_keys = ON;
-            "#
+            "#,
         )
         .await?;
         conn.execute_batch(

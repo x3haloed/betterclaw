@@ -60,10 +60,7 @@ impl ExchangeAccumulator {
                 merge_tool_call_text(&mut self.ensure_tool_call(key, None).name, text);
             }
             ModelEvent::ToolCallArgumentsDelta { key, text } => {
-                merge_tool_call_text(
-                    &mut self.ensure_tool_call(key, None).arguments_text,
-                    text,
-                );
+                merge_tool_call_text(&mut self.ensure_tool_call(key, None).arguments_text, text);
             }
             ModelEvent::ToolCallFinished { key } => {
                 self.ensure_tool_call(key, None).finished = true;
@@ -89,7 +86,8 @@ impl ExchangeAccumulator {
                 (call.id.as_deref() == Some(id_value)).then(|| existing_key.clone())
             })
         {
-            self.tool_aliases.insert(canonical_key.clone(), existing_key);
+            self.tool_aliases
+                .insert(canonical_key.clone(), existing_key);
         }
 
         let canonical_key = self

@@ -80,10 +80,7 @@ impl Runtime {
         let attachments_json = if event.attachments.is_empty() {
             None
         } else {
-            Some(
-                serde_json::to_string(&event.attachments)
-                    .unwrap_or_else(|_| "[]".to_string()),
-            )
+            Some(serde_json::to_string(&event.attachments).unwrap_or_else(|_| "[]".to_string()))
         };
         let turn = self
             .db
@@ -212,7 +209,9 @@ impl Runtime {
                     synthetic_summary_prompt_sent = true;
                     conversation.push(ModelMessage {
                         role: "user".to_string(),
-                        content: Some(MessageContent::Text(SYNTHETIC_TOOL_SUMMARY_PROMPT.to_string())),
+                        content: Some(MessageContent::Text(
+                            SYNTHETIC_TOOL_SUMMARY_PROMPT.to_string(),
+                        )),
                         tool_calls: None,
                         tool_call_id: None,
                     });
@@ -382,7 +381,9 @@ impl Runtime {
             if let Some(assistant_message) = prior_turn.assistant_message.clone() {
                 messages.push(ModelMessage {
                     role: "assistant".to_string(),
-                    content: Some(MessageContent::Text(strip_reasoning_tags(&assistant_message))),
+                    content: Some(MessageContent::Text(strip_reasoning_tags(
+                        &assistant_message,
+                    ))),
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -751,7 +752,13 @@ impl Runtime {
             return Ok(thread);
         }
         self.db
-            .create_thread(agent_id, channel, external_thread_id, "Recovered Thread", None)
+            .create_thread(
+                agent_id,
+                channel,
+                external_thread_id,
+                "Recovered Thread",
+                None,
+            )
             .await
             .map_err(RuntimeError::from)
     }
@@ -941,7 +948,10 @@ impl Runtime {
                 tool_call,
                 arguments,
                 ..
-            } => Some(self.tools.execute(&tool_call.name, arguments.clone(), &tool_context)),
+            } => Some(
+                self.tools
+                    .execute(&tool_call.name, arguments.clone(), &tool_context),
+            ),
             PendingToolExecution::Immediate { .. } => None,
         });
         let outputs = join_all(executions).await;
@@ -1204,7 +1214,10 @@ fn push_visible_reply_segment(segments: &mut Vec<String>, text: &str) {
     let Some(sanitized) = normalize_visible_reply_segment(text) else {
         return;
     };
-    if segments.last().is_some_and(|existing| existing == &sanitized) {
+    if segments
+        .last()
+        .is_some_and(|existing| existing == &sanitized)
+    {
         return;
     }
     segments.push(sanitized);

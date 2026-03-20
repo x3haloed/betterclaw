@@ -301,7 +301,9 @@ impl ModelRunner for StubModelEngine {
                 accumulator.push(&event);
                 events.push(event);
             }
-        } else if user_messages.iter().any(|message| message == "/tool-summary-repair")
+        } else if user_messages
+            .iter()
+            .any(|message| message == "/tool-summary-repair")
             && !tool_messages.is_empty()
         {
             response_body = json!({

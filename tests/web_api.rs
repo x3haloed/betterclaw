@@ -7,6 +7,7 @@ use tempfile::tempdir;
 use tower::ServiceExt;
 
 use betterclaw::db::Db;
+use betterclaw::memory::{MemoryArtifactKind, NewMemoryArtifact};
 use betterclaw::runtime::Runtime;
 use betterclaw::web;
 
@@ -509,6 +510,46 @@ async fn retention_settings_and_prune_endpoint_replace_old_blobs() {
         .unwrap();
     let detail: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(detail["request_body"]["pruned"], true);
+}
+
+#[tokio::test]
+async fn wake_pack_preview_endpoint_returns_literal_current_block() {
+    let (app, runtime) = app_with_runtime().await;
+    runtime
+        .db()
+        .upsert_memory_artifact(&NewMemoryArtifact {
+            namespace_id: "default".to_string(),
+            kind: MemoryArtifactKind::WakePackV0,
+            source: "test".to_string(),
+            content: "Current wake pack line 1\nline 2".to_string(),
+            payload: serde_json::json!({}),
+            citations: Vec::new(),
+            supersedes_id: None,
+        })
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/runtime/wake-pack-preview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let preview: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(preview["enabled"], true);
+    assert_eq!(
+        preview["content"],
+        "<wake_pack>\nCurrent wake pack line 1\nline 2\n</wake_pack>"
+    );
 }
 
 #[tokio::test]

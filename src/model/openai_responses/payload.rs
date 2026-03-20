@@ -54,13 +54,11 @@ fn content_to_response_items(role: &str, content: &MessageContent) -> Vec<Respon
                     Some(response_text_item(role, text.clone()))
                 }
                 ContentPart::Text { .. } => None,
-                ContentPart::ImageUrl { image_url } => {
-                    Some(ResponseContentItem::ImageUrl {
-                        image_url: ResponseImageUrl {
-                            url: image_url.url.clone(),
-                        },
-                    })
-                }
+                ContentPart::ImageUrl { image_url } => Some(ResponseContentItem::ImageUrl {
+                    image_url: ResponseImageUrl {
+                        url: image_url.url.clone(),
+                    },
+                }),
             })
             .collect(),
     }

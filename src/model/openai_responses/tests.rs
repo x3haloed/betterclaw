@@ -239,7 +239,9 @@ mod tests {
         let arg_deltas: Vec<_> = events
             .iter()
             .filter_map(|event| match event {
-                ModelEvent::ToolCallArgumentsDelta { key, text } => Some((key.as_str(), text.as_str())),
+                ModelEvent::ToolCallArgumentsDelta { key, text } => {
+                    Some((key.as_str(), text.as_str()))
+                }
                 _ => None,
             })
             .collect();

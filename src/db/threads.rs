@@ -38,11 +38,17 @@ impl Db {
         )
         .await?;
         // Always return the row — either ours or the one that beat us.
-        if let Some(thread) = self.find_thread(agent_id, channel, external_thread_id).await? {
+        if let Some(thread) = self
+            .find_thread(agent_id, channel, external_thread_id)
+            .await?
+        {
             Ok(thread)
         } else {
             // Should never happen after INSERT OR IGNORE, but guard anyway.
-            anyhow::bail!("create_thread: row missing after INSERT OR IGNORE for {}", external_thread_id)
+            anyhow::bail!(
+                "create_thread: row missing after INSERT OR IGNORE for {}",
+                external_thread_id
+            )
         }
     }
 

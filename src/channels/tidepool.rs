@@ -8,8 +8,8 @@ use serde_json::json;
 use crate::channel::{ChannelCursor, InboundEvent};
 use crate::runtime::Runtime;
 use crate::tidepool::{
-    TidepoolClient, TidepoolConfig, TidepoolInboundContext, TidepoolInboundMessage, clear_shared_client,
-    connect_shared_client,
+    TidepoolClient, TidepoolConfig, TidepoolInboundContext, TidepoolInboundMessage,
+    clear_shared_client, connect_shared_client,
 };
 
 /// Initial reconnect delay. Doubled on each consecutive failure up to MAX_RECONNECT_DELAY.
@@ -207,8 +207,7 @@ impl TidepoolChannel {
                     message_id = message.message_id,
                     "Tidepool inbound turn failed — notifying model, then advancing cursor"
                 );
-                self
-                    .notify_model_of_inbound_failure(&message, &metadata, &error_text)
+                self.notify_model_of_inbound_failure(&message, &metadata, &error_text)
                     .await;
                 self.runtime
                     .db()
@@ -240,9 +239,7 @@ impl TidepoolChannel {
             );
             if let Err(error) = client
                 .post_message(message.domain_id, outbound, Some(message.message_id))
-                .with_context(|| {
-                    format!("posting reply to Tidepool domain {}", message.domain_id)
-                })
+                .with_context(|| format!("posting reply to Tidepool domain {}", message.domain_id))
             {
                 tracing::error!(
                     error = %error,
@@ -417,8 +414,8 @@ fn next_backoff(current: std::time::Duration) -> std::time::Duration {
 mod tests {
     use super::{
         CONNECTION_HEALTHY_THRESHOLD, INITIAL_RECONNECT_DELAY, MAX_RECONNECT_DELAY,
-        cursor_seed_value, is_self_echo, next_backoff, render_inbound_content,
-        tidepool_thread_key, unsubscribe_tool_call,
+        cursor_seed_value, is_self_echo, next_backoff, render_inbound_content, tidepool_thread_key,
+        unsubscribe_tool_call,
     };
     use crate::tidepool::{TidepoolInboundContext, TidepoolInboundMessage};
     use std::collections::HashMap;

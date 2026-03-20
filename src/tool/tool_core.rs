@@ -277,7 +277,10 @@ mod tests {
         let context = test_context(dir.path()).await;
         let tool = NoOpTool;
         let output = tool
-            .call(json!({"reason":"No reply needed for this coordination ping."}), &context)
+            .call(
+                json!({"reason":"No reply needed for this coordination ping."}),
+                &context,
+            )
             .await
             .unwrap();
         assert_eq!(output["status"], json!("no_op"));

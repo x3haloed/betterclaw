@@ -94,7 +94,9 @@ impl MessageContent {
     pub fn has_images(&self) -> bool {
         match self {
             Self::Text(_) => false,
-            Self::Parts(parts) => parts.iter().any(|p| matches!(p, ContentPart::ImageUrl { .. })),
+            Self::Parts(parts) => parts
+                .iter()
+                .any(|p| matches!(p, ContentPart::ImageUrl { .. })),
         }
     }
 }

@@ -178,13 +178,15 @@ fn stream_tool_call_key(frame: &Value, item: Option<&Value>) -> Option<String> {
         .and_then(Value::as_u64)
         .map(|index| format!("output_index:{index}"))
         .or_else(|| {
-            frame.get("call_id")
+            frame
+                .get("call_id")
                 .or_else(|| item.and_then(|value| value.get("call_id")))
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
         })
         .or_else(|| {
-            frame.get("item_id")
+            frame
+                .get("item_id")
                 .or_else(|| item.and_then(|value| value.get("id")))
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
@@ -234,7 +236,11 @@ fn append_output_item_events(
                         .and_then(Value::as_str)
                         .map(ToString::to_string)
                 })
-                .or_else(|| item.get("id").and_then(Value::as_str).map(ToString::to_string))
+                .or_else(|| {
+                    item.get("id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string)
+                })
                 .unwrap_or_else(|| "function_call".to_string());
             events.push(ModelEvent::ToolCallStarted {
                 key: key.clone(),

@@ -51,9 +51,7 @@ impl Db {
         limit: i64,
     ) -> Result<Vec<Observation>> {
         let conn = self.connect().await?;
-        let kind_value = kind
-            .map(|k| k.as_str().to_string())
-            .unwrap_or_default();
+        let kind_value = kind.map(|k| k.as_str().to_string()).unwrap_or_default();
         let mut rows = conn
             .query(
                 "SELECT id, namespace_id, kind, severity, summary, detail, citations_json, payload_json, resolved, created_at, updated_at FROM observations WHERE namespace_id = ? AND (? = '' OR kind = ?) AND (? = 0 OR resolved = 0) ORDER BY created_at DESC LIMIT ?",
@@ -71,8 +69,14 @@ impl Db {
             observations.push(Observation {
                 id: row.get::<String>(0)?,
                 namespace_id: row.get::<String>(1)?,
-                kind: row.get::<String>(2)?.parse().map_err(|e: String| anyhow::anyhow!(e))?,
-                severity: row.get::<String>(3)?.parse().map_err(|e: String| anyhow::anyhow!(e))?,
+                kind: row
+                    .get::<String>(2)?
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!(e))?,
+                severity: row
+                    .get::<String>(3)?
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!(e))?,
                 summary: row.get::<String>(4)?,
                 detail: row.get::<Option<String>>(5)?,
                 citations: serde_json::from_str(&row.get::<String>(6)?)?,
@@ -122,13 +126,17 @@ impl Db {
     }
 
     pub async fn observation_summary(&self, namespace_id: &str) -> Result<ObservationSummary> {
-        let observations = self.list_observations(namespace_id, None, false, 512).await?;
+        let observations = self
+            .list_observations(namespace_id, None, false, 512)
+            .await?;
         let mut by_kind = std::collections::HashMap::new();
         let mut by_severity = std::collections::HashMap::new();
         let mut unresolved = 0;
         for obs in &observations {
             *by_kind.entry(obs.kind.as_str().to_string()).or_insert(0) += 1;
-            *by_severity.entry(obs.severity.as_str().to_string()).or_insert(0) += 1;
+            *by_severity
+                .entry(obs.severity.as_str().to_string())
+                .or_insert(0) += 1;
             if !obs.resolved {
                 unresolved += 1;
             }

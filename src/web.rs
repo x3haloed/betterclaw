@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -9,7 +10,6 @@ use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use anyhow::anyhow;
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::channel::InboundEvent;
@@ -151,9 +151,7 @@ async fn update_runtime_settings(
         inject_observations: payload
             .inject_observations
             .unwrap_or(current.inject_observations),
-        inject_skills: payload
-            .inject_skills
-            .unwrap_or(current.inject_skills),
+        inject_skills: payload.inject_skills.unwrap_or(current.inject_skills),
         model_roles: payload.model_roles.unwrap_or(current.model_roles),
         created_at: current.created_at,
         updated_at: current.updated_at,
@@ -286,12 +284,9 @@ async fn post_message(
     let thread_id_for_task = thread_id.clone();
     let content = payload.content;
     let outcome = tokio::spawn(async move {
-        runtime_for_task.handle_inbound(InboundEvent::web(
-            "default",
-            &thread_id_for_task,
-            content,
-        ))
-        .await
+        runtime_for_task
+            .handle_inbound(InboundEvent::web("default", &thread_id_for_task, content))
+            .await
     })
     .await
     .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
@@ -328,9 +323,10 @@ async fn replay_turn(
 ) -> Result<Json<ReplayTurnResponse>, ApiError> {
     let runtime_for_task = runtime.clone();
     let turn_id_for_task = turn_id.clone();
-    let outcome = tokio::spawn(async move { runtime_for_task.replay_turn(&turn_id_for_task).await })
-        .await
-        .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
+    let outcome =
+        tokio::spawn(async move { runtime_for_task.replay_turn(&turn_id_for_task).await })
+            .await
+            .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
     Ok(Json(ReplayTurnResponse {
         thread_id: outcome.thread.id,
         turn_id: outcome.turn_id,
@@ -410,8 +406,7 @@ async fn api_status(State(runtime): State<Arc<Runtime>>) -> Result<Json<Value>, 
     let thread_count = threads.len();
 
     // Agent identity from env
-    let agent_id =
-        std::env::var("TIDEPOOL_AGENT_ID").unwrap_or_else(|_| "default".to_string());
+    let agent_id = std::env::var("TIDEPOOL_AGENT_ID").unwrap_or_else(|_| "default".to_string());
     let handle = std::env::var("TIDEPOOL_HANDLE").ok();
     let tidepool_database = std::env::var("TIDEPOOL_DATABASE").ok();
 

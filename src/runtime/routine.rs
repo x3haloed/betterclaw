@@ -32,9 +32,7 @@ impl Runtime {
             }
         }
 
-        let entries = self
-            .normalized_entries_for_namespace(namespace_id)
-            .await?;
+        let entries = self.normalized_entries_for_namespace(namespace_id).await?;
         let recent = if entries.len() > config.max_entries {
             &entries[entries.len() - config.max_entries..]
         } else {
@@ -108,15 +106,20 @@ impl Runtime {
         // Tension: tool chain without final_message
         let tool_only_turns: std::collections::HashSet<_> = entries
             .iter()
-            .filter(|e| matches!(e.kind, LedgerEntryKind::ToolCall | LedgerEntryKind::ToolResult))
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    LedgerEntryKind::ToolCall | LedgerEntryKind::ToolResult
+                )
+            })
             .map(|e| e.turn_id.clone())
             .collect();
         for turn_id in &tool_only_turns {
             if !turns_with_final_message.contains(turn_id) {
                 // Check if there's an assistant turn after the tools (indicating completion)
-                let has_assistant_after = entries.iter().any(|e| {
-                    e.turn_id == *turn_id && matches!(e.kind, LedgerEntryKind::AgentTurn)
-                });
+                let has_assistant_after = entries
+                    .iter()
+                    .any(|e| e.turn_id == *turn_id && matches!(e.kind, LedgerEntryKind::AgentTurn));
                 if !has_assistant_after {
                     let citations: Vec<String> = entries
                         .iter()
@@ -125,7 +128,9 @@ impl Runtime {
                         .collect();
                     let tool_names: Vec<String> = entries
                         .iter()
-                        .filter(|e| e.turn_id == *turn_id && matches!(e.kind, LedgerEntryKind::ToolCall))
+                        .filter(|e| {
+                            e.turn_id == *turn_id && matches!(e.kind, LedgerEntryKind::ToolCall)
+                        })
                         .filter_map(|e| {
                             e.payload
                                 .get("tool_name")
@@ -171,13 +176,8 @@ impl Runtime {
                 .map_err(RuntimeError::from)?
                 .iter()
                 .any(|o| {
-                    o.payload
-                        .get("turn_id")
-                        .and_then(|v| v.as_str())
-                        == Some(turn_id.as_str())
-                        && o.payload
-                            .get("tension_type")
-                            .and_then(|v| v.as_str())
+                    o.payload.get("turn_id").and_then(|v| v.as_str()) == Some(turn_id.as_str())
+                        && o.payload.get("tension_type").and_then(|v| v.as_str())
                             == Some("awaiting_user")
                 });
             if !observation_exists {
@@ -255,11 +255,7 @@ impl Runtime {
 
         for entry in entries {
             if entry.kind == LedgerEntryKind::Error {
-                if let Some(tool_name) = entry
-                    .payload
-                    .get("tool_name")
-                    .and_then(|v| v.as_str())
-                {
+                if let Some(tool_name) = entry.payload.get("tool_name").and_then(|v| v.as_str()) {
                     *error_counts.entry(tool_name.to_string()).or_insert(0) += 1;
                     error_entries
                         .entry(tool_name.to_string())
@@ -291,9 +287,7 @@ impl Runtime {
                     .await
                     .map_err(RuntimeError::from)?;
                 let already_observed = existing.iter().any(|o| {
-                    o.payload
-                        .get("pattern_key")
-                        .and_then(|v| v.as_str())
+                    o.payload.get("pattern_key").and_then(|v| v.as_str())
                         == Some(pattern_key.as_str())
                 });
 
@@ -318,7 +312,10 @@ impl Runtime {
                                     "Recent errors:\n{}",
                                     error_samples
                                         .iter()
-                                        .map(|s| format!("- {}", s.chars().take(120).collect::<String>()))
+                                        .map(|s| format!(
+                                            "- {}",
+                                            s.chars().take(120).collect::<String>()
+                                        ))
                                         .collect::<Vec<_>>()
                                         .join("\n")
                                 )),
@@ -386,10 +383,7 @@ impl Runtime {
                     .await
                     .map_err(RuntimeError::from)?;
                 let already_observed = existing.iter().any(|o| {
-                    o.payload
-                        .get("topic")
-                        .and_then(|v| v.as_str())
-                        == Some(topic.as_str())
+                    o.payload.get("topic").and_then(|v| v.as_str()) == Some(topic.as_str())
                 });
 
                 if !already_observed {
@@ -447,9 +441,7 @@ impl Runtime {
                     .await
                     .map_err(RuntimeError::from)?;
                 let already_observed = existing.iter().any(|o| {
-                    o.payload
-                        .get("hypothesis_type")
-                        .and_then(|v| v.as_str())
+                    o.payload.get("hypothesis_type").and_then(|v| v.as_str())
                         == Some("high_tool_to_response_ratio")
                 });
                 if !already_observed {
@@ -507,7 +499,11 @@ impl Runtime {
             .map_err(RuntimeError::from)?;
         let drift_contradictions = self
             .db
-            .list_memory_artifacts(namespace_id, Some(MemoryArtifactKind::DriftContradictionV0), 16)
+            .list_memory_artifacts(
+                namespace_id,
+                Some(MemoryArtifactKind::DriftContradictionV0),
+                16,
+            )
             .await
             .map_err(RuntimeError::from)?;
 
@@ -524,10 +520,7 @@ impl Runtime {
                     .any(|c| c == &flag.id || flag.citations.contains(c))
             });
             if !already_observed {
-                let severity = if matches!(
-                    flag.kind,
-                    MemoryArtifactKind::DriftContradictionV0
-                ) {
+                let severity = if matches!(flag.kind, MemoryArtifactKind::DriftContradictionV0) {
                     Severity::High
                 } else {
                     Severity::Medium
@@ -540,10 +533,7 @@ impl Runtime {
                             kind: ObservationKind::Contradiction,
                             severity,
                             summary: flag.content.clone(),
-                            detail: Some(format!(
-                                "Source: compressor ({})",
-                                flag.kind.as_str()
-                            )),
+                            detail: Some(format!("Source: compressor ({})", flag.kind.as_str())),
                             citations: flag.citations.clone(),
                             payload: json!({
                                 "source_artifact_id": flag.id,
@@ -584,7 +574,8 @@ impl Runtime {
             return Ok(None);
         }
 
-        let mut block = String::from("<observations>\nActive observations from routine analysis:\n");
+        let mut block =
+            String::from("<observations>\nActive observations from routine analysis:\n");
         for obs in &observations {
             let kind_label = obs.kind.as_str();
             let sev_label = obs.severity.as_str();
@@ -601,17 +592,15 @@ impl Runtime {
 /// Compute word frequency across texts, filtering stop words and short tokens.
 fn compute_word_frequency(texts: &[String], min_length: usize) -> Vec<(String, usize)> {
     let stop_words: std::collections::HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "can", "shall", "to", "of", "in", "for",
-        "on", "with", "at", "by", "from", "as", "into", "through", "during",
-        "before", "after", "above", "below", "between", "and", "but", "or",
-        "nor", "not", "so", "yet", "both", "either", "neither", "each",
-        "every", "all", "any", "few", "more", "most", "other", "some", "such",
-        "no", "only", "own", "same", "than", "too", "very", "just", "about",
-        "this", "that", "these", "those", "it", "its", "i", "me", "my", "we",
-        "our", "you", "your", "he", "him", "his", "she", "her", "they", "them",
-        "their", "what", "which", "who", "whom", "how", "when", "where", "why",
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "can", "shall",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "through",
+        "during", "before", "after", "above", "below", "between", "and", "but", "or", "nor", "not",
+        "so", "yet", "both", "either", "neither", "each", "every", "all", "any", "few", "more",
+        "most", "other", "some", "such", "no", "only", "own", "same", "than", "too", "very",
+        "just", "about", "this", "that", "these", "those", "it", "its", "i", "me", "my", "we",
+        "our", "you", "your", "he", "him", "his", "she", "her", "they", "them", "their", "what",
+        "which", "who", "whom", "how", "when", "where", "why",
     ]
     .iter()
     .copied()

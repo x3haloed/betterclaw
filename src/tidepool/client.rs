@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
-use spacetimedb_sdk::{DbContext as _, Table as _};
 use serde_json::Value;
+use spacetimedb_sdk::{DbContext as _, Table as _};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::generated::tidepool::{
@@ -131,9 +131,9 @@ fn build_account_lookup_sql(handle: Option<&str>, account_id: Option<u64>) -> St
 }
 
 fn parse_account_rows(body: &Value) -> Result<Vec<AccountEntry>> {
-    let statements = body
-        .as_array()
-        .ok_or_else(|| anyhow!("expected Tidepool SQL response to be an array of statement results"))?;
+    let statements = body.as_array().ok_or_else(|| {
+        anyhow!("expected Tidepool SQL response to be an array of statement results")
+    })?;
     let first = statements
         .first()
         .ok_or_else(|| anyhow!("Tidepool SQL response contained no statement results"))?;
@@ -144,7 +144,9 @@ fn parse_account_rows(body: &Value) -> Result<Vec<AccountEntry>> {
 
     let mut entries = Vec::new();
     for row in rows {
-        let arr = row.as_array().ok_or_else(|| anyhow!("expected SQL row to be an array"))?;
+        let arr = row
+            .as_array()
+            .ok_or_else(|| anyhow!("expected SQL row to be an array"))?;
         if arr.len() < 3 {
             continue;
         }
@@ -401,7 +403,11 @@ impl TidepoolClient {
             .context("removing Tidepool domain member")
     }
 
-    pub fn create_dm(&self, recipient_account_ids: Vec<u64>, title: impl Into<String>) -> Result<()> {
+    pub fn create_dm(
+        &self,
+        recipient_account_ids: Vec<u64>,
+        title: impl Into<String>,
+    ) -> Result<()> {
         self.inner
             .connection
             .reducers
@@ -533,11 +539,12 @@ impl TidepoolClient {
     }
 
     async fn subscription_state_via_http(&self, domain_id: u64) -> Result<bool> {
-        let sql = format!("SELECT domain_id FROM my_subscriptions WHERE domain_id = {domain_id} LIMIT 1");
+        let sql =
+            format!("SELECT domain_id FROM my_subscriptions WHERE domain_id = {domain_id} LIMIT 1");
         let body = self.run_http_sql(&sql).await?;
-        let statements = body
-            .as_array()
-            .ok_or_else(|| anyhow!("expected Tidepool SQL response to be an array of statement results"))?;
+        let statements = body.as_array().ok_or_else(|| {
+            anyhow!("expected Tidepool SQL response to be an array of statement results")
+        })?;
         let first = statements
             .first()
             .ok_or_else(|| anyhow!("Tidepool SQL response contained no statement results"))?;
@@ -725,12 +732,8 @@ impl TidepoolClient {
             .my_subscribed_messages()
             .iter()
             .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
-            .filter(|row| {
-                author_account_id.map_or(true, |id| row.author_account_id == id)
-            })
-            .filter(|row| {
-                after_message_id.map_or(true, |after| row.message_id > after)
-            })
+            .filter(|row| author_account_id.map_or(true, |id| row.author_account_id == id))
+            .filter(|row| after_message_id.map_or(true, |after| row.message_id > after))
             .filter(|row| row.body.to_lowercase().contains(&query_lower))
             .map(|row| {
                 let subscription = self
@@ -787,16 +790,17 @@ impl TidepoolClient {
             .iter()
             .filter(|row| domain_id.map_or(true, |id| row.domain_id == id))
         {
-            let entry = activity.entry(row.author_account_id).or_insert_with(|| {
-                AgentPresenceEntry {
-                    account_id: row.author_account_id,
-                    last_message_id: 0,
-                    last_domain_id: 0,
-                    last_domain_title: String::new(),
-                    message_count: 0,
-                    active_domain_ids: Vec::new(),
-                }
-            });
+            let entry =
+                activity
+                    .entry(row.author_account_id)
+                    .or_insert_with(|| AgentPresenceEntry {
+                        account_id: row.author_account_id,
+                        last_message_id: 0,
+                        last_domain_id: 0,
+                        last_domain_title: String::new(),
+                        message_count: 0,
+                        active_domain_ids: Vec::new(),
+                    });
 
             entry.message_count += 1;
             if row.message_id > entry.last_message_id {
@@ -1070,7 +1074,7 @@ fn register_callbacks(
                 author_handle: row.author_handle.clone(),
                 body: row.body.clone(),
                 reply_to_message_id: row.reply_to_message_id,
-                    created_at_micros: row.created_at.to_micros_since_unix_epoch(),
+                created_at_micros: row.created_at.to_micros_since_unix_epoch(),
             };
             let _ = message_tx.send(TidepoolClientEvent::Message(message));
         });
@@ -1164,7 +1168,8 @@ fn parse_bool_env(name: &str) -> bool {
 pub fn body_mentions_handle(body: &str, handle: &str) -> bool {
     let handle_lower = handle.to_ascii_lowercase();
     body.split_whitespace().any(|word| {
-        let stripped = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '@' && c != '_' && c != '-');
+        let stripped =
+            word.trim_matches(|c: char| !c.is_alphanumeric() && c != '@' && c != '_' && c != '-');
         let mention = stripped.strip_prefix('@').unwrap_or("");
         mention.to_ascii_lowercase() == handle_lower
     })
@@ -1176,7 +1181,10 @@ mod tests {
 
     #[test]
     fn mention_matches_simple_handle() {
-        assert!(body_mentions_handle("hey @buzz can you check this?", "buzz"));
+        assert!(body_mentions_handle(
+            "hey @buzz can you check this?",
+            "buzz"
+        ));
         assert!(body_mentions_handle("@horus please review", "horus"));
         assert!(body_mentions_handle("ping @chip", "chip"));
     }
@@ -1269,8 +1277,7 @@ mod tests {
 
         let err = parse_account_rows(&body).expect_err("legacy shape should fail");
         assert!(
-            err.to_string()
-                .contains("array of statement results"),
+            err.to_string().contains("array of statement results"),
             "unexpected error: {err}"
         );
     }

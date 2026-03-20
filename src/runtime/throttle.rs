@@ -38,7 +38,9 @@ impl ProviderThrottle {
 
     pub(crate) async fn arm(&self, retry_after: Option<Duration>) -> Duration {
         let mut state = self.state.lock().await;
-        let wait = retry_after.unwrap_or(state.next_backoff).max(state.next_backoff);
+        let wait = retry_after
+            .unwrap_or(state.next_backoff)
+            .max(state.next_backoff);
         state.next_backoff = wait.checked_mul(2).unwrap_or(Duration::MAX);
         let now = tokio::time::Instant::now();
         let candidate = now + wait;
@@ -69,30 +71,45 @@ mod tests {
     async fn repeated_retry_after_windows_escalate_backoff_floor() {
         let throttle = ProviderThrottle::new(Duration::from_secs(1));
 
-        assert_eq!(throttle.arm(Some(Duration::from_secs(1))).await, Duration::from_secs(1));
+        assert_eq!(
+            throttle.arm(Some(Duration::from_secs(1))).await,
+            Duration::from_secs(1)
+        );
         {
             let mut state = throttle.state.lock().await;
             assert_eq!(state.next_backoff, Duration::from_secs(2));
             state.blocked_until = None;
         }
 
-        assert_eq!(throttle.arm(Some(Duration::from_secs(1))).await, Duration::from_secs(2));
+        assert_eq!(
+            throttle.arm(Some(Duration::from_secs(1))).await,
+            Duration::from_secs(2)
+        );
         {
             let mut state = throttle.state.lock().await;
             assert_eq!(state.next_backoff, Duration::from_secs(4));
             state.blocked_until = None;
         }
 
-        assert_eq!(throttle.arm(Some(Duration::from_secs(1))).await, Duration::from_secs(4));
+        assert_eq!(
+            throttle.arm(Some(Duration::from_secs(1))).await,
+            Duration::from_secs(4)
+        );
     }
 
     #[tokio::test]
     async fn success_resets_backoff_floor() {
         let throttle = ProviderThrottle::new(Duration::from_secs(1));
 
-        assert_eq!(throttle.arm(Some(Duration::from_secs(2))).await, Duration::from_secs(2));
+        assert_eq!(
+            throttle.arm(Some(Duration::from_secs(2))).await,
+            Duration::from_secs(2)
+        );
         throttle.note_success().await;
 
-        assert_eq!(throttle.arm(Some(Duration::from_secs(1))).await, Duration::from_secs(1));
+        assert_eq!(
+            throttle.arm(Some(Duration::from_secs(1))).await,
+            Duration::from_secs(1)
+        );
     }
 }

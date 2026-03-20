@@ -223,7 +223,9 @@ pub fn perform_update(do_exec: bool) -> Result<UpdateStatus> {
             build_output: "(see build logs)".to_string(),
             elapsed_ms: elapsed,
             will_exec: true,
-            message: format!("Build succeeded in {elapsed}ms. Process will exec into new binary in 2 seconds."),
+            message: format!(
+                "Build succeeded in {elapsed}ms. Process will exec into new binary in 2 seconds."
+            ),
         })
     } else {
         Ok(UpdateStatus {
@@ -245,6 +247,9 @@ mod tests {
     fn detect_project_root_from_env() {
         // Should find Cargo.toml in the default location
         let root = detect_project_root();
-        assert!(root.join("Cargo.toml").exists(), "project root must contain Cargo.toml");
+        assert!(
+            root.join("Cargo.toml").exists(),
+            "project root must contain Cargo.toml"
+        );
     }
 }

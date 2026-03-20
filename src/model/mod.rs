@@ -25,6 +25,6 @@ pub use trace::{RawFrame, RawModelTrace, TraceBlob, TraceDetail, TraceOutcome};
 pub use transport::{AccumulationMode, ReasoningMode, TransportKind};
 pub use types::{
     ContentPart, ImageUrl, MessageContent, ModelEngine, ModelEngineError, ModelExchangeRequest,
-    ModelExchangeResult, ModelMessage, ModelRunner, ModelToolCallMessage,
-    ModelToolFunctionMessage, ModelUsage, ReducedToolCall,
+    ModelExchangeResult, ModelMessage, ModelRunner, ModelToolCallMessage, ModelToolFunctionMessage,
+    ModelUsage, ReducedToolCall,
 };

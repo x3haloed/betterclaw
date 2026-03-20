@@ -147,11 +147,14 @@ impl Tool for TidepoolMyAccountTool {
 
     async fn call(&self, _params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
         let client = shared_tidepool_client("tidepool_my_account").await?;
-        let account = client.account().ok_or_else(|| RuntimeError::ToolExecution {
-            tool: "tidepool_my_account".to_string(),
-            reason: "Tidepool channel is active but no account is visible on the shared connection"
-                .to_string(),
-        })?;
+        let account = client
+            .account()
+            .ok_or_else(|| RuntimeError::ToolExecution {
+                tool: "tidepool_my_account".to_string(),
+                reason:
+                    "Tidepool channel is active but no account is visible on the shared connection"
+                        .to_string(),
+            })?;
         let bootstrap = client.bootstrap_outcome();
         Ok(json!({
             "account_id": account.account_id,
@@ -169,7 +172,9 @@ impl Tool for TidepoolListSubscriptionsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tidepool_list_subscriptions".to_string(),
-            description: "List Tidepool domains currently subscribed by the configured BetterClaw account.".to_string(),
+            description:
+                "List Tidepool domains currently subscribed by the configured BetterClaw account."
+                    .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {},
@@ -220,12 +225,9 @@ impl Tool for TidepoolSubscribeDomainTool {
 
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
         let domain_id = require_u64(&params, "tidepool_subscribe_domain", "domain_id")?;
-        let batch_window_seconds = optional_u32(
-            &params,
-            "tidepool_subscribe_domain",
-            "batch_window_seconds",
-        )?
-        .unwrap_or(DEFAULT_SUBSCRIBE_BATCH_WINDOW_SECONDS);
+        let batch_window_seconds =
+            optional_u32(&params, "tidepool_subscribe_domain", "batch_window_seconds")?
+                .unwrap_or(DEFAULT_SUBSCRIBE_BATCH_WINDOW_SECONDS);
         let client = shared_tidepool_client("tidepool_subscribe_domain").await?;
         let subscriptions = client
             .subscribe_domain(domain_id, batch_window_seconds)
@@ -247,7 +249,8 @@ impl Tool for TidepoolUnsubscribeDomainTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tidepool_unsubscribe_domain".to_string(),
-            description: "Remove the configured Tidepool account from a subscribed domain.".to_string(),
+            description: "Remove the configured Tidepool account from a subscribed domain."
+                .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -286,7 +289,9 @@ impl Tool for TidepoolPostMessageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tidepool_post_message".to_string(),
-            description: "Post a message into a Tidepool domain using the configured BetterClaw account.".to_string(),
+            description:
+                "Post a message into a Tidepool domain using the configured BetterClaw account."
+                    .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -413,12 +418,9 @@ impl Tool for TidepoolCreateDomainTool {
         };
         let slug = require_string(&params, "tidepool_create_domain", "slug")?;
         let title = require_string(&params, "tidepool_create_domain", "title")?;
-        let message_char_limit = optional_u16(
-            &params,
-            "tidepool_create_domain",
-            "message_char_limit",
-        )?
-        .unwrap_or(DEFAULT_CREATE_DOMAIN_MESSAGE_CHAR_LIMIT);
+        let message_char_limit =
+            optional_u16(&params, "tidepool_create_domain", "message_char_limit")?
+                .unwrap_or(DEFAULT_CREATE_DOMAIN_MESSAGE_CHAR_LIMIT);
         let client = shared_tidepool_client("tidepool_create_domain").await?;
         client
             .create_domain(kind, slug.clone(), title.clone(), message_char_limit)
@@ -475,9 +477,7 @@ impl Tool for TidepoolAddDomainMemberTool {
             other => {
                 return Err(RuntimeError::InvalidToolParameters {
                     tool: "tidepool_add_domain_member".to_string(),
-                    reason: format!(
-                        "field 'role' must be one of 'Owner', 'Member'; got '{other}'"
-                    ),
+                    reason: format!("field 'role' must be one of 'Owner', 'Member'; got '{other}'"),
                 });
             }
         }
@@ -635,7 +635,9 @@ impl Tool for TidepoolCreateDmTool {
     }
 
     fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
-        let ids = params.get("recipient_account_ids").and_then(Value::as_array);
+        let ids = params
+            .get("recipient_account_ids")
+            .and_then(Value::as_array);
         match ids {
             Some(arr) if !arr.is_empty() => {
                 for (i, v) in arr.iter().enumerate() {
@@ -963,7 +965,8 @@ impl Tool for TidepoolAgentHealthTool {
                 last activity time, seconds since last message, and health status \
                 (active/idle/stale/silent). Use this to determine if BUZZ, CHIP, or other \
                 agents are responsive or potentially down. Prefer this over \
-                tidepool_agent_presence when you need health diagnostics.".to_string(),
+                tidepool_agent_presence when you need health diagnostics."
+                .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1028,10 +1031,11 @@ impl Tool for TidepoolGetThreadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tidepool_get_thread".to_string(),
-            description: "Retrieve all replies to a specific Tidepool message. Use this to read the \
+            description:
+                "Retrieve all replies to a specific Tidepool message. Use this to read the \
                 full conversation thread for a message, identified by its message_id. Returns \
                 direct replies ordered by message ID. Optionally filter to a specific domain."
-                .to_string(),
+                    .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1161,7 +1165,13 @@ impl Tool for TidepoolSearchMessagesTool {
             .map(|v| v as usize)
             .unwrap_or(20);
         let client = shared_tidepool_client("tidepool_search_messages").await?;
-        let messages = client.search_messages(&query, domain_id, author_account_id, after_message_id, limit);
+        let messages = client.search_messages(
+            &query,
+            domain_id,
+            author_account_id,
+            after_message_id,
+            limit,
+        );
         Ok(json!({
             "messages": messages.iter().map(|m| json!({
                 "message_id": m.message_id,
@@ -1188,10 +1198,12 @@ impl Tool for TidepoolFindMentionsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "tidepool_find_mentions".to_string(),
-            description: "Find messages that mention a specific agent handle via @handle mentions. \
+            description:
+                "Find messages that mention a specific agent handle via @handle mentions. \
                 Parses message bodies for @handle patterns (case-insensitive). Use this to find \
                 coordination messages directed at you or another agent without scanning all domain \
-                messages. Returns most recent mentions first.".to_string(),
+                messages. Returns most recent mentions first."
+                    .to_string(),
             parameters_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1359,9 +1371,10 @@ impl Tool for TidepoolSystemStatusTool {
     }
 
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
-        let per_domain_limit = optional_u32(&params, "tidepool_system_status", "recent_message_limit")?
-            .map(|v| v as usize)
-            .unwrap_or(5);
+        let per_domain_limit =
+            optional_u32(&params, "tidepool_system_status", "recent_message_limit")?
+                .map(|v| v as usize)
+                .unwrap_or(5);
 
         let client = shared_tidepool_client("tidepool_system_status").await?;
 
@@ -1399,7 +1412,10 @@ impl Tool for TidepoolSystemStatusTool {
                         "last_message_preview".into(),
                         json!(msg.body.chars().take(120).collect::<String>()),
                     );
-                    stats.insert("last_author_account_id".into(), json!(msg.author_account_id));
+                    stats.insert(
+                        "last_author_account_id".into(),
+                        json!(msg.author_account_id),
+                    );
                 }
 
                 if msg.reply_to_message_id.is_some() {
@@ -1564,7 +1580,10 @@ fn parse_done_message(body: &str) -> Option<(String, String)> {
 }
 
 /// Check if a claim has been completed by scanning DONE messages.
-fn is_claim_completed(claim: &TaskClaim, done_messages: &[crate::tidepool::TidepoolInboundMessage]) -> bool {
+fn is_claim_completed(
+    claim: &TaskClaim,
+    done_messages: &[crate::tidepool::TidepoolInboundMessage],
+) -> bool {
     for done_msg in done_messages {
         if done_msg.domain_id != claim.domain_id {
             continue;
@@ -1616,13 +1635,12 @@ impl Tool for TidepoolClaimTaskTool {
 
     fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
         require_u64(params, "tidepool_claim_task", "domain_id")?;
-        let task = params
-            .get("task")
-            .and_then(Value::as_str)
-            .ok_or_else(|| RuntimeError::InvalidToolParameters {
+        let task = params.get("task").and_then(Value::as_str).ok_or_else(|| {
+            RuntimeError::InvalidToolParameters {
                 tool: "tidepool_claim_task".to_string(),
                 reason: "missing or invalid 'task' field".to_string(),
-            })?;
+            }
+        })?;
         if task.trim().is_empty() {
             return Err(RuntimeError::InvalidToolParameters {
                 tool: "tidepool_claim_task".to_string(),
@@ -1692,13 +1710,12 @@ impl Tool for TidepoolCompleteTaskTool {
 
     fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
         require_u64(params, "tidepool_complete_task", "domain_id")?;
-        let task = params
-            .get("task")
-            .and_then(Value::as_str)
-            .ok_or_else(|| RuntimeError::InvalidToolParameters {
+        let task = params.get("task").and_then(Value::as_str).ok_or_else(|| {
+            RuntimeError::InvalidToolParameters {
                 tool: "tidepool_complete_task".to_string(),
                 reason: "missing or invalid 'task' field".to_string(),
-            })?;
+            }
+        })?;
         if task.trim().is_empty() {
             return Err(RuntimeError::InvalidToolParameters {
                 tool: "tidepool_complete_task".to_string(),
@@ -1786,8 +1803,7 @@ impl Tool for TidepoolListClaimsTool {
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
         let domain_id = optional_u64(&params, "tidepool_list_claims", "domain_id")?;
         let handle_filter = params.get("handle").and_then(Value::as_str);
-        let limit = optional_u32(&params, "tidepool_list_claims", "limit")?
-            .unwrap_or(50) as usize;
+        let limit = optional_u32(&params, "tidepool_list_claims", "limit")?.unwrap_or(50) as usize;
 
         let client = shared_tidepool_client("tidepool_list_claims").await?;
 
@@ -1859,7 +1875,10 @@ impl Tool for TidepoolListClaimsTool {
             }
         }
 
-        let stale_count = active_claims.iter().filter(|c| c["is_stale"].as_bool().unwrap_or(false)).count();
+        let stale_count = active_claims
+            .iter()
+            .filter(|c| c["is_stale"].as_bool().unwrap_or(false))
+            .count();
 
         Ok(json!({
             "active_claims": active_claims,
@@ -1923,13 +1942,12 @@ impl Tool for TidepoolHandoffTaskTool {
                 reason: "'from_handle' cannot be blank".to_string(),
             });
         }
-        let task = params
-            .get("task")
-            .and_then(Value::as_str)
-            .ok_or_else(|| RuntimeError::InvalidToolParameters {
+        let task = params.get("task").and_then(Value::as_str).ok_or_else(|| {
+            RuntimeError::InvalidToolParameters {
                 tool: "tidepool_handoff_task".to_string(),
                 reason: "missing or invalid 'task' field".to_string(),
-            })?;
+            }
+        })?;
         if task.trim().is_empty() {
             return Err(RuntimeError::InvalidToolParameters {
                 tool: "tidepool_handoff_task".to_string(),
@@ -2021,8 +2039,9 @@ impl Tool for TidepoolMyDashboardTool {
     }
 
     async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
-        let per_domain_limit = optional_u32(&params, "tidepool_my_dashboard", "recent_message_limit")?
-            .unwrap_or(3) as usize;
+        let per_domain_limit =
+            optional_u32(&params, "tidepool_my_dashboard", "recent_message_limit")?.unwrap_or(3)
+                as usize;
         let domain_filter = optional_u64(&params, "tidepool_my_dashboard", "domain_id")?;
 
         let client = shared_tidepool_client("tidepool_my_dashboard").await?;
@@ -2187,7 +2206,9 @@ impl Tool for TidepoolMyDashboardTool {
     }
 }
 
-async fn shared_tidepool_client(tool: &str) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
+async fn shared_tidepool_client(
+    tool: &str,
+) -> Result<crate::tidepool::TidepoolClient, RuntimeError> {
     require_shared_client()
         .await
         .map_err(|error| tool_execution(tool, error))
@@ -2237,13 +2258,15 @@ fn require_u64(params: &Value, tool: &str, field: &str) -> Result<u64, RuntimeEr
 fn optional_u64(params: &Value, tool: &str, field: &str) -> Result<Option<u64>, RuntimeError> {
     match params.get(field) {
         Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .map(Some)
-            .ok_or_else(|| RuntimeError::InvalidToolParameters {
-                tool: tool.to_string(),
-                reason: format!("field '{field}' must be an integer"),
-            }),
+        Some(value) => {
+            value
+                .as_u64()
+                .map(Some)
+                .ok_or_else(|| RuntimeError::InvalidToolParameters {
+                    tool: tool.to_string(),
+                    reason: format!("field '{field}' must be an integer"),
+                })
+        }
         None => Ok(None),
     }
 }
@@ -2305,7 +2328,10 @@ mod tests {
     fn default_registry_includes_tidepool_tools() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
 
         assert!(names.contains(&"tidepool_my_account".to_string()));
         assert!(names.contains(&"tidepool_list_subscriptions".to_string()));
@@ -2480,9 +2506,7 @@ mod tests {
     #[test]
     fn list_domain_members_validation_rejects_non_numeric() {
         let tool = TidepoolListDomainMembersTool;
-        let error = tool
-            .validate(&json!({"domain_id": "abc"}))
-            .unwrap_err();
+        let error = tool.validate(&json!({"domain_id": "abc"})).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
@@ -2495,7 +2519,8 @@ mod tests {
     #[test]
     fn read_messages_validation_accepts_domain_filter() {
         let tool = TidepoolReadMessagesTool;
-        tool.validate(&json!({"domain_id": 42, "limit": 100})).unwrap();
+        tool.validate(&json!({"domain_id": 42, "limit": 100}))
+            .unwrap();
     }
 
     #[test]
@@ -2565,7 +2590,10 @@ mod tests {
     fn default_registry_includes_search_messages_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_search_messages".to_string()));
     }
 
@@ -2573,7 +2601,10 @@ mod tests {
     fn default_registry_includes_agent_presence_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_agent_presence".to_string()));
     }
 
@@ -2593,24 +2624,21 @@ mod tests {
     fn agent_presence_validation_accepts_window_size() {
         let tool = TidepoolAgentPresenceTool;
         tool.validate(&json!({"window_size": 5})).unwrap();
-        tool.validate(&json!({"domain_id": 1, "window_size": 50})).unwrap();
+        tool.validate(&json!({"domain_id": 1, "window_size": 50}))
+            .unwrap();
     }
 
     #[test]
     fn agent_presence_validation_rejects_invalid_domain_id() {
         let tool = TidepoolAgentPresenceTool;
-        let error = tool
-            .validate(&json!({"domain_id": "abc"}))
-            .unwrap_err();
+        let error = tool.validate(&json!({"domain_id": "abc"})).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]
     fn agent_presence_validation_rejects_invalid_window_size() {
         let tool = TidepoolAgentPresenceTool;
-        let error = tool
-            .validate(&json!({"window_size": "big"}))
-            .unwrap_err();
+        let error = tool.validate(&json!({"window_size": "big"})).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
@@ -2625,15 +2653,14 @@ mod tests {
     fn get_thread_validation_accepts_valid_params() {
         let tool = TidepoolGetThreadTool;
         tool.validate(&json!({"message_id": 42})).unwrap();
-        tool.validate(&json!({"message_id": 42, "domain_id": 1, "limit": 100})).unwrap();
+        tool.validate(&json!({"message_id": 42, "domain_id": 1, "limit": 100}))
+            .unwrap();
     }
 
     #[test]
     fn get_thread_validation_rejects_non_numeric_message_id() {
         let tool = TidepoolGetThreadTool;
-        let error = tool
-            .validate(&json!({"message_id": "abc"}))
-            .unwrap_err();
+        let error = tool.validate(&json!({"message_id": "abc"})).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
@@ -2650,7 +2677,10 @@ mod tests {
     fn default_registry_includes_agent_health_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_agent_health".to_string()));
     }
 
@@ -2663,24 +2693,21 @@ mod tests {
     #[test]
     fn agent_health_validation_accepts_all_filters() {
         let tool = TidepoolAgentHealthTool;
-        tool.validate(&json!({"account_id": 1, "domain_id": 42, "window_size": 10})).unwrap();
+        tool.validate(&json!({"account_id": 1, "domain_id": 42, "window_size": 10}))
+            .unwrap();
     }
 
     #[test]
     fn agent_health_validation_rejects_invalid_account_id() {
         let tool = TidepoolAgentHealthTool;
-        let error = tool
-            .validate(&json!({"account_id": "abc"}))
-            .unwrap_err();
+        let error = tool.validate(&json!({"account_id": "abc"})).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]
     fn agent_health_validation_rejects_invalid_window_size() {
         let tool = TidepoolAgentHealthTool;
-        let error = tool
-            .validate(&json!({"window_size": -1}))
-            .unwrap_err();
+        let error = tool.validate(&json!({"window_size": -1})).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
@@ -2688,7 +2715,10 @@ mod tests {
     fn default_registry_includes_system_status_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_system_status".to_string()));
     }
 
@@ -2726,7 +2756,10 @@ mod tests {
     fn default_registry_includes_find_mentions_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_find_mentions".to_string()));
     }
 
@@ -2748,7 +2781,8 @@ mod tests {
     fn find_mentions_validation_accepts_valid_params() {
         let tool = TidepoolFindMentionsTool;
         tool.validate(&json!({"handle": "buzz"})).unwrap();
-        tool.validate(&json!({"handle": "horus", "domain_id": 1, "limit": 50})).unwrap();
+        tool.validate(&json!({"handle": "horus", "domain_id": 1, "limit": 50}))
+            .unwrap();
     }
 
     #[test]
@@ -2791,7 +2825,8 @@ mod tests {
     #[test]
     fn lookup_account_validation_accepts_both_params() {
         let tool = TidepoolLookupAccountTool;
-        tool.validate(&json!({"handle": "buzz", "account_id": 1})).unwrap();
+        tool.validate(&json!({"handle": "buzz", "account_id": 1}))
+            .unwrap();
     }
 
     #[test]
@@ -2812,7 +2847,10 @@ mod tests {
     fn default_registry_includes_lookup_account_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_lookup_account".to_string()));
     }
 
@@ -2833,28 +2871,36 @@ mod tests {
     #[test]
     fn message_agent_validation_rejects_blank_handle() {
         let tool = TidepoolMessageAgentTool;
-        let error = tool.validate(&json!({"handle": "   ", "body": "hello"})).unwrap_err();
+        let error = tool
+            .validate(&json!({"handle": "   ", "body": "hello"}))
+            .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]
     fn message_agent_validation_rejects_blank_body() {
         let tool = TidepoolMessageAgentTool;
-        let error = tool.validate(&json!({"handle": "buzz", "body": "   "})).unwrap_err();
+        let error = tool
+            .validate(&json!({"handle": "buzz", "body": "   "}))
+            .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]
     fn message_agent_validation_accepts_valid_params() {
         let tool = TidepoolMessageAgentTool;
-        tool.validate(&json!({"handle": "buzz", "body": "hello from horus"})).unwrap();
+        tool.validate(&json!({"handle": "buzz", "body": "hello from horus"}))
+            .unwrap();
     }
 
     #[test]
     fn default_registry_includes_message_agent_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_message_agent".to_string()));
     }
 
@@ -2934,7 +2980,13 @@ mod tests {
     #[test]
     fn parse_done_message_extracts_handle_and_task() {
         let result = parse_done_message("[DONE horus] Fix the cursor seeding bug");
-        assert_eq!(result.unwrap(), ("horus".to_string(), "Fix the cursor seeding bug".to_string()));
+        assert_eq!(
+            result.unwrap(),
+            (
+                "horus".to_string(),
+                "Fix the cursor seeding bug".to_string()
+            )
+        );
     }
 
     #[test]
@@ -3034,14 +3086,17 @@ mod tests {
     #[test]
     fn claim_task_validation_rejects_blank_task() {
         let tool = TidepoolClaimTaskTool;
-        let error = tool.validate(&json!({"domain_id": 1, "task": "   "})).unwrap_err();
+        let error = tool
+            .validate(&json!({"domain_id": 1, "task": "   "}))
+            .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]
     fn claim_task_validation_accepts_valid_params() {
         let tool = TidepoolClaimTaskTool;
-        tool.validate(&json!({"domain_id": 1, "task": "Fix the cursor bug"})).unwrap();
+        tool.validate(&json!({"domain_id": 1, "task": "Fix the cursor bug"}))
+            .unwrap();
     }
 
     #[test]
@@ -3061,7 +3116,8 @@ mod tests {
     #[test]
     fn complete_task_validation_accepts_valid_params() {
         let tool = TidepoolCompleteTaskTool;
-        tool.validate(&json!({"domain_id": 1, "task": "Fix the cursor bug"})).unwrap();
+        tool.validate(&json!({"domain_id": 1, "task": "Fix the cursor bug"}))
+            .unwrap();
     }
 
     #[test]
@@ -3073,7 +3129,8 @@ mod tests {
     #[test]
     fn list_claims_validation_accepts_all_filters() {
         let tool = TidepoolListClaimsTool;
-        tool.validate(&json!({"domain_id": 1, "handle": "horus", "limit": 10})).unwrap();
+        tool.validate(&json!({"domain_id": 1, "handle": "horus", "limit": 10}))
+            .unwrap();
     }
 
     #[test]
@@ -3087,7 +3144,10 @@ mod tests {
     fn default_registry_includes_claim_tools() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_claim_task".to_string()));
         assert!(names.contains(&"tidepool_complete_task".to_string()));
         assert!(names.contains(&"tidepool_list_claims".to_string()));
@@ -3118,7 +3178,10 @@ mod tests {
     fn default_registry_includes_join_domain_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_join_domain".to_string()));
     }
 
@@ -3127,28 +3190,35 @@ mod tests {
         let tool = TidepoolHandoffTaskTool;
         assert!(tool.validate(&json!({})).is_err());
         assert!(tool.validate(&json!({"domain_id": 1})).is_err());
-        assert!(tool.validate(&json!({"domain_id": 1, "from_handle": "buzz"})).is_err());
+        assert!(
+            tool.validate(&json!({"domain_id": 1, "from_handle": "buzz"}))
+                .is_err()
+        );
     }
 
     #[test]
     fn handoff_task_validation_rejects_empty_handle() {
         let tool = TidepoolHandoffTaskTool;
-        let error = tool.validate(&json!({
-            "domain_id": 1,
-            "from_handle": "",
-            "task": "do something"
-        })).unwrap_err();
+        let error = tool
+            .validate(&json!({
+                "domain_id": 1,
+                "from_handle": "",
+                "task": "do something"
+            }))
+            .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
     #[test]
     fn handoff_task_validation_rejects_empty_task() {
         let tool = TidepoolHandoffTaskTool;
-        let error = tool.validate(&json!({
-            "domain_id": 1,
-            "from_handle": "buzz",
-            "task": ""
-        })).unwrap_err();
+        let error = tool
+            .validate(&json!({
+                "domain_id": 1,
+                "from_handle": "buzz",
+                "task": ""
+            }))
+            .unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
@@ -3159,14 +3229,18 @@ mod tests {
             "domain_id": 1,
             "from_handle": "buzz",
             "task": "Fix the rendering bug"
-        })).unwrap();
+        }))
+        .unwrap();
     }
 
     #[test]
     fn default_registry_includes_handoff_task_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_handoff_task".to_string()));
     }
 
@@ -3218,9 +3292,7 @@ mod tests {
     #[test]
     fn my_dashboard_validation_rejects_invalid_domain() {
         let tool = TidepoolMyDashboardTool;
-        let error = tool
-            .validate(&json!({"domain_id": "abc"}))
-            .unwrap_err();
+        let error = tool.validate(&json!({"domain_id": "abc"})).unwrap_err();
         assert!(matches!(error, RuntimeError::InvalidToolParameters { .. }));
     }
 
@@ -3228,7 +3300,10 @@ mod tests {
     fn default_registry_includes_my_dashboard_tool() {
         let registry = ToolRegistry::with_defaults();
         let definitions = registry.definitions();
-        let names = definitions.into_iter().map(|item| item.name).collect::<Vec<_>>();
+        let names = definitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>();
         assert!(names.contains(&"tidepool_my_dashboard".to_string()));
     }
 }

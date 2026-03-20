@@ -2,12 +2,12 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    use crate::model::MessageContent;
+    use serde_json::json;
     use std::fs;
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
-    use serde_json::json;
     use tokio::sync::Mutex;
-    use crate::model::MessageContent;
 
     use tempfile::tempdir;
 
@@ -16,8 +16,7 @@ mod tests {
     use crate::db::Db;
     use crate::event::EventKind;
     use crate::model::{
-        ModelEngine, ModelMessage, StubModelEngine, strip_reasoning_tags,
-        validate_strict_schema,
+        ModelEngine, ModelMessage, StubModelEngine, strip_reasoning_tags, validate_strict_schema,
     };
     use crate::turn::TurnStatus;
     use crate::workspace::Workspace;
@@ -241,7 +240,9 @@ mod tests {
     #[tokio::test]
     async fn final_message_tool_ends_turn_without_followup_model_call() {
         let dir = tempdir().unwrap();
-        let db = Db::open(&dir.path().join("final-message.db")).await.unwrap();
+        let db = Db::open(&dir.path().join("final-message.db"))
+            .await
+            .unwrap();
         let runtime = Runtime::new(db).await.unwrap();
 
         let outcome = runtime
@@ -261,14 +262,24 @@ mod tests {
             .list_thread_timeline(&outcome.thread.id)
             .await
             .unwrap();
-        assert!(timeline.iter().any(|event| event.kind == EventKind::ToolCall));
-        assert!(timeline.iter().any(|event| event.kind == EventKind::ToolResult));
+        assert!(
+            timeline
+                .iter()
+                .any(|event| event.kind == EventKind::ToolCall)
+        );
+        assert!(
+            timeline
+                .iter()
+                .any(|event| event.kind == EventKind::ToolResult)
+        );
     }
 
     #[tokio::test]
     async fn final_message_is_replayed_as_normal_assistant_history() {
         let dir = tempdir().unwrap();
-        let db = Db::open(&dir.path().join("final-message-history.db")).await.unwrap();
+        let db = Db::open(&dir.path().join("final-message-history.db"))
+            .await
+            .unwrap();
         let runtime = Runtime::new(db).await.unwrap();
 
         let first = runtime
@@ -594,7 +605,10 @@ mod tests {
                         == Some(true)
             }),
             "second thread timeline should contain a shared_gate RateLimited event; got events: {:?}",
-            second_timeline.iter().map(|e| (&e.kind, &e.payload)).collect::<Vec<_>>()
+            second_timeline
+                .iter()
+                .map(|e| (&e.kind, &e.payload))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -802,7 +816,9 @@ mod tests {
     #[tokio::test]
     async fn system_prompt_includes_stable_channel_metadata_for_non_web_threads() {
         let dir = tempdir().unwrap();
-        let db = Db::open(&dir.path().join("channel-context.db")).await.unwrap();
+        let db = Db::open(&dir.path().join("channel-context.db"))
+            .await
+            .unwrap();
         let runtime = Runtime::new(db).await.unwrap();
         let settings = runtime.get_runtime_settings("default").await.unwrap();
         let workspace = Workspace::new("default", dir.path());
@@ -815,7 +831,13 @@ mod tests {
         });
         let thread = runtime
             .db
-            .create_thread("default", "tidepool", "tidepool:domain:7", "Coord Lab", Some(&metadata))
+            .create_thread(
+                "default",
+                "tidepool",
+                "tidepool:domain:7",
+                "Coord Lab",
+                Some(&metadata),
+            )
             .await
             .unwrap();
 
@@ -834,15 +856,60 @@ mod tests {
         assert!(joined.contains("\"self_account_id\": 1"));
         assert!(joined.contains("\"domain_title\": \"Coord Lab\""));
     }
+
+    #[tokio::test]
+    async fn current_wake_pack_block_matches_injected_literal_tags() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("wake-pack-preview.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        runtime
+            .db
+            .upsert_memory_artifact(&crate::memory::NewMemoryArtifact {
+                namespace_id: "default".to_string(),
+                kind: crate::memory::MemoryArtifactKind::WakePackV0,
+                source: "test".to_string(),
+                content: "# Wake Pack\n\nPreserve this literally.".to_string(),
+                payload: json!({}),
+                citations: Vec::new(),
+                supersedes_id: None,
+            })
+            .await
+            .unwrap();
+
+        let settings = runtime.get_runtime_settings("default").await.unwrap();
+        let block = runtime.current_wake_pack_block(&settings).await.unwrap();
+
+        assert_eq!(
+            block.as_deref(),
+            Some("<wake_pack>\n# Wake Pack\n\nPreserve this literally.\n</wake_pack>")
+        );
+    }
+
+    #[tokio::test]
+    async fn current_wake_pack_block_is_none_when_injection_disabled() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("wake-pack-disabled.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let mut settings = runtime.get_runtime_settings("default").await.unwrap();
+        settings.inject_wake_pack = false;
+
+        let block = runtime.current_wake_pack_block(&settings).await.unwrap();
+
+        assert!(block.is_none());
+    }
 }
 
 #[cfg(test)]
 mod content_tests {
-    use chrono::Utc;
     use super::internal::build_user_message_content;
     use crate::channel::InboundAttachment;
     use crate::model::{ContentPart, MessageContent};
     use crate::turn::{Turn, TurnStatus};
+    use chrono::Utc;
 
     fn make_turn(user_message: &str, attachments: Option<&str>) -> Turn {
         Turn {

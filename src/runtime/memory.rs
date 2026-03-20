@@ -1332,10 +1332,11 @@ fn prepare_compressor_artifact(
             derived_from_fact_ids,
         });
     }
-    if citations.is_empty()
+    let is_pass_through = !supersedes_ids.is_empty();
+    if (!is_pass_through && citations.is_empty())
         || support_excerpt.is_none()
         || falsifier.is_none()
-        || derived_from_fact_ids.is_empty()
+        || (!is_pass_through && derived_from_fact_ids.is_empty())
     {
         return Some(PreparedCompressorArtifact {
             target_kind: MemoryArtifactKind::HypothesisV0,

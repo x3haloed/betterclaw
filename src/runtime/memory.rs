@@ -3,7 +3,7 @@ use super::internal::{build_fts_query, truncate_for_wake_pack};
 use super::*;
 use crate::error::RuntimeError;
 use crate::memory::*;
-use crate::model::{MessageContent, ModelExchangeRequest};
+use crate::model::{MessageContent, ModelExchangeRequest, ModelMessage, ModelExchangeResult};
 use crate::thread::Thread;
 use crate::turn::Turn;
 use serde_json::json;
@@ -386,7 +386,7 @@ impl Runtime {
                 ModelMessage {
                     role: "system".to_string(),
                     content: Some(MessageContent::Text(
-                        "You are BetterClaw's memory compressor. Produce strict JSON only. Current invariants are the current best map of local reality. The new thread frontier is new evidence about that reality. Evaluate whether the current invariants still hold, and update them only where the new evidence shows reality more clearly or shows that reality has changed. Distill the local physics from the evidence into a compact wake pack plus cited invariant and drift artifacts. Be conservative, do not invent facts, and only cite entry ids present in the evidence. Emit the full current invariant set each time, but it is valid for that set to remain unchanged if the new evidence does not change local reality. Do not describe invariants as objects; use them as claims about local reality. Do not emit meta-invariants about invariants, wake packs, compression, memory, or the prompt itself. It is acceptable to replace several older invariants with one cleaner invariant when the new invariant describes the same local reality more accurately and remains grounded in the underlying evidence."
+                        "You are BetterClaw's memory compressor. Current invariants are the current best map of local reality. The new thread frontier is new evidence about that reality. Evaluate whether the current invariants still hold, and update them only where the new evidence shows reality more clearly or shows that reality has changed. Distill the local physics from the evidence into a compact wake pack plus cited invariant and drift artifacts. Be conservative, do not invent facts, and only cite entry ids present in the evidence. Emit the full current invariant set each time, but it is valid for that set to remain unchanged if the new evidence does not change local reality. Do not describe invariants as objects; use them as claims about local reality. Do not emit meta-invariants about invariants, wake packs, compression, memory, or the prompt itself. It is acceptable to replace several older invariants with one cleaner invariant when the new invariant describes the same local reality more accurately and remains grounded in the underlying evidence."
                             .to_string(),
                     )),
                     tool_calls: None,
@@ -457,10 +457,11 @@ impl Runtime {
             tools: Vec::new(),
             max_tokens: Some(1400),
             stream: false,
-            response_format: Some(json!({
+            	response_format: Some(json!({
                 "type": "json_schema",
                 "json_schema": {
                     "name": "betterclaw_memory_distill",
+                    "strict": true,
                     "schema": {
                         "type": "object",
                         "properties": {
@@ -557,43 +558,118 @@ impl Runtime {
             })),
             extra: json!({}),
         };
+        let attempt = self
+            .run_compressor_exchange(
+                turn,
+                thread,
+                &settings.agent_id,
+                &thread.channel,
+                &engine,
+                used_fallback_engine,
+                request.clone(),
+            )
+            .await?;
+        let Some(exchange) = attempt else {
+            return Ok(None);
+        };
+        if let Some(parsed) = self
+            .parse_or_repair_compressor_output(
+                turn,
+                thread,
+                &settings.agent_id,
+                &thread.channel,
+                &engine,
+                used_fallback_engine,
+                &request,
+                &exchange,
+            )
+            .await?
+        {
+            let _ = provider_name;
+            return Ok(Some(DistillResult {
+                output: parsed,
+                valid_evidence_ids,
+            }));
+        }
+        Ok(None)
+    }
 
+    async fn run_compressor_exchange(
+        &self,
+        turn: &Turn,
+        thread: &Thread,
+        agent_id: &str,
+        channel: &str,
+        engine: &ModelEngine,
+        used_fallback_engine: bool,
+        request: ModelExchangeRequest,
+    ) -> Result<Option<ModelExchangeResult>, RuntimeError> {
         let exchange = if used_fallback_engine {
-            self.run_and_record_exchange(turn, thread, &settings.agent_id, &thread.channel, request)
+            self.run_and_record_exchange(turn, thread, agent_id, channel, request)
                 .await?
         } else {
             match engine.run(request).await {
                 Ok(exchange) => exchange,
                 Err(error) => {
-                    self.record_trace(
-                        turn,
-                        thread,
-                        &settings.agent_id,
-                        &thread.channel,
-                        error.exchange(),
-                    )
-                    .await?;
+                    self.record_trace(turn, thread, agent_id, channel, error.exchange())
+                        .await?;
                     return Ok(None);
                 }
             }
         };
-        self.record_trace(turn, thread, &settings.agent_id, &thread.channel, &exchange)
+        self.record_trace(turn, thread, agent_id, channel, &exchange)
             .await?;
-        let Some(content) = exchange.content.as_deref() else {
+        Ok(Some(exchange))
+    }
+
+    async fn parse_or_repair_compressor_output(
+        &self,
+        turn: &Turn,
+        thread: &Thread,
+        agent_id: &str,
+        channel: &str,
+        engine: &ModelEngine,
+        used_fallback_engine: bool,
+        request: &ModelExchangeRequest,
+        exchange: &ModelExchangeResult,
+    ) -> Result<Option<CompressorOutput>, RuntimeError> {
+        let primary_content = exchange.content.as_deref();
+        let parse_error = match primary_content {
+            Some(content) => match parse_compressor_output(content) {
+                Ok(parsed) if !parsed.wake_pack.trim().is_empty() => return Ok(Some(parsed)),
+                Ok(_) => RuntimeError::ModelParse("compressor returned empty wake_pack".to_string()),
+                Err(error) => error,
+            },
+            None => RuntimeError::ModelParse("compressor returned no content".to_string()),
+        };
+
+        let repair_request = build_compressor_repair_request(
+            request,
+            primary_content,
+            &format!("{}", parse_error),
+        );
+        let Some(repair_exchange) = self
+            .run_compressor_exchange(
+                turn,
+                thread,
+                agent_id,
+                channel,
+                engine,
+                used_fallback_engine,
+                repair_request,
+            )
+            .await?
+        else {
             return Ok(None);
         };
-        let parsed = match parse_compressor_output(content) {
-            Ok(parsed) => parsed,
-            Err(_) => return Ok(None),
+        let Some(repair_content) = repair_exchange.content.as_deref() else {
+            return Ok(None);
         };
+        let parsed = parse_compressor_output(repair_content)?;
         if parsed.wake_pack.trim().is_empty() {
             return Ok(None);
         }
-        let _ = provider_name;
-        Ok(Some(DistillResult {
-            output: parsed,
-            valid_evidence_ids,
-        }))
+        Ok(Some(parsed))
     }
 
     async fn persist_compressor_output(
@@ -1204,6 +1280,42 @@ fn parse_compressor_output(content: &str) -> Result<CompressorOutput, RuntimeErr
     })
 }
 
+fn build_compressor_repair_request(
+    request: &ModelExchangeRequest,
+    failed_content: Option<&str>,
+    failure_reason: &str,
+) -> ModelExchangeRequest {
+    let mut repair_request = request.clone();
+    let mut messages = repair_request.messages;
+    if let Some(content) = failed_content {
+        messages.push(ModelMessage {
+            role: "assistant".to_string(),
+            content: Some(MessageContent::Text(content.to_string())),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+    let prompt = if let Some(content) = failed_content {
+        format!(
+            "The previous assistant response failed validation.\nError: {}\nReturn only corrected JSON matching the schema. Preserve valid facts and invariants if possible.\nPrevious response:\n```json\n{}\n```",
+            failure_reason, content
+        )
+    } else {
+        format!(
+            "The previous assistant response failed validation.\nError: {}\nReturn only corrected JSON matching the schema. Preserve valid facts and invariants if possible.\nThe previous response returned no content.",
+            failure_reason
+        )
+    };
+    messages.push(ModelMessage {
+        role: "user".to_string(),
+        content: Some(MessageContent::Text(prompt)),
+        tool_calls: None,
+        tool_call_id: None,
+    });
+    repair_request.messages = messages;
+    repair_request
+}
+
 fn stub_compressor_output() -> CompressorOutput {
     CompressorOutput {
         wake_pack: "Stub compressor wake pack: preserve recent user intent and tool outcomes."
@@ -1258,6 +1370,61 @@ fn stub_compressor_output() -> CompressorOutput {
         drift_contradictions: Vec::new(),
         drift_merges: Vec::new(),
         summary: Some("Stub compressor distill complete.".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod compressor_repair_tests {
+    use super::build_compressor_repair_request;
+    use crate::model::{MessageContent, ModelExchangeRequest, ModelMessage};
+    use serde_json::json;
+
+    #[test]
+    fn repair_request_appends_fixup_turn_and_preserves_schema() {
+        let request = ModelExchangeRequest {
+            model: "gpt-5-mini".to_string(),
+            messages: vec![
+                ModelMessage {
+                    role: "system".to_string(),
+                    content: Some(MessageContent::Text("system".to_string())),
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                ModelMessage {
+                    role: "user".to_string(),
+                    content: Some(MessageContent::Text("user".to_string())),
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: vec![],
+            max_tokens: Some(123),
+            stream: false,
+            response_format: Some(json!({"type": "json_schema", "json_schema": {"name": "x", "strict": true, "schema": {"type": "object", "properties": {"wake_pack": {"type": "string"}}, "required": ["wake_pack"], "additionalProperties": false}}})),
+            extra: json!({"foo": "bar"}),
+        };
+
+        let repaired = build_compressor_repair_request(
+            &request,
+            Some("{\"wake_pack\":\"oops\"}"),
+            "compressor returned invalid JSON",
+        );
+
+        assert_eq!(repaired.model, request.model);
+        assert_eq!(repaired.response_format, request.response_format);
+        assert_eq!(repaired.extra, request.extra);
+        assert_eq!(repaired.messages.len(), 4);
+        assert_eq!(repaired.messages[2].role, "assistant");
+        assert_eq!(
+            repaired.messages[3].role,
+            "user"
+        );
+        let repair_prompt = match repaired.messages[3].content.as_ref().expect("repair prompt") {
+            MessageContent::Text(text) => text,
+            _ => panic!("expected text prompt"),
+        };
+        assert!(repair_prompt.contains("compressor returned invalid JSON"));
+        assert!(repair_prompt.contains("Return only corrected JSON matching the schema"));
     }
 }
 

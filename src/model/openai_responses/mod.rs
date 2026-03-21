@@ -41,11 +41,12 @@ impl OpenAiResponsesEngine {
 
     fn build_payload(&self, request: &ModelExchangeRequest) -> Value {
         let (instructions, input) = split_instructions_and_input(&request.messages);
+        let force_stream = self.config.provider_name == "codex";
         let mut payload = json!({
             "model": request.model,
             "instructions": instructions,
             "input": input,
-            "stream": request.stream,
+            "stream": request.stream || force_stream,
             "store": false,
         });
 
@@ -58,7 +59,9 @@ impl OpenAiResponsesEngine {
                     .collect::<Vec<_>>(),
             );
         }
-        if let Some(max_tokens) = request.max_tokens {
+        if self.config.provider_name != "codex"
+            && let Some(max_tokens) = request.max_tokens
+        {
             payload["max_output_tokens"] = json!(max_tokens);
         }
         if let Some(response_format) = &request.response_format {
@@ -74,6 +77,13 @@ impl OpenAiResponsesEngine {
             }
         }
         payload
+    }
+
+    fn payload_requests_stream(payload: &Value) -> bool {
+        payload
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     }
 
     fn new_accumulator(
@@ -428,7 +438,7 @@ impl ModelRunner for OpenAiResponsesEngine {
             });
         }
 
-        if request.stream {
+        if Self::payload_requests_stream(&payload) {
             let exchange = self
                 .decode_sse_response(&request, started_at, payload, provider_request_id, response)
                 .await?;

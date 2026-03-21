@@ -32,7 +32,7 @@ impl Db {
             body,
             created_at,
         };
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT INTO trace_blobs (id, encoding, content_type, body, created_at) VALUES (?, ?, ?, ?, ?)",
             params![
@@ -48,7 +48,7 @@ impl Db {
     }
 
     pub async fn fetch_trace_blob_json(&self, blob_id: &str) -> Result<Value> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT body FROM trace_blobs WHERE id = ?",
@@ -69,7 +69,7 @@ impl Db {
     ) -> Result<TraceBlobPruneReport> {
         const PRUNED_CONTENT_TYPE: &str = "application/vnd.betterclaw.pruned+json";
 
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let mut rows = conn
             .query(
                 "SELECT id, encoding, content_type, body, created_at FROM trace_blobs WHERE created_at < ? AND content_type != ?",
@@ -123,7 +123,7 @@ impl Db {
         Ok(report)
     }
     pub async fn record_model_trace(&self, trace: &ModelTrace) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "INSERT INTO model_traces (id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -154,7 +154,7 @@ impl Db {
         Ok(())
     }
     pub async fn list_turn_traces(&self, turn_id: &str) -> Result<Vec<ModelTrace>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary FROM model_traces WHERE turn_id = ? ORDER BY request_started_at ASC",
@@ -190,7 +190,7 @@ impl Db {
         Ok(traces)
     }
     pub async fn get_trace_detail(&self, trace_id: &str) -> Result<Option<TraceDetail>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, turn_id, thread_id, agent_id, channel, model, request_started_at, request_completed_at, duration_ms, outcome, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, provider_request_id, tool_count, tool_names, request_blob_id, response_blob_id, stream_blob_id, error_summary FROM model_traces WHERE id = ?",
@@ -223,6 +223,7 @@ impl Db {
             stream_blob_id: row.get::<Option<String>>(19)?,
             error_summary: row.get::<Option<String>>(20)?,
         };
+        let request_body = self.fetch_trace_blob_json(&trace.request_blob_id).await?;
         let response_blob = self.fetch_trace_blob_json(&trace.response_blob_id).await?;
         let (response_body, reduced_result) = match response_blob {
             Value::Object(map) => (
@@ -232,7 +233,8 @@ impl Db {
             other => (other, None),
         };
         Ok(Some(TraceDetail {
-            request_body: self.fetch_trace_blob_json(&trace.request_blob_id).await?,
+            trace_role: infer_trace_role(&request_body),
+            request_body,
             response_body,
             stream_body: match &trace.stream_blob_id {
                 Some(blob_id) => Some(self.fetch_trace_blob_json(blob_id).await?),
@@ -243,7 +245,7 @@ impl Db {
         }))
     }
     pub async fn backdate_all_trace_blobs(&self, created_at: DateTime<Utc>) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         conn.execute(
             "UPDATE trace_blobs SET created_at = ?",
             params![created_at.to_rfc3339()],
@@ -251,4 +253,23 @@ impl Db {
         .await?;
         Ok(())
     }
+}
+
+fn infer_trace_role(request_body: &Value) -> String {
+    let response_format_name = request_body
+        .get("response_format")
+        .and_then(|format| format.get("json_schema"))
+        .and_then(|schema| schema.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            request_body
+                .get("text")
+                .and_then(|text| text.get("format"))
+                .and_then(|format| format.get("name"))
+                .and_then(Value::as_str)
+        });
+    if response_format_name == Some("betterclaw_memory_distill") {
+        return "compressor".to_string();
+    }
+    "agent".to_string()
 }

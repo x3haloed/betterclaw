@@ -6,8 +6,12 @@ use tokio::sync::RwLock;
 pub mod client;
 
 pub use client::{
-    TidepoolBootstrapOutcome, TidepoolClient, TidepoolConfig, TidepoolInboundMessage,
+    AgentHealthEntry, AgentPresenceEntry, TidepoolBootstrapOutcome, TidepoolClient, TidepoolConfig,
+    TidepoolInboundContext, TidepoolInboundMessage,
 };
+
+pub use crate::generated::tidepool::DomainKind;
+pub use crate::generated::tidepool::DomainRole;
 
 static SHARED_TIDEPOOL_CLIENT: OnceLock<RwLock<Option<TidepoolClient>>> = OnceLock::new();
 
@@ -26,9 +30,9 @@ pub async fn shared_client() -> Option<TidepoolClient> {
 }
 
 pub async fn require_shared_client() -> Result<TidepoolClient> {
-    shared_client()
-        .await
-        .ok_or_else(|| anyhow!("Tidepool channel is not active; no shared Tidepool client is available"))
+    shared_client().await.ok_or_else(|| {
+        anyhow!("Tidepool channel is not active; no shared Tidepool client is available")
+    })
 }
 
 pub async fn clear_shared_client() {

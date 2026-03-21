@@ -11,7 +11,10 @@ use walkdir::WalkDir;
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::{Event, EventKind};
+use crate::memory::{RecallHit, cosine_similarity};
 use crate::model::normalize_schema_strict;
+use crate::runtime::{EmbeddingClient, env_role};
+use crate::settings::ModelRole;
 use crate::turn::Turn;
 use crate::workspace::Workspace;
 
@@ -96,7 +99,6 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     pub fn with_defaults() -> Self {
         let mut registry = Self::default();
-        registry.register(tool_core::EchoTool);
         registry.register(tool_core::ShellTool);
         registry.register(tool_fs::ReadFileTool);
         registry.register(tool_fs::WriteFileTool);
@@ -105,19 +107,46 @@ impl ToolRegistry {
         registry.register(tool_fs::ListDirTool);
         registry.register(tool_fs::GrepTool);
         registry.register(tool_fs::FindTool);
+        if tool_tidepool::registration_tool_should_be_available() {
+            registry.register(tool_tidepool::TidepoolCompleteRegistrationTool);
+        }
         registry.register(tool_tidepool::TidepoolMyAccountTool);
         registry.register(tool_tidepool::TidepoolListSubscriptionsTool);
         registry.register(tool_tidepool::TidepoolSubscribeDomainTool);
         registry.register(tool_tidepool::TidepoolUnsubscribeDomainTool);
         registry.register(tool_tidepool::TidepoolPostMessageTool);
+        registry.register(tool_tidepool::TidepoolCreateDomainTool);
+        registry.register(tool_tidepool::TidepoolAddDomainMemberTool);
+        registry.register(tool_tidepool::TidepoolRemoveDomainMemberTool);
+        registry.register(tool_tidepool::TidepoolJoinDomainTool);
+        registry.register(tool_tidepool::TidepoolCreateDmTool);
+        registry.register(tool_tidepool::TidepoolListDmDomainsTool);
+        registry.register(tool_tidepool::TidepoolMessageAgentTool);
+        registry.register(tool_tidepool::TidepoolListDomainMembersTool);
+        registry.register(tool_tidepool::TidepoolReadMessagesTool);
+        registry.register(tool_tidepool::TidepoolGetThreadTool);
+        registry.register(tool_tidepool::TidepoolSearchMessagesTool);
+        registry.register(tool_tidepool::TidepoolAgentPresenceTool);
+        registry.register(tool_tidepool::TidepoolAgentHealthTool);
+        registry.register(tool_tidepool::TidepoolSystemStatusTool);
+        registry.register(tool_tidepool::TidepoolFindMentionsTool);
+        registry.register(tool_tidepool::TidepoolLookupAccountTool);
+        registry.register(tool_tidepool::TidepoolClaimTaskTool);
+        registry.register(tool_tidepool::TidepoolCompleteTaskTool);
+        registry.register(tool_tidepool::TidepoolListClaimsTool);
+        registry.register(tool_tidepool::TidepoolHandoffTaskTool);
+        registry.register(tool_tidepool::TidepoolMyDashboardTool);
         registry.register(tool_core::FinalMessageTool);
         registry.register(tool_core::AskUserTool);
         registry.register(tool_web::WebSearchTool);
         registry.register(tool_web::WebFetchTool);
         registry.register(tool_ledger::LedgerListTool);
+        registry.register(tool_ledger::LedgerSearchTool);
         registry.register(tool_ledger::LedgerGetTool);
         registry.register(tool_ledger::ConversationSearchTool);
+        registry.register(tool_skill::ReadSkillTool);
         registry.register(tool_core::MessageTool);
+        registry.register(tool_core::NoOpTool);
         registry
     }
 
@@ -151,6 +180,39 @@ impl ToolRegistry {
     }
 }
 
+pub fn tool_feedback_error(
+    error: &RuntimeError,
+    tool_name: &str,
+    received_arguments: &Value,
+) -> Value {
+    match error {
+        RuntimeError::InvalidToolParameters { tool, reason } => json!({
+            "error": "invalid_tool_parameters",
+            "tool": tool,
+            "message": reason,
+            "received_arguments": received_arguments,
+        }),
+        RuntimeError::ToolExecution { tool, reason } => json!({
+            "error": "tool_execution_failed",
+            "tool": tool,
+            "message": reason,
+            "received_arguments": received_arguments,
+        }),
+        RuntimeError::ToolNotFound(name) => json!({
+            "error": "tool_not_found",
+            "tool": name,
+            "message": format!("tool '{name}' is not registered"),
+            "received_arguments": received_arguments,
+        }),
+        _ => json!({
+            "error": "tool_runtime_error",
+            "tool": tool_name,
+            "message": error.to_string(),
+            "received_arguments": received_arguments,
+        }),
+    }
+}
+
 fn invalid_tool_parameters(tool: &str, reason: impl Into<String>) -> RuntimeError {
     RuntimeError::InvalidToolParameters {
         tool: tool.to_string(),
@@ -174,6 +236,7 @@ fn optional_string(
     field: &str,
 ) -> Result<Option<String>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => value
             .as_str()
             .map(|text| Some(text.to_string()))
@@ -186,6 +249,7 @@ fn optional_string(
 
 fn optional_bool(params: &Value, tool: &str, field: &str) -> Result<Option<bool>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => value.as_bool().map(Some).ok_or_else(|| {
             invalid_tool_parameters(tool, format!("field '{field}' must be a boolean"))
         }),
@@ -195,6 +259,7 @@ fn optional_bool(params: &Value, tool: &str, field: &str) -> Result<Option<bool>
 
 fn optional_usize(params: &Value, tool: &str, field: &str) -> Result<Option<usize>, RuntimeError> {
     match params.get(field) {
+        Some(Value::Null) => Ok(None),
         Some(value) => {
             let Some(raw) = value.as_u64() else {
                 return Err(invalid_tool_parameters(
@@ -546,7 +611,95 @@ async fn tool_collect_ledger_entries(
     Ok(entries)
 }
 
+async fn tool_search_ledger_entries(
+    db: &Db,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<RecallHit>, RuntimeError> {
+    let mut scores = std::collections::HashMap::<String, RecallHit>::new();
+    let lexical_query = build_fts_query(query);
+    if !lexical_query.trim().is_empty() {
+        for hit in db
+            .search_recall_chunks_keyword("default", &lexical_query, limit as i64 * 2)
+            .await
+            .map_err(RuntimeError::from)?
+            .into_iter()
+            .filter(|hit| hit.source_type == "ledger_entry")
+        {
+            scores
+                .entry(hit.entry_id.clone())
+                .and_modify(|current| current.score += hit.score.max(0.1))
+                .or_insert(hit);
+        }
+    }
+
+    let embedding_role = db
+        .load_runtime_settings("default")
+        .await
+        .map_err(RuntimeError::from)?
+        .and_then(|settings| {
+            settings
+                .model_roles
+                .into_iter()
+                .find(|role| role.role == ModelRole::Embeddings && role.enabled)
+        })
+        .or_else(|| env_role(ModelRole::Embeddings));
+
+    if let Some(role) = embedding_role {
+        let client = EmbeddingClient::new(&role).map_err(RuntimeError::from)?;
+        let query_embedding = client.embed(query).await?;
+        for chunk in db
+            .list_recall_chunks_with_embeddings("default", 256)
+            .await
+            .map_err(RuntimeError::from)?
+            .into_iter()
+            .filter(|chunk| chunk.source_type == "ledger_entry")
+        {
+            let Some(embedding_json) = &chunk.embedding_json else {
+                continue;
+            };
+            let Ok(values) = serde_json::from_str::<Vec<f32>>(embedding_json) else {
+                continue;
+            };
+            let Some(score) = cosine_similarity(&query_embedding, &values) else {
+                continue;
+            };
+            let hit = RecallHit {
+                entry_id: chunk.entry_id.clone(),
+                source_id: chunk.source_id.clone(),
+                source_type: chunk.source_type.clone(),
+                content: chunk.content.clone(),
+                score,
+                citation: Some(chunk.entry_id.clone()),
+            };
+            scores
+                .entry(hit.entry_id.clone())
+                .and_modify(|current| {
+                    if score > current.score {
+                        current.score = score;
+                        current.content = hit.content.clone();
+                        current.citation = hit.citation.clone();
+                    }
+                })
+                .or_insert(hit);
+        }
+    }
+
+    let mut hits = scores.into_values().collect::<Vec<_>>();
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+    hits.truncate(limit);
+    Ok(hits)
+}
+
 mod tool_ledger;
+
+mod tool_skill;
 
 mod tool_core;
 

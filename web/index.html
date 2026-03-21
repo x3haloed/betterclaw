@@ -18,10 +18,6 @@
           <div class="settings-header">Runtime</div>
           <form id="settings-form" class="settings-form">
             <label class="settings-field">
-              <span>Model</span>
-              <input id="settings-model" type="text" />
-            </label>
-            <label class="settings-field">
               <span>System Prompt</span>
               <textarea id="settings-system-prompt"></textarea>
             </label>
@@ -39,6 +35,8 @@
               <div class="settings-toggles">
                 <label><input id="settings-stream" type="checkbox" /> Stream</label>
                 <label><input id="settings-allow-tools" type="checkbox" /> Allow tools</label>
+                <label><input id="settings-enable-auto-distill" type="checkbox" /> Auto Distill</label>
+                <label><input id="settings-enable-observations" type="checkbox" /> Observations</label>
               </div>
             </div>
             <div class="settings-actions">
@@ -46,6 +44,17 @@
               <span id="settings-status" class="settings-status"></span>
             </div>
           </form>
+          <div class="preview-panel">
+            <div class="preview-header">
+              <span>Wake Pack Preview</span>
+              <div class="preview-actions">
+                <button id="refresh-wake-pack-preview" type="button">Refresh</button>
+                <button id="copy-wake-pack-preview" type="button">Copy</button>
+              </div>
+            </div>
+            <div id="wake-pack-preview-meta" class="preview-meta"></div>
+            <pre id="wake-pack-preview" class="preview-code">Loading...</pre>
+          </div>
         </section>
         <section class="settings-panel">
           <div class="settings-header">Retention</div>

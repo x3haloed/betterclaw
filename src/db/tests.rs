@@ -44,3 +44,14 @@ async fn prune_trace_blobs_replaces_body_with_placeholder() {
     let payload = db.fetch_trace_blob_json(&blob.id).await.unwrap();
     assert_eq!(payload["pruned"], true);
 }
+
+#[tokio::test]
+async fn fresh_connections_apply_busy_timeout() {
+    let dir = tempdir().unwrap();
+    let db = Db::open(&dir.path().join("busy-timeout.db")).await.unwrap();
+    let conn = db.connect().await.unwrap();
+    let mut rows = conn.query("PRAGMA busy_timeout", params![]).await.unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let timeout_ms = row.get::<i64>(0).unwrap();
+    assert_eq!(timeout_ms, Db::BUSY_TIMEOUT_MS as i64);
+}

@@ -5,6 +5,7 @@ use super::*;
 mod tests {
     use std::time::Instant;
 
+    use crate::model::{ContentPart, MessageContent};
     use serde_json::{Value, json};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -158,11 +159,45 @@ mod tests {
     fn ordinary_messages_do_not_gain_null_content() {
         let value = serialize_chat_message(&ModelMessage {
             role: "assistant".to_string(),
-            content: Some("hello".to_string()),
+            content: Some(MessageContent::Text("hello".to_string())),
             tool_calls: None,
             tool_call_id: None,
         });
         assert_eq!(value.get("content"), Some(&json!("hello")));
+    }
+
+    #[test]
+    fn multipart_content_with_image_url_serializes_for_chat_completions() {
+        let value = serialize_chat_message(&ModelMessage {
+            role: "user".to_string(),
+            content: Some(MessageContent::Parts(vec![
+                ContentPart::text("what is this?"),
+                ContentPart::image_url("https://example.com/photo.png"),
+            ])),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        let content = value.get("content").expect("content present");
+        let parts = content.as_array().expect("content is array");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].get("type").and_then(|v| v.as_str()), Some("text"));
+        assert_eq!(
+            parts[0].get("text").and_then(|v| v.as_str()),
+            Some("what is this?")
+        );
+        assert_eq!(
+            parts[1].get("type").and_then(|v| v.as_str()),
+            Some("image_url")
+        );
+        let image_url = parts[1].get("image_url").expect("image_url field");
+        assert_eq!(
+            image_url.get("url").and_then(|v| v.as_str()),
+            Some("https://example.com/photo.png")
+        );
+        assert_eq!(
+            image_url.get("detail").and_then(|v| v.as_str()),
+            Some("auto")
+        );
     }
 
     #[test]
@@ -256,7 +291,7 @@ mod tests {
             model: "test-model".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(MessageContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             }],

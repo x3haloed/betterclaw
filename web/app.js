@@ -8,6 +8,7 @@ const state = {
   runtimeSettings: null,
   retentionSettings: null,
   inspectorView: "compressor",
+  wakePackPreview: null,
 };
 
 async function request(path, options = {}) {
@@ -58,7 +59,7 @@ function renderMarkdown(value) {
 }
 
 function traceRole(detail) {
-  return detail?.request_body?.betterclaw_role || "agent";
+  return detail?.trace_role || "agent";
 }
 
 function parseCompressorContent(detail) {
@@ -295,17 +296,44 @@ async function loadThreads() {
 
 function renderSettings(settings) {
   state.runtimeSettings = settings;
-  document.getElementById("settings-model").value = settings.model;
   document.getElementById("settings-system-prompt").value = settings.system_prompt;
   document.getElementById("settings-max-tokens").value = settings.max_tokens;
   document.getElementById("settings-max-history-turns").value = settings.max_history_turns;
   document.getElementById("settings-stream").checked = settings.stream;
   document.getElementById("settings-allow-tools").checked = settings.allow_tools;
+  document.getElementById("settings-enable-auto-distill").checked = settings.enable_auto_distill;
+  document.getElementById("settings-enable-observations").checked = settings.enable_observations;
+}
+
+function renderWakePackPreview(preview) {
+  state.wakePackPreview = preview;
+  const meta = document.getElementById("wake-pack-preview-meta");
+  const body = document.getElementById("wake-pack-preview");
+  if (!preview.enabled) {
+    meta.textContent = "Wake-pack injection is currently disabled.";
+    body.textContent = "";
+    return;
+  }
+  if (!preview.content) {
+    meta.textContent = "Wake-pack injection is enabled, but no wake pack has been persisted yet.";
+    body.textContent = "";
+    return;
+  }
+  meta.textContent = "Literal system-message block currently injected into the prompt.";
+  body.textContent = preview.content;
+}
+
+async function loadWakePackPreview() {
+  const body = document.getElementById("wake-pack-preview");
+  body.textContent = "Loading...";
+  const preview = await request("/api/settings/runtime/wake-pack-preview");
+  renderWakePackPreview(preview);
 }
 
 async function loadSettings() {
   const settings = await request("/api/settings/runtime");
   renderSettings(settings);
+  await loadWakePackPreview();
   const retention = await request("/api/settings/retention");
   renderRetentionSettings(retention);
 }
@@ -448,22 +476,34 @@ document.getElementById("settings-form").onsubmit = async (event) => {
   const status = document.getElementById("settings-status");
   status.textContent = "Saving...";
   const payload = {
-    model: document.getElementById("settings-model").value.trim(),
     system_prompt: document.getElementById("settings-system-prompt").value,
     max_tokens: Number(document.getElementById("settings-max-tokens").value),
     max_history_turns: Number(document.getElementById("settings-max-history-turns").value),
     stream: document.getElementById("settings-stream").checked,
     allow_tools: document.getElementById("settings-allow-tools").checked,
+    enable_auto_distill: document.getElementById("settings-enable-auto-distill").checked,
+    enable_observations: document.getElementById("settings-enable-observations").checked,
   };
   const settings = await request("/api/settings/runtime", {
     method: "PUT",
     body: JSON.stringify(payload),
   });
   renderSettings(settings);
+  await loadWakePackPreview();
   status.textContent = "Saved";
   setTimeout(() => {
     if (status.textContent === "Saved") status.textContent = "";
   }, 1500);
+};
+
+document.getElementById("refresh-wake-pack-preview").onclick = async () => {
+  await loadWakePackPreview();
+};
+
+document.getElementById("copy-wake-pack-preview").onclick = async () => {
+  const value = state.wakePackPreview?.content || "";
+  if (!value) return;
+  await navigator.clipboard.writeText(value);
 };
 
 document.getElementById("retention-form").onsubmit = async (event) => {

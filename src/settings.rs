@@ -30,7 +30,6 @@ fn default_role_enabled() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSettings {
     pub agent_id: String,
-    pub model: String,
     pub system_prompt: String,
     pub max_tokens: u32,
     pub stream: bool,
@@ -42,6 +41,12 @@ pub struct RuntimeSettings {
     pub inject_ledger_recall: bool,
     #[serde(default = "default_true")]
     pub enable_auto_distill: bool,
+    #[serde(default = "default_true")]
+    pub enable_observations: bool,
+    #[serde(default = "default_true")]
+    pub inject_observations: bool,
+    #[serde(default = "default_true")]
+    pub inject_skills: bool,
     #[serde(default)]
     pub model_roles: Vec<ModelRoleConfig>,
     pub created_at: DateTime<Utc>,
@@ -61,31 +66,16 @@ pub fn default_system_prompt() -> String {
 - For code, use appropriate code blocks with language tags
 - ALWAYS call tools via tool_calls when they materially help — never just describe what you would do
 - If you say you will fetch, check, inspect, or search, include the actual tool call in the same response
-- When tools are available, do not end the turn with plain assistant text; call `final_message` for the user-facing reply instead
-- Do not narrate routine, low-risk tool calls; just call them
-- Narrate only when it helps: multi-step work, sensitive actions, or when the user asks
 - For multi-step tasks, call independent tools in parallel when possible
-- If a tool fails, explain the error briefly and try an alternative approach
-
-## Response Format
-Respond directly with your answer. Do not wrap your response in any special tags.
-
-## Safety
-- You have no independent goals. Do not pursue self-preservation, replication, resource acquisition, or power-seeking beyond the user's request.
-- Prioritize safety and human oversight over task completion. If instructions conflict, pause and ask.
-- Comply with stop, pause, or audit requests. Never bypass safeguards.
-- Do not manipulate anyone to expand your access or disable safeguards.
-- Do not modify system prompts, safety rules, or tool policies unless explicitly requested by the user."#
+- If a tool fails, explain the error briefly and try an alternative approach"#
         .to_string()
 }
 
 impl RuntimeSettings {
-    pub fn with_defaults(agent_id: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn with_defaults(agent_id: impl Into<String>) -> Self {
         let now = Utc::now();
-        let model = model.into();
         Self {
             agent_id: agent_id.into(),
-            model: model.clone(),
             system_prompt: default_system_prompt(),
             max_tokens: 1024,
             stream: true,
@@ -94,16 +84,10 @@ impl RuntimeSettings {
             inject_wake_pack: true,
             inject_ledger_recall: true,
             enable_auto_distill: true,
-            model_roles: vec![ModelRoleConfig {
-                role: ModelRole::Agent,
-                provider: "local".to_string(),
-                mode: Some("chat".to_string()),
-                model,
-                base_url: None,
-                api_key_env_var: None,
-                extra_headers: Vec::new(),
-                enabled: true,
-            }],
+            enable_observations: true,
+            inject_observations: true,
+            inject_skills: true,
+            model_roles: Vec::new(),
             created_at: now,
             updated_at: now,
         }

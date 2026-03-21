@@ -3,9 +3,63 @@
 Big missing areas left to implement:
 
 - [x] collect/improve available tools based on what OpenClaw, copilot-sdk, and Qwen-Agent offer to their agents.
-- [ ] Add the compressor, wake_pack, durable ledger, and ledger_recall systems
-- [ ] add our tension/pattern/hypothesis routines back in (c9551d3b7d0798a4976a36d3419ded695355ee7c)
+- [x] Add the compressor, wake_pack, durable ledger, and ledger_recall systems
+- [x] add our tension/pattern/hypothesis routines back in (c9551d3b7d0798a4976a36d3419ded695355ee7c)
+  - [x] Observation types (Tension, Pattern, Hypothesis, Contradiction)
+  - [x] DB layer (upsert, list, resolve, summary, stale cleanup)
+  - [x] Runtime routines (detect tensions, tool failure patterns, hypotheses, contradictions)
+  - [x] Observations block injected into system prompt
+  - [x] Wired into turn completion flow
 - [x] Add tidepool support
-- [ ] Add Codex & Copilot providers in
-- [ ] image and video attachments (image_url for openai-compat, video_url if supported by provider), input via Discord
-- [ ] first-class skills support
+- [x] Add Codex & Copilot providers in
+- [x] image and video attachments (image_url for openai-compat, video_url if supported by provider), input via Discord
+  - [x] MessageContent enum with Text | Parts (image_url) variants
+  - [x] ContentPart enum with Text and ImageUrl
+  - [x] OpenAI Responses API payload handles image_url
+  - [x] Chat Completions API payload handles image_url
+  - [x] Discord input attachment handling
+- [x] max tool-loop iterations (MAX_TOOL_LOOP_ITERATIONS=32) to prevent runaway turns
+- [x] Tidepool outbound noop filter — suppresses ACK/FYI/no-response-needed messages that create agent feedback loops
+- [x] first-class skills support
+  - [x] Skill discovery from workspace skills/ directory
+  - [x] Skills block injected into system prompt
+  - [x] read_skill tool for agents to read full instructions
+  - [x] inject_skills setting + DB migration
+- [x] tidepool_read_messages tool — read message history from subscribed domains
+- [x] Fix Tidepool cursor seeding boundary skip — seed to baseline-1 to avoid losing messages at the boundary
+- [x] tidepool_search_messages tool — content-based message search with domain/author/after_message_id filters
+- [x] tidepool_agent_presence tool — detect active agents from recent message activity
+- [x] tidepool_get_thread tool — retrieve all replies to a message for threaded conversation reading
+- [x] FIX: 2026-03-17T21:47:50.435540Z ERROR betterclaw::channels::discord: Discord inbound turn failed error=SQLite failure: `UNIQUE constraint failed: threads.id`
+  - Root cause: concurrent `resolve_thread()` calls both `find_thread()` → None → both `INSERT` with same `id` (external_thread_id)
+  - Fix: `INSERT OR IGNORE` in `create_thread()` then always `SELECT` the row back
+- [x] tidepool_agent_health tool — time-based health assessment for agents (active/idle/stale/silent)
+  - AgentHealthEntry struct with seconds_since_last_message + health_status
+  - TidepoolAgentHealthTool with account_id/domain_id/window_size filters
+  - Uses created_at timestamps to compute real-time agent health
+- [x] tidepool_find_mentions tool — mention-based message routing for multi-agent coordination
+  - `body_mentions_handle()` function with case-insensitive @handle parsing
+  - Word-boundary-aware matching (won't match "buzz" inside "buzzword")
+  - Handles punctuation around mentions (@buzz, @horus!, (@chip))
+  - TidepoolFindMentionsTool with handle/domain_id/limit parameters
+  - 12 new tests (7 client-level, 5 tool-level)
+- [x] tidepool_lookup_account tool — resolve handles ↔ account IDs via HTTP API
+  - AccountEntry struct with account_id, handle, status
+  - resolve_accounts() method using Tidepool HTTP SQL API
+  - Accepts handle and/or account_id filters
+  - 8 new tests (validation + registry registration)
+- [x] tidepool_join_domain tool — self-join public domains without owner privileges
+  - TidepoolJoinDomainTool wrapping the join_domain reducer
+  - 5 new tests (validation + registry)
+- [x] tidepool_message_agent tool — send DMs by handle in one call
+  - TidepoolClient::message_agent() chains resolve → find/create DM → post
+  - wait_for_dm_with_participants() polls local db for new DM (5s timeout)
+  - Auto-creates DM with sorted handles as title if none exists
+  - 6 new validation tests + registry inclusion test
+- [x] Task claiming protocol — tidepool_claim_task, tidepool_complete_task, tidepool_list_claims
+  - Lightweight coordination protocol using message conventions ([CLAIM handle] / [DONE handle])
+  - No Tidepool module changes required — works with existing message infrastructure
+  - parse_claim_message() / parse_done_message() extract structured data from formatted messages
+  - is_claim_completed() cross-references CLAIM and DONE messages by handle + description
+  - tidepool_list_claims filters completed claims automatically
+  - 20 new tests (parsing, completion matching, validation, registry)

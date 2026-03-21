@@ -8,11 +8,11 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::agent::Agent;
-use crate::channel::{InboundEvent, OutboundMessage};
+use crate::channel::{InboundAttachment, InboundEvent, OutboundMessage};
 use crate::db::Db;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
-use crate::memory::{MemoryArtifactKind, chunk_text, cosine_similarity};
+use crate::memory::{chunk_text, cosine_similarity};
 use crate::model::{
     ModelEngine, ModelMessage, ModelTrace, StubModelEngine, TraceDetail, TraceOutcome,
     strip_reasoning_tags,
@@ -37,10 +37,12 @@ fn default_workspace_root() -> PathBuf {
 mod engine;
 mod internal;
 mod memory;
+mod routine;
 mod throttle;
 mod types;
 
 use engine::*;
+pub(crate) use engine::{EmbeddingClient, env_role};
 use throttle::*;
 pub use types::*;
 
@@ -52,6 +54,7 @@ pub struct Runtime {
     pub(crate) db: Arc<Db>,
     pub(crate) tools: ToolRegistry,
     pub(crate) model_engine: Arc<ModelEngine>,
+    pub(crate) model_name: String,
     pub(crate) provider_name: String,
     pub(crate) provider_throttle: Arc<ProviderThrottle>,
     pub(crate) provider_request_gate: Arc<tokio::sync::Mutex<()>>,
@@ -104,11 +107,12 @@ impl Runtime {
         provider_name: impl Into<String>,
         base_backoff: Duration,
     ) -> Result<Self, RuntimeError> {
+        let model_name = model_name.into();
         let db = Arc::new(db);
         let (updates, _) = broadcast::channel(512);
         let workspace = Workspace::new("default", default_workspace_root());
         let agent = Agent::new("default", "Default Agent", workspace.id.clone());
-        let mut default_settings = RuntimeSettings::with_defaults("default", model_name.into());
+        let mut default_settings = RuntimeSettings::with_defaults("default");
         if let Some(role) = env_role(ModelRole::Compressor) {
             default_settings.model_roles.push(role);
         }
@@ -130,6 +134,7 @@ impl Runtime {
             db,
             tools: ToolRegistry::with_defaults(),
             model_engine: Arc::new(model_engine),
+            model_name,
             provider_name: provider_name.into(),
             provider_throttle: Arc::new(ProviderThrottle::new(base_backoff)),
             provider_request_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -153,6 +158,14 @@ impl Runtime {
             .await
             .map_err(RuntimeError::from)?
             .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.to_string()))
+    }
+
+    pub async fn current_wake_pack_preview(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<String>, RuntimeError> {
+        let settings = self.get_runtime_settings(agent_id).await?;
+        self.current_wake_pack_block(&settings).await
     }
 
     pub async fn update_runtime_settings(
@@ -236,7 +249,7 @@ impl Runtime {
         let external_thread_id = Uuid::new_v4().to_string();
         let title = title.unwrap_or_else(|| "New Thread".to_string());
         self.db
-            .create_thread("default", "web", &external_thread_id, &title)
+            .create_thread("default", "web", &external_thread_id, &title, None)
             .await
             .map_err(RuntimeError::from)
     }
@@ -377,6 +390,7 @@ impl Runtime {
             .get_thread(&source_turn.thread_id)
             .await?
             .ok_or_else(|| RuntimeError::ThreadNotFound(source_turn.thread_id.clone()))?;
+        let attachments: Vec<InboundAttachment> = source_turn.attachments();
         self.handle_inbound_internal(
             InboundEvent {
                 agent_id: thread.agent_id.clone(),
@@ -384,6 +398,7 @@ impl Runtime {
                 external_thread_id: thread.external_thread_id.clone(),
                 content: source_turn.user_message,
                 metadata: None,
+                attachments,
                 received_at: Utc::now(),
             },
             Some(source_turn_id.to_string()),

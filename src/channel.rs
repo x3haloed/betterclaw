@@ -1,6 +1,30 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// An attachment received from an inbound channel (e.g., Discord image upload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboundAttachment {
+    pub url: String,
+    pub filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+}
+
+impl InboundAttachment {
+    pub fn is_image(&self) -> bool {
+        if let Some(ct) = &self.content_type {
+            return ct.starts_with("image/");
+        }
+        // Fall back to extension check
+        let lower = self.filename.to_ascii_lowercase();
+        lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".gif")
+            || lower.ends_with(".webp")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundEvent {
     pub agent_id: String,
@@ -9,6 +33,9 @@ pub struct InboundEvent {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Structured attachments (images, files) included with the message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<InboundAttachment>,
     pub received_at: DateTime<Utc>,
 }
 
@@ -24,6 +51,7 @@ impl InboundEvent {
             external_thread_id: thread_id.into(),
             content: content.into(),
             metadata: None,
+            attachments: Vec::new(),
             received_at: Utc::now(),
         }
     }

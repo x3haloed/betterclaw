@@ -2,10 +2,11 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
+    use crate::model::MessageContent;
+    use serde_json::json;
     use std::fs;
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
-    use serde_json::json;
     use tokio::sync::Mutex;
 
     use tempfile::tempdir;
@@ -15,8 +16,7 @@ mod tests {
     use crate::db::Db;
     use crate::event::EventKind;
     use crate::model::{
-        ModelEngine, ModelMessage, StubModelEngine, strip_reasoning_tags,
-        validate_strict_schema,
+        ModelEngine, ModelMessage, StubModelEngine, strip_reasoning_tags, validate_strict_schema,
     };
     use crate::turn::TurnStatus;
     use crate::workspace::Workspace;
@@ -62,6 +62,81 @@ mod tests {
         assert!(outcome.response.contains("\"message\":\"hi\""));
         let traces = runtime.list_turn_traces(&outcome.turn_id).await.unwrap();
         assert_eq!(traces.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn invalid_tool_parameters_are_fed_back_to_model() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("invalid-tool-feedback.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-invalid-tool-feedback",
+                "/tool tidepool_my_dashboard {\"domain_id\":\"abc\"}",
+            ))
+            .await
+            .unwrap();
+
+        assert!(outcome.response.contains("invalid_tool_parameters"));
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        let tool_result_payload = timeline
+            .iter()
+            .find(|event| event.kind == EventKind::ToolResult)
+            .map(|event| event.payload.clone())
+            .expect("tool result should be recorded");
+        assert_eq!(
+            tool_result_payload["output"]["error"],
+            json!("invalid_tool_parameters")
+        );
+        assert_eq!(
+            tool_result_payload["output"]["tool"],
+            json!("tidepool_my_dashboard")
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_arguments_are_fed_back_to_model() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("malformed-tool-feedback.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let outcome = runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-malformed-tool-feedback",
+                "/tool final_message {\"content\":\"unterminated}",
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.status, TurnStatus::Succeeded);
+        assert!(outcome.response.contains("malformed_tool_arguments"));
+        let timeline = runtime
+            .list_thread_timeline(&outcome.thread.id)
+            .await
+            .unwrap();
+        let tool_result_payload = timeline
+            .iter()
+            .find(|event| event.kind == EventKind::ToolResult)
+            .map(|event| event.payload.clone())
+            .expect("tool result should be recorded");
+        assert_eq!(
+            tool_result_payload["output"]["error"],
+            json!("malformed_tool_arguments")
+        );
+        assert_eq!(
+            tool_result_payload["output"]["tool"],
+            json!("final_message")
+        );
     }
 
     #[tokio::test]
@@ -139,7 +214,7 @@ mod tests {
         let request = runtime.build_model_request(
             vec![ModelMessage {
                 role: "user".to_string(),
-                content: Some("hello".to_string()),
+                content: Some(MessageContent::Text("hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             }],
@@ -154,12 +229,20 @@ mod tests {
                 .and_then(serde_json::Value::as_str)
                 == Some("final_message")
         }));
+        assert!(request.tools.iter().any(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str)
+                == Some("no_op")
+        }));
     }
 
     #[tokio::test]
     async fn final_message_tool_ends_turn_without_followup_model_call() {
         let dir = tempdir().unwrap();
-        let db = Db::open(&dir.path().join("final-message.db")).await.unwrap();
+        let db = Db::open(&dir.path().join("final-message.db"))
+            .await
+            .unwrap();
         let runtime = Runtime::new(db).await.unwrap();
 
         let outcome = runtime
@@ -179,14 +262,24 @@ mod tests {
             .list_thread_timeline(&outcome.thread.id)
             .await
             .unwrap();
-        assert!(timeline.iter().any(|event| event.kind == EventKind::ToolCall));
-        assert!(timeline.iter().any(|event| event.kind == EventKind::ToolResult));
+        assert!(
+            timeline
+                .iter()
+                .any(|event| event.kind == EventKind::ToolCall)
+        );
+        assert!(
+            timeline
+                .iter()
+                .any(|event| event.kind == EventKind::ToolResult)
+        );
     }
 
     #[tokio::test]
     async fn final_message_is_replayed_as_normal_assistant_history() {
         let dir = tempdir().unwrap();
-        let db = Db::open(&dir.path().join("final-message-history.db")).await.unwrap();
+        let db = Db::open(&dir.path().join("final-message-history.db"))
+            .await
+            .unwrap();
         let runtime = Runtime::new(db).await.unwrap();
 
         let first = runtime
@@ -276,6 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn assistant_messages_saved_without_reasoning_tags() {
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("history.db")).await.unwrap();
         let runtime = Runtime::new(db).await.unwrap();
@@ -293,6 +387,8 @@ mod tests {
 
     #[tokio::test]
     async fn auto_distill_uses_model_driven_compressor_output() {
+        // Serialize to avoid SQLite contention from parallel Runtime::new calls.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("compressor.db")).await.unwrap();
         let runtime = Runtime::new(db).await.unwrap();
@@ -306,24 +402,51 @@ mod tests {
             .await
             .unwrap();
 
-        let wake_pack = runtime
-            .db()
-            .latest_memory_artifact("default", crate::memory::MemoryArtifactKind::WakePackV0)
-            .await
-            .unwrap()
-            .unwrap();
+        let mut wake_pack = None;
+        for _ in 0..20 {
+            wake_pack = runtime.db().latest_wake_pack("default").await.unwrap();
+            if wake_pack.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let wake_pack = wake_pack.expect("wake pack should be persisted asynchronously");
         assert!(wake_pack.content.contains("Stub compressor wake pack"));
+    }
 
-        let self_invariants = runtime
-            .db()
-            .list_memory_artifacts(
-                "default",
-                Some(crate::memory::MemoryArtifactKind::InvariantSelfV0),
-                10,
-            )
+    #[tokio::test]
+    async fn model_driven_catchup_runs_even_when_auto_distill_is_disabled() {
+        let _guard = env_mutex().lock().await;
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("compressor-catchup.db"))
             .await
             .unwrap();
-        assert!(!self_invariants.is_empty());
+        let runtime = Runtime::new(db).await.unwrap();
+
+        let mut settings = runtime.get_runtime_settings("default").await.unwrap();
+        settings.enable_auto_distill = false;
+        runtime.update_runtime_settings(settings).await.unwrap();
+
+        runtime
+            .handle_inbound(InboundEvent::web(
+                "default",
+                "thread-compressor-catchup",
+                "Please remember this behavior too.",
+            ))
+            .await
+            .unwrap();
+
+        let mut wake_pack = None;
+        for _ in 0..20 {
+            wake_pack = runtime.db().latest_wake_pack("default").await.unwrap();
+            if wake_pack.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        let wake_pack = wake_pack.expect("wake pack should be persisted by catch-up distill");
+        assert!(wake_pack.content.contains("Stub compressor wake pack"));
     }
 
     #[tokio::test]
@@ -366,7 +489,7 @@ mod tests {
             .unwrap();
         let turn = runtime
             .db()
-            .create_turn(&thread.id, "stuck message")
+            .create_turn(&thread.id, "stuck message", None)
             .await
             .unwrap();
         drop(runtime);
@@ -391,6 +514,8 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limited_turn_retries_after_retry_after_window() {
+        // Serialize to avoid timing interference with parallel rate-limit tests.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("rate-limit.db")).await.unwrap();
         let runtime = Runtime::with_model_engine_and_backoff(
@@ -430,6 +555,10 @@ mod tests {
 
     #[tokio::test]
     async fn rate_limit_gate_blocks_other_requests_until_retry_window() {
+        // Serialize with other env-dependent tests to avoid parallel interference
+        // with shared stub state and timing-sensitive assertions.
+        let _guard = env_mutex().lock().await;
+
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("rate-limit-gate.db"))
             .await
@@ -456,7 +585,9 @@ mod tests {
                 .unwrap()
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Give the first request time to acquire the gate and hit the rate limit
+        // before the second request arrives.
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         let second_started = Instant::now();
         let second = runtime
@@ -469,7 +600,14 @@ mod tests {
             .unwrap();
         let first = first.await.unwrap();
 
-        assert!(second_started.elapsed() >= Duration::from_millis(150));
+        // The second request should have been blocked for at least the remaining
+        // throttle window. With a 400ms retry_after and 200ms initial sleep,
+        // ~200ms should remain.
+        assert!(
+            second_started.elapsed() >= Duration::from_millis(100),
+            "second request should have been blocked by shared throttle, waited {:?}",
+            second_started.elapsed()
+        );
         assert!(first.response.contains("/rate-limit-once 400"));
         assert!(second.response.contains("hello while blocked"));
 
@@ -477,18 +615,27 @@ mod tests {
             .list_thread_timeline(&second.thread.id)
             .await
             .unwrap();
-        assert!(second_timeline.iter().any(|event| {
-            event.kind == EventKind::RateLimited
-                && event
-                    .payload
-                    .get("shared_gate")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-        }));
+        assert!(
+            second_timeline.iter().any(|event| {
+                event.kind == EventKind::RateLimited
+                    && event
+                        .payload
+                        .get("shared_gate")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            }),
+            "second thread timeline should contain a shared_gate RateLimited event; got events: {:?}",
+            second_timeline
+                .iter()
+                .map(|e| (&e.kind, &e.payload))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
     async fn missing_retry_after_uses_exponential_backoff_base() {
+        // Serialize to avoid timing interference with parallel rate-limit tests.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         let db = Db::open(&dir.path().join("rate-limit-backoff.db"))
             .await
@@ -644,10 +791,12 @@ mod tests {
 
     #[tokio::test]
     async fn system_prompt_includes_workspace_agents_and_soul_files() {
+        // Serialize to avoid races with env var mutations and Runtime init from parallel tests.
+        let _guard = env_mutex().lock().await;
         let dir = tempdir().unwrap();
         fs::write(
             dir.path().join("AGENTS.md"),
-            "## CONTEXT\n- User: Chad\n- Constraint: keep coordination cost low.",
+            "## CONTEXT\n- User: Champ\n- Constraint: keep coordination cost low.",
         )
         .unwrap();
         fs::write(
@@ -662,14 +811,19 @@ mod tests {
         let runtime = Runtime::new(db).await.unwrap();
         let settings = runtime.get_runtime_settings("default").await.unwrap();
         let workspace = Workspace::new("default", dir.path());
-
-        let messages = runtime
-            .build_system_messages(&settings, &workspace, Some("hello"))
+        let thread = runtime
+            .db
+            .create_thread("default", "web", "thread-1", "Thread", None)
             .await
             .unwrap();
-        let system_prompt = messages
+
+        let messages = runtime
+            .build_system_messages(&thread, &settings, &workspace, Some("hello"))
+            .await
+            .unwrap();
+        let system_prompt: String = messages
             .first()
-            .and_then(|message| message.content.as_deref())
+            .and_then(|message| message.content.as_ref().and_then(|c| c.text()))
             .expect("system prompt should be present");
 
         assert!(system_prompt.contains("## Agent Instructions"));
@@ -677,5 +831,162 @@ mod tests {
         assert!(system_prompt.contains("## Core Values"));
         assert!(system_prompt.contains("Prefer reversible probes."));
         assert!(system_prompt.contains("You are BetterClaw Agent, a secure autonomous assistant."));
+    }
+
+    #[tokio::test]
+    async fn system_prompt_includes_stable_channel_metadata_for_non_web_threads() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("channel-context.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let settings = runtime.get_runtime_settings("default").await.unwrap();
+        let workspace = Workspace::new("default", dir.path());
+        let metadata = json!({
+            "betterclaw_channel": "Tidepool",
+            "self_account_id": 1,
+            "self_handle": "buzz",
+            "domain_id": 7,
+            "domain_title": "Coord Lab"
+        });
+        let thread = runtime
+            .db
+            .create_thread(
+                "default",
+                "tidepool",
+                "tidepool:domain:7",
+                "Coord Lab",
+                Some(&metadata),
+            )
+            .await
+            .unwrap();
+
+        let messages = runtime
+            .build_system_messages(&thread, &settings, &workspace, Some("hello"))
+            .await
+            .unwrap();
+        let joined = messages
+            .iter()
+            .filter_map(|message| message.content.as_ref().and_then(|c| c.text()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        assert!(joined.contains("## BetterClaw Channel Context (trusted metadata)"));
+        assert!(joined.contains("\"betterclaw_channel\": \"Tidepool\""));
+        assert!(joined.contains("\"self_account_id\": 1"));
+        assert!(joined.contains("\"domain_title\": \"Coord Lab\""));
+    }
+
+    #[tokio::test]
+    async fn current_wake_pack_block_matches_injected_literal_tags() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("wake-pack-preview.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        runtime
+            .db
+            .insert_wake_pack_v2(
+                "default",
+                "# Wake Pack\n\nPreserve this literally.",
+                None,
+                &Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        let settings = runtime.get_runtime_settings("default").await.unwrap();
+        let block = runtime.current_wake_pack_block(&settings).await.unwrap();
+
+        assert_eq!(
+            block.as_deref(),
+            Some("<wake_pack>\n# Wake Pack\n\nPreserve this literally.\n</wake_pack>")
+        );
+    }
+
+    #[tokio::test]
+    async fn current_wake_pack_block_is_none_when_injection_disabled() {
+        let dir = tempdir().unwrap();
+        let db = Db::open(&dir.path().join("wake-pack-disabled.db"))
+            .await
+            .unwrap();
+        let runtime = Runtime::new(db).await.unwrap();
+        let mut settings = runtime.get_runtime_settings("default").await.unwrap();
+        settings.inject_wake_pack = false;
+
+        let block = runtime.current_wake_pack_block(&settings).await.unwrap();
+
+        assert!(block.is_none());
+    }
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::internal::build_user_message_content;
+    use crate::channel::InboundAttachment;
+    use crate::model::{ContentPart, MessageContent};
+    use crate::turn::{Turn, TurnStatus};
+    use chrono::Utc;
+
+    fn make_turn(user_message: &str, attachments: Option<&str>) -> Turn {
+        Turn {
+            id: "test-turn".to_string(),
+            thread_id: "test-thread".to_string(),
+            status: TurnStatus::Running,
+            user_message: user_message.to_string(),
+            attachments_json: attachments.map(|s| s.to_string()),
+            assistant_message: None,
+            error: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn text_only_turn_produces_text_content() {
+        let turn = make_turn("hello world", None);
+        match build_user_message_content(&turn) {
+            MessageContent::Text(text) => assert_eq!(text, "hello world"),
+            _ => panic!("expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn turn_with_image_attachments_produces_parts() {
+        let attachments = serde_json::to_string(&vec![InboundAttachment {
+            url: "https://example.com/photo.png".to_string(),
+            filename: "photo.png".to_string(),
+            content_type: Some("image/png".to_string()),
+        }])
+        .unwrap();
+        let turn = make_turn("what is this?", Some(&attachments));
+        match build_user_message_content(&turn) {
+            MessageContent::Parts(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(&parts[0], ContentPart::Text { text } if text == "what is this?"));
+                match &parts[1] {
+                    ContentPart::ImageUrl { image_url } => {
+                        assert_eq!(image_url.url, "https://example.com/photo.png");
+                    }
+                    _ => panic!("expected ImageUrl part"),
+                }
+            }
+            _ => panic!("expected Parts variant"),
+        }
+    }
+
+    #[test]
+    fn turn_with_non_image_attachments_stays_text() {
+        let attachments = serde_json::to_string(&vec![InboundAttachment {
+            url: "https://example.com/doc.pdf".to_string(),
+            filename: "doc.pdf".to_string(),
+            content_type: Some("application/pdf".to_string()),
+        }])
+        .unwrap();
+        let turn = make_turn("read this", Some(&attachments));
+        match build_user_message_content(&turn) {
+            MessageContent::Text(text) => assert_eq!(text, "read this"),
+            _ => panic!("expected Text variant for non-image attachments"),
+        }
     }
 }

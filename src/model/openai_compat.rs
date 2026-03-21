@@ -91,6 +91,20 @@ impl OpenAiCompatibleConfig {
             .get("code")
             .and_then(Value::as_str)
             .map(|value| value.to_ascii_lowercase());
+        let error_type = error
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|value| value.to_ascii_lowercase());
+
+        let is_quota = error_type.as_deref() == Some("insufficient_quota")
+            || error_type.as_deref() == Some("usage_limit_reached")
+            || code.as_deref() == Some("insufficient_quota")
+            || code.as_deref() == Some("billing_hard_limit_reached");
+
+        if is_quota {
+            return None;
+        }
+
         let message = error
             .get("message")
             .and_then(Value::as_str)

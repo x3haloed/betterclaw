@@ -12,6 +12,7 @@ pub struct SubscriptionLookup {
     pub title: String,
     pub message_char_limit: u16,
     pub batch_window_seconds: u32,
+    pub auto_subscribed: bool,
 }
 
 impl __sdk::InModule for SubscriptionLookup {
@@ -27,6 +28,7 @@ pub struct SubscriptionLookupCols {
     pub title: __sdk::__query_builder::Col<SubscriptionLookup, String>,
     pub message_char_limit: __sdk::__query_builder::Col<SubscriptionLookup, u16>,
     pub batch_window_seconds: __sdk::__query_builder::Col<SubscriptionLookup, u32>,
+    pub auto_subscribed: __sdk::__query_builder::Col<SubscriptionLookup, bool>,
 }
 
 impl __sdk::__query_builder::HasCols for SubscriptionLookup {
@@ -41,6 +43,7 @@ impl __sdk::__query_builder::HasCols for SubscriptionLookup {
                 table_name,
                 "batch_window_seconds",
             ),
+            auto_subscribed: __sdk::__query_builder::Col::new(table_name, "auto_subscribed"),
         }
     }
 }

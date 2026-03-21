@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -8,8 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use anyhow::anyhow;
+use serde_json::{Value, json};
 use tokio_stream::wrappers::BroadcastStream;
 
 use crate::channel::InboundEvent;
@@ -31,6 +31,10 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
             get(get_runtime_settings).put(update_runtime_settings),
         )
         .route(
+            "/api/settings/runtime/wake-pack-preview",
+            get(get_wake_pack_preview),
+        )
+        .route(
             "/api/settings/retention",
             get(get_retention_settings).put(update_retention_settings),
         )
@@ -48,6 +52,10 @@ pub fn app(runtime: Arc<Runtime>) -> Router {
         .route("/api/turns/{turn_id}/traces", get(get_turn_traces))
         .route("/api/turns/{turn_id}/replay", post(replay_turn))
         .route("/api/traces/{trace_id}", get(get_trace))
+        .route("/api/runtime/check-update", get(check_update))
+        .route("/api/runtime/self-update", post(self_update))
+        .route("/health", get(health))
+        .route("/api/status", get(api_status))
         .with_state(runtime)
 }
 
@@ -78,9 +86,25 @@ async fn get_runtime_settings(
     Ok(Json(runtime.get_runtime_settings("default").await?))
 }
 
+#[derive(Debug, Serialize)]
+struct WakePackPreviewResponse {
+    enabled: bool,
+    content: Option<String>,
+}
+
+async fn get_wake_pack_preview(
+    State(runtime): State<Arc<Runtime>>,
+) -> Result<Json<WakePackPreviewResponse>, ApiError> {
+    let settings = runtime.get_runtime_settings("default").await?;
+    let content = runtime.current_wake_pack_preview("default").await?;
+    Ok(Json(WakePackPreviewResponse {
+        enabled: settings.inject_wake_pack,
+        content,
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 struct UpdateRuntimeSettingsRequest {
-    model: String,
     system_prompt: String,
     max_tokens: u32,
     stream: bool,
@@ -93,6 +117,12 @@ struct UpdateRuntimeSettingsRequest {
     #[serde(default)]
     enable_auto_distill: Option<bool>,
     #[serde(default)]
+    enable_observations: Option<bool>,
+    #[serde(default)]
+    inject_observations: Option<bool>,
+    #[serde(default)]
+    inject_skills: Option<bool>,
+    #[serde(default)]
     model_roles: Option<Vec<ModelRoleConfig>>,
 }
 
@@ -103,7 +133,6 @@ async fn update_runtime_settings(
     let current = runtime.get_runtime_settings("default").await?;
     let updated = crate::settings::RuntimeSettings {
         agent_id: current.agent_id,
-        model: payload.model,
         system_prompt: payload.system_prompt,
         max_tokens: payload.max_tokens,
         stream: payload.stream,
@@ -116,6 +145,13 @@ async fn update_runtime_settings(
         enable_auto_distill: payload
             .enable_auto_distill
             .unwrap_or(current.enable_auto_distill),
+        enable_observations: payload
+            .enable_observations
+            .unwrap_or(current.enable_observations),
+        inject_observations: payload
+            .inject_observations
+            .unwrap_or(current.inject_observations),
+        inject_skills: payload.inject_skills.unwrap_or(current.inject_skills),
         model_roles: payload.model_roles.unwrap_or(current.model_roles),
         created_at: current.created_at,
         updated_at: current.updated_at,
@@ -248,12 +284,9 @@ async fn post_message(
     let thread_id_for_task = thread_id.clone();
     let content = payload.content;
     let outcome = tokio::spawn(async move {
-        runtime_for_task.handle_inbound(InboundEvent::web(
-            "default",
-            &thread_id_for_task,
-            content,
-        ))
-        .await
+        runtime_for_task
+            .handle_inbound(InboundEvent::web("default", &thread_id_for_task, content))
+            .await
     })
     .await
     .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
@@ -290,9 +323,10 @@ async fn replay_turn(
 ) -> Result<Json<ReplayTurnResponse>, ApiError> {
     let runtime_for_task = runtime.clone();
     let turn_id_for_task = turn_id.clone();
-    let outcome = tokio::spawn(async move { runtime_for_task.replay_turn(&turn_id_for_task).await })
-        .await
-        .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
+    let outcome =
+        tokio::spawn(async move { runtime_for_task.replay_turn(&turn_id_for_task).await })
+            .await
+            .map_err(|error| ApiError::Runtime(RuntimeError::Other(anyhow!(error))))??;
     Ok(Json(ReplayTurnResponse {
         thread_id: outcome.thread.id,
         turn_id: outcome.turn_id,
@@ -320,6 +354,27 @@ struct ThreadDetail {
     turns: Vec<crate::turn::Turn>,
 }
 
+/// Check if new commits are available without pulling.
+async fn check_update() -> Result<Json<serde_json::Value>, ApiError> {
+    match crate::update::check_for_updates(None) {
+        Ok(status) => Ok(Json(json!({ "status": status }))),
+        Err(e) => Err(ApiError::Runtime(RuntimeError::Other(e))),
+    }
+}
+
+/// Trigger a self-update: git pull → cargo build → exec into new binary.
+async fn self_update() -> Result<Json<crate::update::UpdateStatus>, ApiError> {
+    // Run the update in a blocking thread since it involves process spawning
+    let result = tokio::task::spawn_blocking(|| crate::update::perform_update(true))
+        .await
+        .map_err(|e| ApiError::Runtime(RuntimeError::Other(anyhow!(e))))?;
+
+    match result {
+        Ok(status) => Ok(Json(status)),
+        Err(e) => Err(ApiError::Runtime(RuntimeError::Other(e))),
+    }
+}
+
 #[derive(Debug)]
 enum ApiError {
     Runtime(crate::error::RuntimeError),
@@ -330,6 +385,49 @@ impl From<crate::error::RuntimeError> for ApiError {
     fn from(value: crate::error::RuntimeError) -> Self {
         Self::Runtime(value)
     }
+}
+
+/// Build-time git commit hash. Set by build script, falls back to "unknown".
+const GIT_COMMIT: &str = match option_env!("GIT_COMMIT") {
+    Some(hash) => hash,
+    None => "unknown",
+};
+
+/// Simple health check — returns 200 OK immediately.
+/// Used by watchdog scripts to detect if the process is alive and responsive.
+async fn health() -> impl IntoResponse {
+    Json(json!({ "status": "ok", "commit": GIT_COMMIT }))
+}
+
+/// Runtime status endpoint — returns agent identity, version, and uptime info.
+/// Used by coordination tools and watchdog scripts for richer health checks.
+async fn api_status(State(runtime): State<Arc<Runtime>>) -> Result<Json<Value>, ApiError> {
+    let threads = runtime.list_threads().await?;
+    let thread_count = threads.len();
+
+    // Agent identity from env
+    let agent_id = std::env::var("TIDEPOOL_AGENT_ID").unwrap_or_else(|_| "default".to_string());
+    let handle = std::env::var("TIDEPOOL_HANDLE").ok();
+    let tidepool_database = std::env::var("TIDEPOOL_DATABASE").ok();
+
+    let tidepool_connected = tidepool_database.is_some() && handle.is_some();
+    let discord_connected = std::env::var("DISCORD_BOT_TOKEN").is_ok();
+
+    Ok(Json(json!({
+        "status": "ok",
+        "agent_id": agent_id,
+        "handle": handle,
+        "thread_count": thread_count,
+        "channels": {
+            "tidepool": {
+                "connected": tidepool_connected,
+                "database": tidepool_database,
+            },
+            "discord": {
+                "connected": discord_connected,
+            },
+        }
+    })))
 }
 
 impl IntoResponse for ApiError {

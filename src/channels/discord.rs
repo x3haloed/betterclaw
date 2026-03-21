@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::channel::InboundEvent;
+use crate::channel::{InboundAttachment, InboundEvent};
 use crate::runtime::Runtime;
 
 const DISCORD_API_BASE: &str = "https://discord.com/api/v10";
@@ -24,6 +24,7 @@ pub struct DiscordConfig {
     pub api_base: String,
     pub gateway_base: String,
     pub allowed_guild_ids: Vec<String>,
+    pub allowed_channel_ids: Vec<String>,
     pub allowed_dm_user_ids: Vec<String>,
     pub allowed_guild_user_ids: Vec<String>,
     pub mention_only: bool,
@@ -39,6 +40,10 @@ impl DiscordConfig {
             gateway_base: std::env::var("DISCORD_GATEWAY_BASE")
                 .unwrap_or_else(|_| DISCORD_WS_BASE.to_string()),
             allowed_guild_ids: parse_csv_env("DISCORD_ALLOWED_GUILD_IDS"),
+            allowed_channel_ids: parse_csv_env_any(&[
+                "DISCORD_ALLOWED_CHANNEL_IDS",
+                "DISCORD_ALLOWED_GUILD_CHANNEL_IDS",
+            ]),
             allowed_dm_user_ids: parse_csv_env("DISCORD_ALLOWED_DM_USER_IDS"),
             allowed_guild_user_ids: parse_csv_env("DISCORD_ALLOWED_GUILD_USER_IDS"),
             mention_only: parse_bool_env("DISCORD_MENTION_ONLY"),
@@ -82,7 +87,7 @@ impl DiscordChannel {
     }
 
     async fn run_once(&self) -> Result<()> {
-        let bot_user_id = self.fetch_bot_user_id().await?;
+        let bot_identity = self.fetch_bot_identity().await?;
         let gateway_url = self.fetch_gateway_url().await?;
         let ws_url = format!("{gateway_url}/?v=10&encoding=json");
         let (socket, _) = connect_async(&ws_url)
@@ -182,7 +187,7 @@ impl DiscordChannel {
                     let event_type = payload.get("t").and_then(Value::as_str).unwrap_or_default();
                     if event_type == "MESSAGE_CREATE"
                         && let Some(message) =
-                            self.parse_inbound_message(payload.get("d"), &bot_user_id)
+                            self.parse_inbound_message(payload.get("d"), &bot_identity)
                     {
                         self.handle_message(message).await?;
                     }
@@ -231,12 +236,12 @@ impl DiscordChannel {
     fn parse_inbound_message(
         &self,
         payload: Option<&Value>,
-        bot_user_id: &str,
+        bot_identity: &DiscordBotIdentity,
     ) -> Option<DiscordInboundMessage> {
         let payload = payload?;
         let author = payload.get("author")?;
         let author_id = author.get("id")?.as_str()?.to_string();
-        if author_id == bot_user_id {
+        if author_id == bot_identity.user_id {
             return None;
         }
         if author.get("bot").and_then(Value::as_bool).unwrap_or(false) {
@@ -258,6 +263,9 @@ impl DiscordChannel {
         {
             return None;
         }
+        if !guild_channel_is_allowed(guild_id.as_deref(), &channel_id, &self.config.allowed_channel_ids) {
+            return None;
+        }
 
         let is_dm = guild_id.is_none();
         let allow_list = if is_dm {
@@ -275,7 +283,7 @@ impl DiscordChannel {
             .unwrap_or_default();
         let normalized = normalize_message_content(
             raw_content,
-            bot_user_id,
+            &bot_identity.user_id,
             !is_dm && self.config.mention_only,
         )?;
 
@@ -290,15 +298,31 @@ impl DiscordChannel {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let attachments = parse_discord_attachments(payload.get("attachments"));
         let content = append_attachment_lines(normalized, payload.get("attachments"));
-        let content = if is_dm {
-            content
-        } else {
-            format!(
-                "Discord(guild): {} ({}): {}",
-                author_name, author_id, content
-            )
-        };
+        let guild_name = None::<String>;
+        let channel_name = None::<String>;
+        let content = render_discord_inbound_content(
+            &author_name,
+            &author_id,
+            guild_name.as_deref(),
+            channel_name.as_deref(),
+            &channel_id,
+            is_dm,
+            &content,
+        );
+        let metadata = json!({
+            "betterclaw_channel": "Discord",
+            "self_app_id": bot_identity.app_id,
+            "self_username": bot_identity.username,
+            "guild_id": guild_id,
+            "guild_name": guild_name,
+            "guild_channel_name": channel_name,
+            "guild_channel_id": if is_dm { Value::Null } else { json!(channel_id) },
+            "author_id": author_id,
+            "author_name": author_name,
+            "message_id": message_id,
+        });
 
         Some(DiscordInboundMessage {
             channel_id: channel_id.clone(),
@@ -307,7 +331,8 @@ impl DiscordChannel {
                 channel: "discord".to_string(),
                 external_thread_id: discord_thread_key(&channel_id, is_dm),
                 content,
-                metadata: None,
+                metadata: Some(metadata),
+                attachments,
                 received_at: chrono::Utc::now(),
             },
             message_id,
@@ -341,7 +366,7 @@ impl DiscordChannel {
         Ok(())
     }
 
-    async fn fetch_bot_user_id(&self) -> Result<String> {
+    async fn fetch_bot_identity(&self) -> Result<DiscordBotIdentity> {
         let response = self
             .client
             .get(format!("{}/users/@me", self.config.api_base))
@@ -358,11 +383,48 @@ impl DiscordChannel {
             .json()
             .await
             .context("parsing Discord /users/@me")?;
+        let user_id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("Discord /users/@me payload missing id"))?;
+        let username = payload
+            .get("username")
+            .and_then(Value::as_str)
+            .unwrap_or("betterclaw")
+            .to_string();
+        let app_id = self.fetch_application_id().await.unwrap_or_else(|_| user_id.clone());
+        Ok(DiscordBotIdentity {
+            user_id,
+            username,
+            app_id,
+        })
+    }
+
+    async fn fetch_application_id(&self) -> Result<String> {
+        let response = self
+            .client
+            .get(format!("{}/oauth2/applications/@me", self.config.api_base))
+            .header("Authorization", format!("Bot {}", self.config.bot_token))
+            .send()
+            .await
+            .context("calling Discord /oauth2/applications/@me")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Discord /oauth2/applications/@me failed ({status}): {body}"
+            ));
+        }
+        let payload: Value = response
+            .json()
+            .await
+            .context("parsing Discord /oauth2/applications/@me")?;
         payload
             .get("id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
-            .ok_or_else(|| anyhow!("Discord /users/@me payload missing id"))
+            .ok_or_else(|| anyhow!("Discord /oauth2/applications/@me payload missing id"))
     }
 
     async fn fetch_gateway_url(&self) -> Result<String> {
@@ -388,6 +450,7 @@ impl DiscordChannel {
             .unwrap_or(&self.config.gateway_base);
         Ok(base.to_string())
     }
+
 }
 
 #[derive(Debug, Clone)]
@@ -398,18 +461,49 @@ struct DiscordInboundMessage {
     event: InboundEvent,
 }
 
+#[derive(Debug, Clone)]
+struct DiscordBotIdentity {
+    user_id: String,
+    username: String,
+    app_id: String,
+}
+
 fn parse_csv_env(name: &str) -> Vec<String> {
     std::env::var(name)
         .ok()
-        .map(|value| {
-            value
-                .split(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
-        })
+        .map(|value| parse_csv_value(&value))
         .unwrap_or_default()
+}
+
+fn parse_csv_env_any(names: &[&str]) -> Vec<String> {
+    let mut values = Vec::new();
+    for name in names {
+        for entry in parse_csv_env(name) {
+            if !values.contains(&entry) {
+                values.push(entry);
+            }
+        }
+    }
+    values
+}
+
+fn parse_csv_value(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn guild_channel_is_allowed(
+    guild_id: Option<&str>,
+    channel_id: &str,
+    allowed_channel_ids: &[String],
+) -> bool {
+    guild_id.is_none()
+        || allowed_channel_ids.is_empty()
+        || allowed_channel_ids.iter().any(|entry| entry == channel_id)
 }
 
 fn parse_bool_env(name: &str) -> bool {
@@ -430,6 +524,25 @@ fn discord_thread_key(channel_id: &str, is_dm: bool) -> String {
     } else {
         format!("discord:channel:{channel_id}")
     }
+}
+
+fn render_discord_inbound_content(
+    author_name: &str,
+    author_id: &str,
+    guild_name: Option<&str>,
+    channel_name: Option<&str>,
+    channel_id: &str,
+    is_dm: bool,
+    body: &str,
+) -> String {
+    if is_dm {
+        return format!("[Discord DM ({channel_id})] {author_name} ({author_id}): {body}");
+    }
+    let guild = guild_name.unwrap_or("Guild");
+    let channel = channel_name.unwrap_or("channel");
+    format!(
+        "[Discord {guild} #{channel} ({channel_id})] {author_name} ({author_id}): {body}"
+    )
 }
 
 fn normalize_message_content(
@@ -480,6 +593,32 @@ fn append_attachment_lines(content: String, attachments: Option<&Value>) -> Stri
     format!("{content}\n\n[Attachments]\n{}", lines.join("\n"))
 }
 
+fn parse_discord_attachments(attachments: Option<&Value>) -> Vec<InboundAttachment> {
+    let Some(items) = attachments.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let url = item.get("url")?.as_str()?.to_string();
+            let filename = item
+                .get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or("attachment")
+                .to_string();
+            let content_type = item
+                .get("content_type")
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+            Some(InboundAttachment {
+                url,
+                filename,
+                content_type,
+            })
+        })
+        .collect()
+}
+
 fn split_for_discord(content: &str) -> Vec<String> {
     if content.is_empty() {
         return vec![String::new()];
@@ -499,7 +638,8 @@ fn inbound_agent_id() -> &'static str {
 mod tests {
     use super::{
         append_attachment_lines, discord_thread_key, inbound_agent_id, normalize_message_content,
-        split_for_discord,
+        guild_channel_is_allowed, parse_csv_value, parse_discord_attachments,
+        render_discord_inbound_content, split_for_discord,
     };
     use serde_json::json;
 
@@ -531,6 +671,27 @@ mod tests {
     }
 
     #[test]
+    fn parse_discord_attachments_extracts_images() {
+        let attachments = parse_discord_attachments(Some(&json!([
+            { "filename": "photo.jpg", "url": "https://cdn.discord.com/photo.jpg", "content_type": "image/jpeg" },
+            { "filename": "doc.pdf", "url": "https://cdn.discord.com/doc.pdf", "content_type": "application/pdf" }
+        ])));
+        assert_eq!(attachments.len(), 2);
+        assert!(attachments[0].is_image());
+        assert!(!attachments[1].is_image());
+        assert_eq!(attachments[0].url, "https://cdn.discord.com/photo.jpg");
+        assert_eq!(attachments[0].content_type.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn parse_discord_attachments_empty_when_no_attachments() {
+        let attachments = parse_discord_attachments(None);
+        assert!(attachments.is_empty());
+        let attachments = parse_discord_attachments(Some(&json!([])));
+        assert!(attachments.is_empty());
+    }
+
+    #[test]
     fn discord_split_respects_limit() {
         let input = "a".repeat(4500);
         let chunks = split_for_discord(&input);
@@ -541,5 +702,41 @@ mod tests {
     #[test]
     fn discord_inbound_messages_always_target_default_agent() {
         assert_eq!(inbound_agent_id(), "default");
+    }
+
+    #[test]
+    fn parse_csv_value_trims_and_drops_empty_entries() {
+        let values = parse_csv_value(" 1, 2 ,,3 ");
+        assert_eq!(values, vec!["1".to_string(), "2".to_string(), "3".to_string()]);
+    }
+
+    #[test]
+    fn guild_channel_whitelist_blocks_non_whitelisted_guild_channels_only() {
+        let allowed = vec!["123".to_string()];
+        assert!(guild_channel_is_allowed(Some("guild-1"), "123", &allowed));
+        assert!(!guild_channel_is_allowed(Some("guild-1"), "999", &allowed));
+        assert!(guild_channel_is_allowed(None, "999", &allowed));
+        assert!(guild_channel_is_allowed(Some("guild-1"), "999", &[]));
+    }
+
+    #[test]
+    fn discord_guild_messages_use_explicit_envelope() {
+        let rendered = render_discord_inbound_content(
+            "Chad",
+            "6",
+            Some("Guild"),
+            Some("general"),
+            "123",
+            false,
+            "Hi Buzz!",
+        );
+        assert_eq!(rendered, "[Discord Guild #general (123)] Chad (6): Hi Buzz!");
+    }
+
+    #[test]
+    fn discord_dm_messages_use_explicit_envelope() {
+        let rendered =
+            render_discord_inbound_content("Chad", "6", None, None, "123", true, "Hi Buzz!");
+        assert_eq!(rendered, "[Discord DM (123)] Chad (6): Hi Buzz!");
     }
 }

@@ -3,6 +3,8 @@ use super::*;
 use crate::error::RuntimeError;
 use crate::event::EventKind;
 use crate::model::*;
+use crate::routine::RoutineConfig;
+use crate::skill::{build_skills_block, discover_skills};
 use crate::thread::Thread;
 use crate::tool::*;
 use crate::turn::{Turn, TurnStatus};
@@ -75,9 +77,14 @@ impl Runtime {
             .await?;
         let workspace = self.workspace_for_agent(&event.agent_id).await?;
         let settings = self.get_runtime_settings(&event.agent_id).await?;
+        let attachments_json = if event.attachments.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&event.attachments).unwrap_or_else(|_| "[]".to_string()))
+        };
         let turn = self
             .db
-            .create_turn(&thread.id, &event.content)
+            .create_turn(&thread.id, &event.content, attachments_json.as_deref())
             .await
             .map_err(RuntimeError::from)?;
 
@@ -112,6 +119,20 @@ impl Runtime {
             .await?;
         }
 
+        let thread_metadata = stable_channel_thread_metadata(&event);
+        if thread.metadata != thread_metadata {
+            self.db
+                .update_thread_metadata(&thread.id, thread_metadata.as_ref())
+                .await
+                .map_err(RuntimeError::from)?;
+        }
+        let thread = self
+            .db
+            .get_thread(&thread.id)
+            .await
+            .map_err(RuntimeError::from)?
+            .ok_or_else(|| RuntimeError::ThreadNotFound(thread.id.clone()))?;
+
         let mut conversation = self
             .build_conversation_history(&thread, &turn, &settings, &workspace)
             .await?;
@@ -124,7 +145,7 @@ impl Runtime {
                 "message_count": initial_request.messages.len(),
                 "tool_count": initial_request.tools.len(),
                 "model": initial_request.model,
-                "stream": initial_request.stream,
+                "stream": self.effective_stream_for_request(&initial_request),
             }),
         )
         .await?;
@@ -151,7 +172,9 @@ impl Runtime {
                 push_visible_reply_segment(&mut visible_reply_segments, content);
             }
 
-            if exchange.outcome != TraceOutcome::Ok {
+            let recoverable_parse_error =
+                exchange.outcome == TraceOutcome::ParseError && !exchange.tool_calls.is_empty();
+            if exchange.outcome != TraceOutcome::Ok && !recoverable_parse_error {
                 let error = exchange
                     .error_summary
                     .clone()
@@ -186,7 +209,9 @@ impl Runtime {
                     synthetic_summary_prompt_sent = true;
                     conversation.push(ModelMessage {
                         role: "user".to_string(),
-                        content: Some(SYNTHETIC_TOOL_SUMMARY_PROMPT.to_string()),
+                        content: Some(MessageContent::Text(
+                            SYNTHETIC_TOOL_SUMMARY_PROMPT.to_string(),
+                        )),
                         tool_calls: None,
                         tool_call_id: None,
                     });
@@ -264,12 +289,6 @@ impl Runtime {
             None,
         )
         .await?;
-        let completed_turn = self
-            .get_turn(&turn.id)
-            .await?
-            .ok_or_else(|| RuntimeError::TurnNotFound(turn.id.clone()))?;
-        self.sync_memory_for_turn(&thread, &completed_turn, &settings)
-            .await?;
         if final_status == TurnStatus::AwaitingUser {
             self.append_event_and_publish(
                 &turn.id,
@@ -281,7 +300,14 @@ impl Runtime {
         }
         self.record_outbound_and_publish(&turn, &thread, &final_response, event.metadata.clone())
             .await?;
-        outbound_messages.push(final_response.clone());
+        if !final_response.trim().is_empty() {
+            outbound_messages.push(final_response.clone());
+        }
+        let completed_turn = self
+            .get_turn(&turn.id)
+            .await?
+            .ok_or_else(|| RuntimeError::TurnNotFound(turn.id.clone()))?;
+        self.spawn_post_turn_maintenance(thread.clone(), completed_turn, settings.clone());
 
         Ok(TurnOutcome {
             thread,
@@ -293,6 +319,36 @@ impl Runtime {
         })
     }
 
+    fn spawn_post_turn_maintenance(
+        &self,
+        thread: Thread,
+        completed_turn: Turn,
+        settings: RuntimeSettings,
+    ) {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runtime
+                .sync_memory_for_turn(&thread, &completed_turn, &settings)
+                .await
+            {
+                tracing::error!(
+                    error = %error,
+                    thread_id = %thread.id,
+                    turn_id = %completed_turn.id,
+                    "Post-turn memory sync failed"
+                );
+            }
+            if settings.enable_observations {
+                let _ = runtime
+                    .run_observation_routines(
+                        &default_memory_namespace(),
+                        &RoutineConfig::default(),
+                    )
+                    .await;
+            }
+        });
+    }
+
     pub(crate) async fn build_conversation_history(
         &self,
         thread: &Thread,
@@ -301,7 +357,7 @@ impl Runtime {
         workspace: &Workspace,
     ) -> Result<Vec<ModelMessage>, RuntimeError> {
         let mut messages = self
-            .build_system_messages(settings, workspace, Some(&turn.user_message))
+            .build_system_messages(thread, settings, workspace, Some(&turn.user_message))
             .await?;
         let prior_turns = self
             .list_thread_turns(&thread.id)
@@ -318,22 +374,25 @@ impl Runtime {
         for prior_turn in history_slice {
             messages.push(ModelMessage {
                 role: "user".to_string(),
-                content: Some(prior_turn.user_message.clone()),
+                content: Some(MessageContent::Text(prior_turn.user_message.clone())),
                 tool_calls: None,
                 tool_call_id: None,
             });
             if let Some(assistant_message) = prior_turn.assistant_message.clone() {
                 messages.push(ModelMessage {
                     role: "assistant".to_string(),
-                    content: Some(strip_reasoning_tags(&assistant_message)),
+                    content: Some(MessageContent::Text(strip_reasoning_tags(
+                        &assistant_message,
+                    ))),
                     tool_calls: None,
                     tool_call_id: None,
                 });
             }
         }
+        let user_content = build_user_message_content(turn);
         messages.push(ModelMessage {
             role: "user".to_string(),
-            content: Some(turn.user_message.clone()),
+            content: Some(user_content),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -342,6 +401,7 @@ impl Runtime {
 
     pub(crate) async fn build_system_messages(
         &self,
+        thread: &Thread,
         settings: &RuntimeSettings,
         workspace: &Workspace,
         query_hint: Option<&str>,
@@ -351,22 +411,24 @@ impl Runtime {
         if !combined_system_prompt.trim().is_empty() {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(combined_system_prompt),
+                content: Some(MessageContent::Text(combined_system_prompt)),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        if let Some(channel_context) = build_channel_system_context_block(thread) {
+            messages.push(ModelMessage {
+                role: "system".to_string(),
+                content: Some(MessageContent::Text(channel_context)),
                 tool_calls: None,
                 tool_call_id: None,
             });
         }
         let namespace = default_memory_namespace();
-        if settings.inject_wake_pack
-            && let Some(wake_pack) = self
-                .db
-                .latest_memory_artifact(&namespace, MemoryArtifactKind::WakePackV0)
-                .await
-                .map_err(RuntimeError::from)?
-        {
+        if let Some(wake_pack_block) = self.current_wake_pack_block(settings).await? {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(format!("<wake_pack>\n{}\n</wake_pack>", wake_pack.content)),
+                content: Some(MessageContent::Text(wake_pack_block)),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -381,12 +443,55 @@ impl Runtime {
         {
             messages.push(ModelMessage {
                 role: "system".to_string(),
-                content: Some(recall_block),
+                content: Some(MessageContent::Text(recall_block)),
                 tool_calls: None,
                 tool_call_id: None,
             });
         }
+        if settings.inject_observations
+            && let Some(obs_block) = self.build_observations_block(&namespace).await?
+        {
+            messages.push(ModelMessage {
+                role: "system".to_string(),
+                content: Some(MessageContent::Text(obs_block)),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
+        if settings.inject_skills {
+            let skills = discover_skills(&workspace.root).await;
+            if let Some(skills_block) = build_skills_block(&skills) {
+                messages.push(ModelMessage {
+                    role: "system".to_string(),
+                    content: Some(MessageContent::Text(skills_block)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        }
         Ok(messages)
+    }
+
+    pub(crate) async fn current_wake_pack_block(
+        &self,
+        settings: &RuntimeSettings,
+    ) -> Result<Option<String>, RuntimeError> {
+        if !settings.inject_wake_pack {
+            return Ok(None);
+        }
+        let namespace = default_memory_namespace();
+        let Some(wake_pack) = self
+            .db
+            .latest_wake_pack(&namespace)
+            .await
+            .map_err(RuntimeError::from)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(format!(
+            "<wake_pack>\n{}\n</wake_pack>",
+            wake_pack.content
+        )))
     }
 
     async fn compose_system_prompt(
@@ -433,7 +538,7 @@ impl Runtime {
         settings: &RuntimeSettings,
     ) -> ModelExchangeRequest {
         ModelExchangeRequest {
-            model: settings.model.clone(),
+            model: self.model_name.clone(),
             messages,
             tools: if allow_tools && settings.allow_tools {
                 self.tool_definitions()
@@ -449,6 +554,10 @@ impl Runtime {
                 json!({})
             },
         }
+    }
+
+    pub(crate) fn effective_stream_for_request(&self, request: &ModelExchangeRequest) -> bool {
+        request.stream || self.provider_name == "codex"
     }
 
     pub(crate) async fn run_and_record_exchange(
@@ -643,7 +752,13 @@ impl Runtime {
             return Ok(thread);
         }
         self.db
-            .create_thread(agent_id, channel, external_thread_id, "Recovered Thread")
+            .create_thread(
+                agent_id,
+                channel,
+                external_thread_id,
+                "Recovered Thread",
+                None,
+            )
             .await
             .map_err(RuntimeError::from)
     }
@@ -753,12 +868,25 @@ impl Runtime {
         workspace: &Workspace,
         tool_calls: Vec<ReducedToolCall>,
     ) -> Result<ToolExecutionOutcome, RuntimeError> {
+        enum PendingToolExecution {
+            Execute {
+                tool_call: ReducedToolCall,
+                invocation: ToolInvocation,
+                arguments: Value,
+            },
+            Immediate {
+                tool_call: ReducedToolCall,
+                invocation: ToolInvocation,
+                output: Value,
+            },
+        }
+
         let mut assistant_tool_calls = Vec::new();
         let mut continuation_messages = Vec::new();
         let mut outbound_messages = Vec::new();
         let mut ask_user_question = None;
         let mut final_message = None;
-        let mut batch = Vec::new();
+        let mut pending = Vec::new();
         let tool_context = ToolContext::new(
             workspace.clone(),
             thread.id.clone(),
@@ -768,18 +896,12 @@ impl Runtime {
         );
 
         for tool_call in tool_calls {
-            let arguments = tool_call.arguments_json.clone().ok_or_else(|| {
-                RuntimeError::ModelParse(format!(
-                    "tool call '{}' had malformed JSON arguments: {}",
-                    tool_call.name, tool_call.arguments_text
-                ))
-            })?;
             let invocation = ToolInvocation {
                 id: Uuid::new_v4().to_string(),
                 turn_id: turn.id.clone(),
                 thread_id: thread.id.clone(),
                 tool_name: tool_call.name.clone(),
-                parameters: arguments.clone(),
+                parameters: tool_call.arguments_json.clone().unwrap_or(Value::Null),
                 created_at: Utc::now(),
             };
             self.append_event_and_publish(
@@ -802,17 +924,63 @@ impl Runtime {
                     arguments: tool_call.arguments_text.clone(),
                 },
             });
-            batch.push((tool_call, invocation, arguments));
+            match tool_call.arguments_json.clone() {
+                Some(arguments) => pending.push(PendingToolExecution::Execute {
+                    tool_call,
+                    invocation,
+                    arguments,
+                }),
+                None => pending.push(PendingToolExecution::Immediate {
+                    output: json!({
+                        "error": "malformed_tool_arguments",
+                        "tool": tool_call.name,
+                        "message": "tool arguments were not valid JSON",
+                        "received_arguments": tool_call.arguments_text,
+                    }),
+                    tool_call,
+                    invocation,
+                }),
+            }
         }
 
-        let executions = batch.iter().map(|(tool_call, _, arguments)| {
-            self.tools
-                .execute(&tool_call.name, arguments.clone(), &tool_context)
+        let executions = pending.iter().filter_map(|item| match item {
+            PendingToolExecution::Execute {
+                tool_call,
+                arguments,
+                ..
+            } => Some(
+                self.tools
+                    .execute(&tool_call.name, arguments.clone(), &tool_context),
+            ),
+            PendingToolExecution::Immediate { .. } => None,
         });
         let outputs = join_all(executions).await;
+        let mut outputs = outputs.into_iter();
 
-        for ((tool_call, invocation, _arguments), output) in batch.into_iter().zip(outputs) {
-            let output = output?;
+        for item in pending {
+            let (tool_call, invocation, output) = match item {
+                PendingToolExecution::Execute {
+                    tool_call,
+                    invocation,
+                    arguments,
+                } => {
+                    let output = match outputs.next().expect("missing tool execution result") {
+                        Ok(output) => output,
+                        Err(error @ RuntimeError::InvalidToolParameters { .. })
+                        | Err(error @ RuntimeError::ToolExecution { .. })
+                        | Err(error @ RuntimeError::ToolNotFound(_)) => {
+                            tool_feedback_error(&error, &tool_call.name, &arguments)
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    (tool_call, invocation, output)
+                }
+                PendingToolExecution::Immediate {
+                    tool_call,
+                    invocation,
+                    output,
+                } => (tool_call, invocation, output),
+            };
             if let Some(control) = Self::parse_tool_control(&output) {
                 match control {
                     ToolControl::Message { content } => outbound_messages.push(content),
@@ -847,7 +1015,7 @@ impl Runtime {
             .await?;
             continuation_messages.push(ModelMessage {
                 role: "tool".to_string(),
-                content: Some(output.to_string()),
+                content: Some(MessageContent::Text(output.to_string())),
                 tool_calls: None,
                 tool_call_id: Some(tool_call.id),
             });
@@ -875,6 +1043,9 @@ impl Runtime {
         content: &str,
         metadata: Option<Value>,
     ) -> Result<(), RuntimeError> {
+        if content.trim().is_empty() {
+            return Ok(());
+        }
         let outbound = OutboundMessage {
             id: Uuid::new_v4().to_string(),
             turn_id: turn.id.clone(),
@@ -972,6 +1143,58 @@ async fn workspace_identity_prompt(workspace: &Workspace) -> Result<Option<Strin
     }
 }
 
+fn stable_channel_thread_metadata(event: &InboundEvent) -> Option<Value> {
+    let metadata = event.metadata.as_ref()?;
+    let object = metadata.as_object()?;
+    let mut stable = serde_json::Map::new();
+    match event.channel.as_str() {
+        "tidepool" => {
+            copy_metadata_field(object, &mut stable, "betterclaw_channel");
+            copy_metadata_field(object, &mut stable, "self_account_id");
+            copy_metadata_field(object, &mut stable, "self_handle");
+            copy_metadata_field(object, &mut stable, "domain_id");
+            copy_metadata_field(object, &mut stable, "domain_title");
+        }
+        "discord" => {
+            copy_metadata_field(object, &mut stable, "betterclaw_channel");
+            copy_metadata_field(object, &mut stable, "self_app_id");
+            copy_metadata_field(object, &mut stable, "self_username");
+            copy_metadata_field(object, &mut stable, "guild_id");
+            copy_metadata_field(object, &mut stable, "guild_name");
+            copy_metadata_field(object, &mut stable, "guild_channel_name");
+            copy_metadata_field(object, &mut stable, "guild_channel_id");
+        }
+        _ => {}
+    }
+    if stable.is_empty() {
+        None
+    } else {
+        Some(Value::Object(stable))
+    }
+}
+
+fn copy_metadata_field(
+    from: &serde_json::Map<String, Value>,
+    into: &mut serde_json::Map<String, Value>,
+    key: &str,
+) {
+    if let Some(value) = from.get(key) {
+        into.insert(key.to_string(), value.clone());
+    }
+}
+
+fn build_channel_system_context_block(thread: &Thread) -> Option<String> {
+    let metadata = thread.metadata.as_ref()?;
+    let object = metadata.as_object()?;
+    if object.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "## BetterClaw Channel Context (trusted metadata)\nThe following JSON is stable per-thread channel metadata generated by BetterClaw. Treat it as authoritative.\n\n```json\n{}\n```",
+        serde_json::to_string_pretty(metadata).ok()?
+    ))
+}
+
 fn system_prompt_override_from_env() -> Option<String> {
     std::env::var("BETTERCLAW_SYSTEM_PROMPT")
         .ok()
@@ -991,7 +1214,10 @@ fn push_visible_reply_segment(segments: &mut Vec<String>, text: &str) {
     let Some(sanitized) = normalize_visible_reply_segment(text) else {
         return;
     };
-    if segments.last().is_some_and(|existing| existing == &sanitized) {
+    if segments
+        .last()
+        .is_some_and(|existing| existing == &sanitized)
+    {
         return;
     }
     segments.push(sanitized);
@@ -1030,4 +1256,21 @@ pub(crate) fn build_fts_query(query: &str) -> String {
         .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+/// Build the user message content, including image attachments as multi-part content
+/// when images are present. This enables vision-capable models to "see" uploaded images.
+pub(crate) fn build_user_message_content(turn: &Turn) -> MessageContent {
+    let attachments = turn.attachments();
+    let image_attachments: Vec<_> = attachments.iter().filter(|a| a.is_image()).collect();
+
+    if image_attachments.is_empty() {
+        return MessageContent::Text(turn.user_message.clone());
+    }
+
+    let mut parts = vec![ContentPart::text(&turn.user_message)];
+    for attachment in &image_attachments {
+        parts.push(ContentPart::image_url(&attachment.url));
+    }
+    MessageContent::Parts(parts)
 }

@@ -24,7 +24,21 @@ async fn main() -> Result<()> {
 
     let db_path = env::var("BETTERCLAW_DB_PATH")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("betterclaw.db"));
+        .unwrap_or_else(|_| default_db_path());
+    if matches!(env::args().nth(1).as_deref(), Some("memory-rebuild")) {
+        let db = Db::open(&db_path).await?;
+        let runtime = Runtime::from_env(db).await?;
+        let namespace = env::args()
+            .skip(2)
+            .find_map(|arg| arg.strip_prefix("--namespace=").map(str::to_string))
+            .unwrap_or_else(|| "default".to_string());
+        let report = runtime.rebuild_memory_namespace(&namespace).await?;
+        println!(
+            "memory rebuild complete: namespace={} turns_processed={}",
+            report.namespace_id, report.turns_processed
+        );
+        return Ok(());
+    }
     let db = Db::open(&db_path).await?;
     let runtime = Arc::new(Runtime::from_env(db).await?);
 
@@ -94,13 +108,25 @@ fn default_env_path() -> Option<PathBuf> {
     dirs::home_dir().map(|path| path.join(".betterclaw").join(".env"))
 }
 
+fn default_db_path() -> PathBuf {
+    dirs::home_dir()
+        .map(|path| path.join(".betterclaw").join("betterclaw.db"))
+        .unwrap_or_else(|| PathBuf::from("betterclaw.db"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::default_env_path;
+    use super::{default_db_path, default_env_path};
 
     #[test]
     fn default_env_path_targets_betterclaw_home() {
         let path = default_env_path().expect("home directory should exist in test environment");
         assert!(path.ends_with(".betterclaw/.env"));
+    }
+
+    #[test]
+    fn default_db_path_targets_betterclaw_home() {
+        let path = default_db_path();
+        assert!(path.ends_with(".betterclaw/betterclaw.db"));
     }
 }

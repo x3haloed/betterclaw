@@ -6,35 +6,6 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::process::Command;
 
-pub struct EchoTool;
-
-#[async_trait]
-impl Tool for EchoTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "echo".to_string(),
-            description: "Return the provided message. Useful for testing the tool loop."
-                .to_string(),
-            parameters_schema: json!({
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string" }
-                },
-                "required": ["message"],
-                "additionalProperties": false
-            }),
-        }
-    }
-
-    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
-        require_string(params, "echo", "message").map(|_| ())
-    }
-
-    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
-        Ok(json!({ "message": require_string(&params, "echo", "message")? }))
-    }
-}
-
 pub struct ShellTool;
 
 #[async_trait]
@@ -204,6 +175,39 @@ impl Tool for MessageTool {
     }
 }
 
+pub struct NoOpTool;
+
+#[async_trait]
+impl Tool for NoOpTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "no_op".to_string(),
+            description: "Record that no external action or user-facing reply is needed for this step. Use this when a tool call is required but the correct action is to do nothing and continue or conclude.".to_string(),
+            parameters_schema: json!({
+                "type": "object",
+                "properties": {
+                    "reason": { "type": "string" }
+                },
+                "required": ["reason"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn validate(&self, params: &Value) -> Result<(), RuntimeError> {
+        require_string(params, "no_op", "reason")?;
+        Ok(())
+    }
+
+    async fn call(&self, params: Value, _context: &ToolContext) -> Result<Value, RuntimeError> {
+        let reason = require_string(&params, "no_op", "reason")?;
+        Ok(json!({
+            "status": "no_op",
+            "reason": reason,
+        }))
+    }
+}
+
 pub struct FinalMessageTool;
 
 #[async_trait]
@@ -250,7 +254,7 @@ mod tests {
 
     use super::super::{Tool, ToolContext, resolve_path};
     use crate::db::Db;
-    use crate::tool::tool_core::{EchoTool, ShellTool};
+    use crate::tool::tool_core::{NoOpTool, ShellTool};
     use crate::tool::tool_fs::{
         CreateFileTool, EditFileTool, FindTool, GrepTool, ListDirTool, ReadFileTool,
     };
@@ -267,6 +271,25 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn noop_tool_returns_reason() {
+        let dir = tempdir().unwrap();
+        let context = test_context(dir.path()).await;
+        let tool = NoOpTool;
+        let output = tool
+            .call(
+                json!({"reason":"No reply needed for this coordination ping."}),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert_eq!(output["status"], json!("no_op"));
+        assert_eq!(
+            output["reason"],
+            json!("No reply needed for this coordination ping.")
+        );
+    }
+
     #[test]
     fn relative_paths_resolve_from_workspace_root() {
         let workspace = Workspace::new("default", "/tmp/workspace");
@@ -279,13 +302,6 @@ mod tests {
         let workspace = Workspace::new("default", "/tmp/workspace");
         let resolved = resolve_path(&workspace, "/var/tmp/test.txt");
         assert_eq!(resolved, PathBuf::from("/var/tmp/test.txt"));
-    }
-
-    #[tokio::test]
-    async fn echo_validation_rejects_missing_message() {
-        let tool = EchoTool;
-        let result = tool.validate(&json!({}));
-        assert!(result.is_err());
     }
 
     #[tokio::test]

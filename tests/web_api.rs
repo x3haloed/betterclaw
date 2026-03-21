@@ -87,7 +87,7 @@ async fn posting_message_creates_turn_and_trace() {
 }
 
 #[tokio::test]
-async fn malformed_tool_call_records_trace_and_fails_cleanly() {
+async fn malformed_tool_call_records_trace_and_stays_recoverable() {
     let app = app().await;
 
     let create = app
@@ -120,7 +120,17 @@ async fn malformed_tool_call_records_trace_and_fails_cleanly() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let posted: Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        posted["response"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("malformed_tool_arguments")
+    );
 
     let detail = app
         .clone()
@@ -137,7 +147,7 @@ async fn malformed_tool_call_records_trace_and_fails_cleanly() {
         .unwrap();
     let detail: Value = serde_json::from_slice(&body).unwrap();
     let turns = detail["turns"].as_array().unwrap();
-    assert_eq!(turns.last().unwrap()["status"], "failed");
+    assert_eq!(turns.last().unwrap()["status"], "succeeded");
 
     let traces = app
         .clone()
@@ -145,7 +155,7 @@ async fn malformed_tool_call_records_trace_and_fails_cleanly() {
             Request::builder()
                 .uri(format!(
                     "/api/turns/{}/traces",
-                    turns.last().unwrap()["id"].as_str().unwrap()
+                    posted["turn_id"].as_str().unwrap()
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -216,6 +226,7 @@ async fn trace_endpoint_returns_full_payloads() {
         .await
         .unwrap();
     let detail: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(detail["trace_role"], "agent");
     assert!(detail["request_body"].is_object());
     assert!(detail["response_body"].is_object());
 }
@@ -324,7 +335,7 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
                 .uri("/api/settings/runtime")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"model":"custom-model","system_prompt":"Be extremely concise.","max_tokens":77,"stream":false,"allow_tools":false,"max_history_turns":3}"#,
+                    r#"{"system_prompt":"Be extremely concise.","max_tokens":77,"stream":false,"allow_tools":false,"max_history_turns":3}"#,
                 ))
                 .unwrap(),
         )
@@ -386,8 +397,8 @@ async fn runtime_settings_round_trip_and_affect_request_payload() {
         .await
         .unwrap();
     let trace: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(trace["trace"]["model"], "custom-model");
-    assert_eq!(trace["request_body"]["model"], "custom-model");
+    assert_eq!(trace["trace"]["model"], "local-debug-model");
+    assert_eq!(trace["request_body"]["model"], "local-debug-model");
     assert_eq!(trace["request_body"]["max_tokens"], 77);
     assert_eq!(trace["request_body"]["stream"], false);
     assert_eq!(trace["request_body"]["tools"], Value::Array(vec![]));
@@ -498,4 +509,91 @@ async fn retention_settings_and_prune_endpoint_replace_old_blobs() {
         .unwrap();
     let detail: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(detail["request_body"]["pruned"], true);
+}
+
+#[tokio::test]
+async fn wake_pack_preview_endpoint_returns_literal_current_block() {
+    let (app, runtime) = app_with_runtime().await;
+    runtime
+        .db()
+        .insert_wake_pack_v2(
+            "default",
+            "Current wake pack line 1\nline 2",
+            None,
+            &Vec::new(),
+        )
+        .await
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/settings/runtime/wake-pack-preview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let preview: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(preview["enabled"], true);
+    assert_eq!(
+        preview["content"],
+        "<wake_pack>\nCurrent wake pack line 1\nline 2\n</wake_pack>"
+    );
+}
+
+#[tokio::test]
+async fn health_endpoint_returns_ok() {
+    let app = app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert!(json["commit"].is_string());
+}
+
+#[tokio::test]
+async fn api_status_endpoint_returns_runtime_info() {
+    let app = app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
+    assert!(json["agent_id"].is_string());
+    assert!(json["thread_count"].is_number());
+    assert!(json["channels"].is_object());
+    assert!(json["channels"]["tidepool"].is_object());
+    assert!(json["channels"]["discord"].is_object());
 }

@@ -1,6 +1,7 @@
 pub mod events;
 pub(crate) mod internal;
 pub mod memory;
+pub mod routines;
 pub mod settings;
 #[cfg(test)]
 mod tests;
@@ -15,25 +16,61 @@ use anyhow::Result;
 use chrono::Utc;
 use libsql::{Builder, Connection, Database, params};
 use std::path::Path;
+use tokio::sync::{Mutex, MutexGuard};
 
 pub struct Db {
     database: Database,
+    write_lock: Mutex<()>,
 }
 
 impl Db {
+    const BUSY_TIMEOUT_MS: u64 = 5_000;
+
     pub async fn open(path: &Path) -> Result<Self> {
         let database = Builder::new_local(path).build().await?;
-        let db = Self { database };
+        let db = Self {
+            database,
+            write_lock: Mutex::new(()),
+        };
         db.migrate().await?;
         Ok(db)
     }
 
-    pub(crate) fn connect(&self) -> Result<Connection> {
-        Ok(self.database.connect()?)
+    async fn configure_connection(&self, conn: &Connection) -> Result<()> {
+        let pragma = format!(
+            r#"
+            PRAGMA busy_timeout = {};
+            PRAGMA foreign_keys = ON;
+            "#,
+            Self::BUSY_TIMEOUT_MS
+        );
+        conn.execute_batch(&pragma).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn connect(&self) -> Result<Connection> {
+        let conn = self.database.connect()?;
+        self.configure_connection(&conn).await?;
+        Ok(conn)
+    }
+
+    pub(crate) async fn write_connection(&self) -> Result<(MutexGuard<'_, ()>, Connection)> {
+        let guard = self.write_lock.lock().await;
+        let conn = self.connect().await?;
+        Ok((guard, conn))
     }
 
     async fn migrate(&self) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA foreign_keys = ON;
+            "#,
+        )
+        .await?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS agents (
@@ -53,6 +90,7 @@ impl Db {
                 channel TEXT NOT NULL,
                 external_thread_id TEXT NOT NULL,
                 title TEXT NOT NULL,
+                metadata_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(agent_id, channel, external_thread_id)
@@ -125,7 +163,6 @@ impl Db {
             );
             CREATE TABLE IF NOT EXISTS runtime_settings (
                 agent_id TEXT PRIMARY KEY,
-                model TEXT NOT NULL,
                 system_prompt TEXT NOT NULL,
                 max_tokens INTEGER NOT NULL,
                 stream INTEGER NOT NULL,
@@ -184,10 +221,149 @@ impl Db {
                 entry_id UNINDEXED,
                 content
             );
+            CREATE TABLE IF NOT EXISTS observations (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                detail TEXT,
+                citations_json TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_observations_namespace_kind
+                ON observations(namespace_id, kind, resolved);
+            CREATE INDEX IF NOT EXISTS idx_observations_created
+                ON observations(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_facts (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                fact_key TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT NOT NULL,
+                falsifier TEXT NOT NULL,
+                confidence REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_facts_namespace_created
+                ON memory_facts(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_fact_evidence (
+                fact_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                PRIMARY KEY(fact_id, entry_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_invariant_candidates (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                classifier TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT,
+                falsifier TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_invariant_candidates_namespace_created
+                ON memory_invariant_candidates(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_candidate_facts (
+                candidate_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                PRIMARY KEY(candidate_id, fact_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_invariants (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT NOT NULL,
+                falsifier TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_invariants_namespace_status
+                ON memory_invariants(namespace_id, status, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_invariant_facts (
+                invariant_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                PRIMARY KEY(invariant_id, fact_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_invariant_supersedes (
+                invariant_id TEXT NOT NULL,
+                superseded_invariant_id TEXT NOT NULL,
+                PRIMARY KEY(invariant_id, superseded_invariant_id)
+            );
+            CREATE TABLE IF NOT EXISTS memory_policies (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                evidence_note TEXT,
+                candidate_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_preferences (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                evidence_note TEXT,
+                candidate_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_hypotheses (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT,
+                falsifier TEXT,
+                candidate_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_drift_items (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                claim TEXT NOT NULL,
+                support_excerpt TEXT,
+                falsifier TEXT,
+                citations_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_drift_items_namespace_kind_created
+                ON memory_drift_items(namespace_id, kind, created_at DESC);
+            CREATE TABLE IF NOT EXISTS memory_drift_item_facts (
+                drift_item_id TEXT NOT NULL,
+                fact_id TEXT NOT NULL,
+                PRIMARY KEY(drift_item_id, fact_id)
+            );
+            CREATE TABLE IF NOT EXISTS wake_packs (
+                id TEXT PRIMARY KEY,
+                namespace_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_wake_packs_namespace_created
+                ON wake_packs(namespace_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS wake_pack_invariants (
+                wake_pack_id TEXT NOT NULL,
+                invariant_id TEXT NOT NULL,
+                PRIMARY KEY(wake_pack_id, invariant_id)
+            );
 
             "#,
         )
         .await?;
+        self.add_column_if_missing(&conn, "threads", "metadata_json", "TEXT")
+            .await?;
         self.add_column_if_missing(&conn, "outbound_messages", "metadata_json", "TEXT")
             .await?;
         self.add_column_if_missing(
@@ -218,7 +394,32 @@ impl Db {
             "TEXT NOT NULL DEFAULT '[]'",
         )
         .await?;
+        self.drop_column_if_exists(&conn, "runtime_settings", "model")
+            .await?;
         self.drop_column_if_exists(&conn, "runtime_settings", "temperature")
+            .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "enable_observations",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "inject_observations",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(
+            &conn,
+            "runtime_settings",
+            "inject_skills",
+            "INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+        self.add_column_if_missing(&conn, "turns", "attachments_json", "TEXT")
             .await?;
         Ok(())
     }
@@ -264,7 +465,7 @@ impl Db {
     }
 
     pub async fn seed_default_agent(&self, agent: &Agent, workspace: &Workspace) -> Result<()> {
-        let conn = self.connect()?;
+        let (_write_guard, conn) = self.write_connection().await?;
         let now = Utc::now().to_rfc3339();
         conn.execute(
             "INSERT OR IGNORE INTO workspaces (id, root, created_at) VALUES (?, ?, ?)",
@@ -284,7 +485,7 @@ impl Db {
     }
 
     pub async fn load_agent(&self, agent_id: &str) -> Result<Option<Agent>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, display_name, workspace_id FROM agents WHERE id = ?",
@@ -303,7 +504,7 @@ impl Db {
     }
 
     pub async fn load_workspace(&self, workspace_id: &str) -> Result<Option<Workspace>> {
-        let conn = self.connect()?;
+        let conn = self.connect().await?;
         let mut rows = conn
             .query(
                 "SELECT id, root FROM workspaces WHERE id = ?",

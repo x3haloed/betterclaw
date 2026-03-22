@@ -17,6 +17,34 @@ enum CompressorArtifactClassifier {
     Hypothesis,
 }
 
+#[derive(serde::Deserialize)]
+struct CompressorPrompts {
+    default: String,
+    models: std::collections::HashMap<String, String>,
+}
+
+fn load_compressor_prompt(model_name: &str) -> String {
+    let fallback = "You are BetterClaw's memory compressor. Your goal is to maintain a tight, causative map of local reality (The Invariants). \n\nExtract physics, not history. \n- State current reality: Write invariants as present-tense empirical facts about the environment, the user, or the system state.\n- Generalize on Falsification: When new evidence falsifies an existing invariant, emit an `invariant_removes` for the old law, and an `invariant_adds` for a newly generalized law that gracefully accounts for all known behavior. Think like a scientist: if a door requires a hard push to open, the invariant is \"This door requires a hard push,\" not a log of every time you pushed it.\n\nOutput a tight patch (`invariant_adds` and `invariant_removes`). \nUse `policies`, `preferences`, and `hypotheses` to record prescriptive advice or transient guesses.".to_string();
+
+    match std::fs::read_to_string("compressor_prompts.json") {
+        Ok(contents) => match serde_json::from_str::<CompressorPrompts>(&contents) {
+            Ok(prompts) => {
+                for (key, prompt) in prompts.models {
+                    if model_name.contains(&key) {
+                        return prompt;
+                    }
+                }
+                prompts.default
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse compressor_prompts.json: {}", e);
+                fallback
+            }
+        },
+        Err(_) => fallback,
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 struct CompressorFactSpec {
     fact_id: String,
@@ -388,17 +416,7 @@ impl Runtime {
             messages: vec![
                 ModelMessage {
                     role: "system".to_string(),
-                    content: Some(MessageContent::Text(
-                        "You are BetterClaw's memory compressor. Your goal is to maintain a tight, causative map of local reality (The Invariants). 
-
-Extract physics, not history. 
-- State current reality: Write invariants as present-tense empirical facts about the environment, the user, or the system state.
-- Generalize on Falsification: When new evidence falsifies an existing invariant, emit an `invariant_removes` for the old law, and an `invariant_adds` for a newly generalized law that gracefully accounts for all known behavior. Think like a scientist: if a door requires a hard push to open, the invariant is \"This door requires a hard push,\" not a log of every time you pushed it.
-
-Output a tight patch (`invariant_adds` and `invariant_removes`). 
-Use `policies`, `preferences`, and `hypotheses` to record prescriptive advice or transient guesses"
-                            .to_string(),
-                    )),
+                    content: Some(MessageContent::Text(load_compressor_prompt(&model_name))),
                     tool_calls: None,
                     tool_call_id: None,
                 },

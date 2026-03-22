@@ -287,7 +287,8 @@ mod tests {
             extra_headers: Vec::new(),
         })
         .expect("engine");
-        let request = ModelExchangeRequest {
+        let request = ModelExchangeRequest { role: None,
+            role: None,
             model: "test-model".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),

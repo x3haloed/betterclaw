@@ -15,6 +15,7 @@ struct EvalConfig {
     evaluator: ModelProviderConfig,
     candidate_prompt: String,
     rubric: String,
+    evaluator_prompt: Option<String>,
     scenarios: Vec<TestScenario>,
 }
 
@@ -25,6 +26,7 @@ struct ModelProviderConfig {
     base_url: Option<String>,
     api_key_env: Option<String>,
     mode: Option<String>,
+    hyperparams: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -160,7 +162,7 @@ async fn main() -> Result<()> {
                 }
             });
 
-            let compressor_request = ModelExchangeRequest {
+            let compressor_request = ModelExchangeRequest { role: Some("compressor".to_string()),
                 model: config.compressor.model.clone(),
                 messages: vec![
                     ModelMessage {
@@ -282,7 +284,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 })),
-                extra: json!({}),
+                extra: config.compressor.hyperparams.clone().unwrap_or_else(|| json!({})),
             };
 
             let compressor_result = compressor_engine.run(compressor_request).await;
@@ -323,9 +325,9 @@ async fn main() -> Result<()> {
         for res in results {
             println!("Evaluating scenario: {}", res.scenario.name);
 
-            let eval_sys_prompt = format!(
-                "You are an expert evaluator grading an AI's memory compression output against a rubric.\n\nRUBRIC:\n{}\n\nReturn a valid JSON with 'score' (number) and 'reasoning' (string).", config.rubric
-            );
+            let default_eval_prompt = "You are an expert evaluator grading an AI's memory compression output against a rubric.\n\nRUBRIC:\n{}\n\nReturn a valid JSON with 'score' (number) and 'reasoning' (string).";
+            let template = config.evaluator_prompt.as_deref().unwrap_or(default_eval_prompt);
+            let eval_sys_prompt = template.replace("{}", &config.rubric);
 
             let eval_user_prompt = format!(
                 "SCENARIO DATA:\n{}\n\nCOMPRESSOR OUTPUT:\n{}",
@@ -333,7 +335,7 @@ async fn main() -> Result<()> {
                 res.compressor_output
             );
 
-            let evaluator_request = ModelExchangeRequest {
+            let evaluator_request = ModelExchangeRequest { role: None,
                 model: config.evaluator.model.clone(),
                 messages: vec![
                     ModelMessage {
@@ -368,7 +370,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 })),
-                extra: json!({}),
+                extra: config.evaluator.hyperparams.clone().unwrap_or_else(|| json!({})),
             };
 
             let evaluator_result = evaluator_engine.run(evaluator_request).await;

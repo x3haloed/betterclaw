@@ -1,0 +1,100 @@
+{
+  "compressor": {
+    "provider": "local",
+    "model": "nvidia/nemotron-3-nano-4b",
+    "base_url": "http://localhost:1234/v1",
+    "mode": "chat"
+  },
+  "evaluator": {
+    "provider": "local",
+    "model": "huihui-qwen3.5-35b-a3b-abliterated-i1",
+    "base_url": "http://localhost:1234/v1",
+    "mode": "chat",
+    "hyperparams": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "presence_penalty": 1.5,
+      "repeat_penalty": 1.0
+    }
+  },
+  "candidate_prompt": "You are BetterClaw's memory compressor. Your goal is to maintain a tight, causative map of local reality (The Invariants). \n\nExtract physics, not history. \n- State current reality: Write invariants as present-tense empirical facts about the environment, the user, or the system state.\n- Generalize on Falsification: When new evidence falsifies an existing invariant, emit an `invariant_removes` for the old law, and an `invariant_adds` for a newly generalized law that gracefully accounts for all known behavior. Think like a scientist: if a door requires a hard push to open, the invariant is \"This door requires a hard push,\" not a log of every time you pushed it.\n\nOutput a tight patch (`invariant_adds` and `invariant_removes`). \nUse `policies`, `preferences`, and `hypotheses` to record prescriptive advice or transient guesses.",
+  "evaluator_prompt": "You are an expert evaluator grading an AI's memory compression output against a rubric.\n\nCRITICAL DEFINITIONS:\n1. Physics vs History: \"Physics\" means extracting generalized, present-tense rules about how the environment behaves. \"History\" is a ledger of what happened. An invariant like 'The script failed at 12:00PM' is History (BAD). An invariant like 'The script requires sudo privileges to execute' is Physics (GOOD).\n2. Transient Segregation: If something is a transient guess, a user preference, or a standard operating policy, they belong in hypotheses, preferences, or policies, NOT invariants. Invariants are for established, tested reality.\n\nAnalyze the COMPRESSOR OUTPUT deeply. Do not be overly generous or easily swayed by polite or lengthy answers. If the output fails to generalize into Physics, or pollutes Invariants with Policies, penalize heavily according to the anchors below.\n\nRUBRIC:\n{}\n\nReturn a valid JSON with 'score' (number) and 'reasoning' (string).",
+  "rubric": "1. Physics vs. History (1-10): Did the model extract a general law of reality (physics) rather than logging an event (history)?\n2. Efficient Patching (1-10): If falsified, did the model emit a clean `invariant_removes` and a generalized `invariant_adds`?\n3. Transient Segregation (1-10): Were prescriptive rules, soft preferences, or guesses placed correctly into `policies`, `preferences`, or `hypotheses` rather than polluting invariants?\n4. Formatting (1-10): Did it obey the output contract?\n\nSCORING ANCHORS:\n9-10: Perfect execution across all or almost all categories.\n7-8: Good execution but minor flaws (e.g., slight historical wording).\n4-6: Failed one major category (e.g., placed a policy into an invariant or wrote a ledger event).\n1-3: Completely missed the objective or catastrophic formatting failure.",
+  "scenarios": [
+    {
+      "name": "Generalizing Falsified Invariant (The Hard Push)",
+      "prior_wake_pack": "The user reported that the workspace ledger tool fails with an error on large inputs. We are investigating.",
+      "active_invariants": [
+        {
+          "id": "inv_1",
+          "text": "The ledger tool previously failed when given a large input due to a potential serialization error."
+        }
+      ],
+      "thread_history": [
+        {
+          "entry_id": "turn_1",
+          "kind": "user_message",
+          "content": "Hey, I figured out why the ledger tool was failing! It wasn't the serialization. The underlying SQLite wrapper just flat out crashes if a single query exceeds 5MB. So it's a hard limit on query size, not a serialization bug.",
+          "created_at": "2026-03-22T09:00:00-07:00"
+        }
+      ]
+    },
+    {
+      "name": "Extracting Physics over History",
+      "prior_wake_pack": "Starting a new debugging session on the authentication flow.",
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "entry_id": "turn_2",
+          "kind": "user_message",
+          "content": "Wow, okay I just spent 2 hours debugging. It turns out the Redis cache we use for auth tokens drops entries after 15 minutes silently without respecting the TTL field we pass it. I filed a bug but for now we have to assume tokens expire after 15m.",
+          "created_at": "2026-03-22T09:30:00-07:00"
+        }
+      ]
+    },
+    {
+      "name": "Segregating Transient Preferences and Policies",
+      "prior_wake_pack": "Working on the UI components for the new CRM project.",
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "entry_id": "turn_3",
+          "kind": "user_message",
+          "content": "We need to make sure all of the primary call-to-action buttons in this project are vibrant blue. Also, whenever you write React components, use functional components with hooks. Don't use class components. I really prefer clean, minimal code without too many comments unless the logic is super weird.",
+          "created_at": "2026-03-22T10:00:00-07:00"
+        }
+      ]
+    },
+    {
+      "name": "Empty Patch for Non-Reality Altering Chat",
+      "prior_wake_pack": "The user is configuring their local development environment. Current operating system is macOS.",
+      "active_invariants": [
+        {
+          "id": "inv_2",
+          "text": "The host operating system is macOS."
+        }
+      ],
+      "thread_history": [
+        {
+          "entry_id": "turn_4",
+          "kind": "user_message",
+          "content": "Can you remind me what the command is to zip a folder?",
+          "created_at": "2026-03-22T10:15:00-07:00"
+        },
+        {
+          "entry_id": "turn_5",
+          "kind": "assistant_message",
+          "content": "You can use `zip -r archive_name.zip folder_name/` to recursively zip a folder in macOS.",
+          "created_at": "2026-03-22T10:15:05-07:00"
+        },
+        {
+          "entry_id": "turn_6",
+          "kind": "user_message",
+          "content": "Thanks, that worked perfectly! Just uploading it now.",
+          "created_at": "2026-03-22T10:17:00-07:00"
+        }
+      ]
+    }
+  ]
+}

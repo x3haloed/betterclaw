@@ -537,7 +537,7 @@ impl Runtime {
         allow_tools: bool,
         settings: &RuntimeSettings,
     ) -> ModelExchangeRequest {
-        ModelExchangeRequest {
+        ModelExchangeRequest { role: Some("agent".to_string()),
             model: self.model_name.clone(),
             messages,
             tools: if allow_tools && settings.allow_tools {

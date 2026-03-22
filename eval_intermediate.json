@@ -1,0 +1,88 @@
+[
+  {
+    "scenario": {
+      "name": "Generalizing Falsified Invariant (The Hard Push)",
+      "prior_wake_pack": "The user reported that the workspace ledger tool fails with an error on large inputs. We are investigating.",
+      "active_invariants": [
+        {
+          "id": "inv_1",
+          "text": "The ledger tool previously failed when given a large input due to a potential serialization error."
+        }
+      ],
+      "thread_history": [
+        {
+          "content": "Hey, I figured out why the ledger tool was failing! It wasn't the serialization. The underlying SQLite wrapper just flat out crashes if a single query exceeds 5MB. So it's a hard limit on query size, not a serialization bug.",
+          "created_at": "2026-03-22T09:00:00-07:00",
+          "entry_id": "turn_1",
+          "kind": "user_message"
+        }
+      ]
+    },
+    "compressor_output": "{\n  \"drift_contradictions\": [],\n  \"drift_flags\": [],\n  \"drift_merges\": [],\n  \"facts\": [\n    {\n      \"citations\": [\"turn_1\"],\n      \"fact_id\": \"fact_1\",\n      \"text\": \"The SQLite wrapper crashes if a single query exceeds 5MB.\",\n      \"support_excerpt\": \"The underlying SQLite wrapper just flat out crashes if a single query exceeds 5MB.\"\n    }\n  ],\n  \"hypotheses\": [\n    \"Large inputs cause queries to exceed the 5MB size limit, leading to crashes rather than serialization errors.\"\n  ],\n  \"invariant_adds\": [\n    {\n      \"citations\": [\"fact_1\"],\n      \"text\": \"This query must not exceed 5MB or the tool will crash.\",\n      \"why_it_holds\": \"The SQLite wrapper exhibits a hard limit of 5MB per query, causing crashes on inputs that generate larger queries.\"\n    }\n  ],\n  \"invariant_removes\": [\n    \"inv_1\"\n  ],\n  \"policies\": [\"Do not attempt to compress input beyond 5MB or the tool will crash.\"],\n  \"preferences\": [\"Minimize input size to stay within the 5MB SQLite query limit.\"],\n  \"wake_pack\": \"Query size is a hard constraint; focus on reducing payload.\",\n  \"summary\": \"Ledger tool fails not due to serialization but because of an SQLite 5MB per-query size limit.\"\n}\n"
+  },
+  {
+    "scenario": {
+      "name": "Extracting Physics over History",
+      "prior_wake_pack": "Starting a new debugging session on the authentication flow.",
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "content": "Wow, okay I just spent 2 hours debugging. It turns out the Redis cache we use for auth tokens drops entries after 15 minutes silently without respecting the TTL field we pass it. I filed a bug but for now we have to assume tokens expire after 15m.",
+          "created_at": "2026-03-22T09:30:00-07:00",
+          "entry_id": "turn_2",
+          "kind": "user_message"
+        }
+      ]
+    },
+    "compressor_output": "{\n  \"drift_contradictions\": [],\n  \"drift_flags\": [],\n  \"drift_merges\": [],\n  \"facts\": [\n    {\n      \"citations\": [\"turn_2\"],\n      \"fact_id\": \"rev_regex_auth_token_timeout\",\n      \"text\": \"Redis cache entries for auth tokens expire after 15 minutes regardless of TTL field passed.\",\n      \"falsifier\": \"TTL_respected\"\n    }\n  ],\n  \"hypotheses\": [\n    \"TTL fields are ignored or misconfigured in Redis.\",\n    \"Auth tokens are short-lived by design, not due to cache invalidation.\"\n  ],\n  \"invariant_adds\": [],\n  \"invariant_removes\": [],\n  \"policies\": [\"Verify TTL propagation with Redis CLI and monitor token expiration patterns.\"],\n  \"preferences\": [\"Assume expiration is deterministic: 15 minutes from creation.\", \"Do not modify code; treat as environmental fact.\"],\n  \"wake_pack\": \"auth_token_expiration_15min\",\n  \"summary\": \"Auth tokens expire after 15 minutes due to Redis cache TTL defaulting, despite custom TTL being passed. No new invariant added yet; observing state.\"\n}"
+  },
+  {
+    "scenario": {
+      "name": "Segregating Transient Preferences and Policies",
+      "prior_wake_pack": "Working on the UI components for the new CRM project.",
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "content": "We need to make sure all of the primary call-to-action buttons in this project are vibrant blue. Also, whenever you write React components, use functional components with hooks. Don't use class components. I really prefer clean, minimal code without too many comments unless the logic is super weird.",
+          "created_at": "2026-03-22T10:00:00-07:00",
+          "entry_id": "turn_3",
+          "kind": "user_message"
+        }
+      ]
+    },
+    "compressor_output": "{\n  \"drift_contradictions\": [],\n  \"drift_flags\": [],\n  \"drift_merges\": [],\n  \"facts\": [\n    {\n      \"citations\": [\"turn_3\"],\n      \"fact_id\": \"fact_0\",\n      \"text\": \"Primary call-to-action buttons in the CRM project must be vibrant blue.\",\n      \"support_excerpt\": \"\\\"We need to make sure all of the primary call-to-action buttons... are vibrant blue\\\"\"\n    },\n    {\n      \"citations\": [\"turn_3\"],\n      \"fact_id\": \"fact_1\",\n      \"text\": \"React components in this project must be functional components with hooks.\",\n      \"support_excerpt\": \"\\\"whenever you write React components, use functional components with hooks. Don't use class components\\\"\"\n    },\n    {\n      \"citations\": [\"turn_3\"],\n      \"fact_id\": \"fact_2\",\n      \"text\": \"Code style preference is clean and minimal.\",\n      \"support_excerpt\": \"\\\"I really prefer clean, minimal code without too many comments unless the logic is super weird\\\"\"\n    }\n  ],\n  \"hypotheses\": [\n    \"The UI must not violate accessibility standards by using bright colors for critical actions without sufficient contrast (e.g., blue on white meets WCAG AA).\",\n    \"Component structure should avoid side effects and maintain state predictably via hooks.\"\n  ],\n  \"invariant_adds\": [],\n  \"invariant_removes\": [],\n  \"policies\": [\n    \"Use vibrant blue for all primary CTAs to match brand identity.\",\n    \"Only implement class components if they are proven necessary by accessibility or performance constraints (which is not the case here).\",\n    \"Commenting should only appear when logic complexity exceeds readability threshold.\"\n  ],\n  \"preferences\": [\n    \"Minimize boilerplate and unnecessary state management.\",\n    \"Prefer functional components with hooks for simplicity and maintainability.\"\n  ],\n  \"wake_pack\": \"Design consistent visual and code structure across CRM UI, adhering to primary blue CTA requirement and modern React component patterns.\",\n  \"summary\": \"UI consistency: vibrant blue CTAs. Code: functional hooks only. Style: minimal comments unless logic is complex.\"\n}\n"
+  },
+  {
+    "scenario": {
+      "name": "Empty Patch for Non-Reality Altering Chat",
+      "prior_wake_pack": "The user is configuring their local development environment. Current operating system is macOS.",
+      "active_invariants": [
+        {
+          "id": "inv_2",
+          "text": "The host operating system is macOS."
+        }
+      ],
+      "thread_history": [
+        {
+          "content": "Can you remind me what the command is to zip a folder?",
+          "created_at": "2026-03-22T10:15:00-07:00",
+          "entry_id": "turn_4",
+          "kind": "user_message"
+        },
+        {
+          "content": "You can use `zip -r archive_name.zip folder_name/` to recursively zip a folder in macOS.",
+          "created_at": "2026-03-22T10:15:05-07:00",
+          "entry_id": "turn_5",
+          "kind": "assistant_message"
+        },
+        {
+          "content": "Thanks, that worked perfectly! Just uploading it now.",
+          "created_at": "2026-03-22T10:17:00-07:00",
+          "entry_id": "turn_6",
+          "kind": "user_message"
+        }
+      ]
+    },
+    "compressor_output": "{\n  \"drift_contradictions\": [],\n  \"drift_flags\": [],\n  \"drift_merges\": [],\n  \"facts\": [],\n  \"hypotheses\": [\"zip -r is the standard recursive zip command on macOS, and user confirmed it works.\"],\n  \"invariant_adds\": [\n    {\n      \"citations\": [],\n      \"text\": \"The system uses `zip` for archiving folders.\",\n      \"derived_from_fact_ids\": [],\n      \"falsifier\": \"\",\n      \"supersedes_ids\": [\"inv_2\"],\n      \"support_excerpt\": \"User confirmed zip -r works on macOS.\",\n      \"why_it_holds\": \"macOS includes the `zip` utility; user has verified functionality.\"\n    }\n  ],\n  \"invariant_removes\": [],\n  \"policies\": [\"Do not modify core OS invariant unless evidence requires it.\"],\n  \"preferences\": [\"Stick to current system state until contradicted.\"],\n  \"wake_pack\": \"Environment stable, operation confirmed.\",\n  \"summary\": \"User successfully zipped a folder using `zip -r` on macOS.\"\n}\n"
+  }
+]

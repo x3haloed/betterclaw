@@ -308,7 +308,8 @@ mod tests {
     #[test]
     fn responses_payload_uses_flattened_text_format() {
         let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig::default()).expect("engine");
-        let payload = engine.build_payload(&ModelExchangeRequest {
+        let payload = engine.build_payload(&ModelExchangeRequest { role: None,
+            role: None,
             model: "gpt-5-mini".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
@@ -352,7 +353,8 @@ mod tests {
     #[test]
     fn responses_payload_normalizes_schema_required_fields() {
         let engine = OpenAiResponsesEngine::new(OpenAiCompatibleConfig::default()).expect("engine");
-        let payload = engine.build_payload(&ModelExchangeRequest {
+        let payload = engine.build_payload(&ModelExchangeRequest { role: None,
+            role: None,
             model: "gpt-5-mini".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
@@ -402,7 +404,8 @@ mod tests {
             ..OpenAiCompatibleConfig::default()
         })
         .expect("engine");
-        let payload = engine.build_payload(&ModelExchangeRequest {
+        let payload = engine.build_payload(&ModelExchangeRequest { role: None,
+            role: None,
             model: "gpt-5.4-mini".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
@@ -427,7 +430,8 @@ mod tests {
             ..OpenAiCompatibleConfig::default()
         })
         .expect("engine");
-        let payload = engine.build_payload(&ModelExchangeRequest {
+        let payload = engine.build_payload(&ModelExchangeRequest { role: None,
+            role: None,
             model: "gpt-5.4-mini".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),
@@ -452,7 +456,8 @@ mod tests {
             ..OpenAiCompatibleConfig::default()
         })
         .expect("engine");
-        let payload = engine.build_payload(&ModelExchangeRequest {
+        let payload = engine.build_payload(&ModelExchangeRequest { role: None,
+            role: None,
             model: "gpt-5.4-mini".to_string(),
             messages: vec![ModelMessage {
                 role: "user".to_string(),

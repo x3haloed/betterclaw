@@ -11,7 +11,50 @@ use crate::model::openai_chatcompletions::OpenAiChatCompletionsEngine;
 use crate::model::openai_responses::OpenAiResponsesEngine;
 use crate::model::stub::StubModelEngine;
 use crate::model::{ModelEvent, RawModelTrace, TraceOutcome};
+use serde_json::json;
 
+#[derive(serde::Deserialize)]
+struct HyperparamsConfig {
+    models: std::collections::HashMap<String, Value>,
+}
+
+pub fn load_hyperparams(model_name: &str, provider: &str, role: Option<&str>) -> Value {
+    if provider == "codex" || provider == "copilot" {
+        return json!({});
+    }
+    match std::fs::read_to_string("hyperparams.json") {
+        Ok(contents) => match serde_json::from_str::<HyperparamsConfig>(&contents) {
+            Ok(config) => {
+                for (key, params) in config.models {
+                    if model_name.contains(&key) {
+                        let mut final_params = match params.get("base") {
+                            Some(base) if base.is_object() => base.clone(),
+                            _ => json!({}),
+                        };
+                        
+                        if let Some(r) = role {
+                            if let Some(role_params) = params.get(r).and_then(|v| v.as_object()) {
+                                if let Some(target) = final_params.as_object_mut() {
+                                    for (k, v) in role_params {
+                                        target.insert(k.clone(), v.clone());
+                                    }
+                                }
+                            }
+                        }
+                        
+                        return final_params;
+                    }
+                }
+                json!({})
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse hyperparams.json: {}", e);
+                json!({})
+            }
+        },
+        Err(_) => json!({}),
+    }
+}
 /// A content part for multi-modal messages (text + images).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -148,6 +191,7 @@ pub struct ModelToolFunctionMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelExchangeRequest {
+    pub role: Option<String>,
     pub model: String,
     pub messages: Vec<ModelMessage>,
     pub tools: Vec<Value>,

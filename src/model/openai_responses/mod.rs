@@ -69,6 +69,14 @@ impl OpenAiResponsesEngine {
                 "format": responses_text_format(response_format)
             });
         }
+        let hyperparams = crate::model::load_hyperparams(&request.model, &self.config.provider_name, request.role.as_deref());
+        if let Some(params) = hyperparams.as_object()
+            && let Some(target) = payload.as_object_mut()
+        {
+            for (key, value) in params {
+                target.insert(key.clone(), value.clone());
+            }
+        }
         if let Some(extra) = request.extra.as_object()
             && let Some(target) = payload.as_object_mut()
         {

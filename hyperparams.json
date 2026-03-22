@@ -1,0 +1,15 @@
+{
+  "models": {
+    "qwen3.5-35b-a3b": {
+      "base": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "presence_penalty": 1.5,
+        "repeat_penalty": 1.0
+      },
+      "agent": {},
+      "compressor": {}
+    }
+  }
+}

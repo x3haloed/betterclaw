@@ -411,7 +411,7 @@ impl Runtime {
             }));
         }
 
-        let request = ModelExchangeRequest {
+        let request = ModelExchangeRequest { role: Some("compressor".to_string()),
             model: model_name.clone(),
             messages: vec![
                 ModelMessage {
@@ -1394,7 +1394,7 @@ mod compressor_repair_tests {
 
     #[test]
     fn repair_request_appends_fixup_turn_and_preserves_schema() {
-        let request = ModelExchangeRequest {
+        let request = ModelExchangeRequest { role: Some("compressor".to_string()),
             model: "gpt-5-mini".to_string(),
             messages: vec![
                 ModelMessage {

@@ -1,0 +1,33 @@
+{
+  "compressor": {
+    "provider": "stub",
+    "model": "stub-compressor",
+    "base_url": null,
+    "api_key_env": null
+  },
+  "evaluator": {
+    "provider": "stub",
+    "model": "stub-evaluator",
+    "base_url": null,
+    "api_key_env": null
+  },
+  "candidate_prompt": "You are BetterClaw's memory compressor. This is a stub run.",
+  "rubric": "1. Correctness (1-10)\n2. Format (1-10)",
+  "scenarios": [
+    {
+      "name": "Stub Test 1",
+      "prior_wake_pack": null,
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "entry_id": "test_1",
+          "kind": "user_message",
+          "citation": null,
+          "content": "Running a test.",
+          "payload": null,
+          "created_at": "2026-03-21T09:22:33-07:00"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "compressor": {
+    "provider": "local",
+    "model": "qwen/qwen2.5-coder-7b",
+    "base_url": "http://localhost:1234/v1",
+    "api_key_env": "LOCAL_API_KEY",
+    "mode": "chat"
+  },
+  "evaluator": {
+    "provider": "openrouter",
+    "model": "openai/gpt-4o",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "mode": "chat"
+  },
+  "candidate_prompt": "You are BetterClaw's memory compressor. Current invariants are the current best map of local reality. The new thread frontier is new evidence about that reality. Evaluate whether the current invariants still hold, and update them only where the new evidence shows reality more clearly or shows that reality has changed. Distill the local physics from the evidence into a compact wake pack plus cited invariant and drift artifacts. Be conservative, do not invent facts, and only cite entry ids present in the evidence. Emit the full current invariant set each time, but it is valid for that set to remain unchanged if the new evidence does not change local reality. Do not describe invariants as objects; use them as claims about local reality. Do not emit meta-invariants about invariants, wake packs, compression, memory, or the prompt itself. It is acceptable to replace several older invariants with one cleaner invariant when the new invariant describes the same local reality more accurately and remains grounded in the underlying evidence.",
+  "rubric": "1. Correctness (1-10): Did the model accurately capture all the factual details in a conservative way?\n2. Format (1-10): Did it obey the output constraints strictly avoiding hallucinated fields?",
+  "scenarios": [
+    {
+      "name": "User introduces themselves",
+      "prior_wake_pack": null,
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "entry_id": "entry_1",
+          "kind": "user_message",
+          "citation": null,
+          "content": "Hi, I'm Chad. I'm working on the BetterClaw codebase.",
+          "payload": null,
+          "created_at": "2026-03-21T09:22:33-07:00"
+        }
+      ]
+    }
+  ]
+}

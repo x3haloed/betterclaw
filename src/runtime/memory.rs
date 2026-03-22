@@ -54,11 +54,15 @@ struct CompressorOutput {
     #[serde(default)]
     facts: Vec<CompressorFactSpec>,
     #[serde(default)]
-    invariant_self: Vec<CompressorArtifactSpec>,
+    invariant_adds: Vec<CompressorArtifactSpec>,
     #[serde(default)]
-    invariant_user: Vec<CompressorArtifactSpec>,
+    invariant_removes: Vec<String>,
     #[serde(default)]
-    invariant_relationship: Vec<CompressorArtifactSpec>,
+    policies: Vec<String>,
+    #[serde(default)]
+    preferences: Vec<String>,
+    #[serde(default)]
+    hypotheses: Vec<String>,
     #[serde(default)]
     drift_flags: Vec<CompressorArtifactSpec>,
     #[serde(default)]
@@ -339,7 +343,6 @@ impl Runtime {
             .map(|invariant| {
                 json!({
                     "id": invariant.id,
-                    "scope": invariant.scope,
                     "claim": invariant.claim,
                     "support_excerpt": invariant.support_excerpt,
                     "falsifier": invariant.falsifier,
@@ -386,7 +389,14 @@ impl Runtime {
                 ModelMessage {
                     role: "system".to_string(),
                     content: Some(MessageContent::Text(
-                        "You are BetterClaw's memory compressor. Current invariants are the current best map of local reality. The new thread frontier is new evidence about that reality. Evaluate whether the current invariants still hold, and update them only where the new evidence shows reality more clearly or shows that reality has changed. Distill the local physics from the evidence into a compact wake pack plus cited invariant and drift artifacts. Be conservative, do not invent facts, and only cite entry ids present in the evidence. Emit the full current invariant set each time, but it is valid for that set to remain unchanged if the new evidence does not change local reality. Do not describe invariants as objects; use them as claims about local reality. Do not emit meta-invariants about invariants, wake packs, compression, memory, or the prompt itself. It is acceptable to replace several older invariants with one cleaner invariant when the new invariant describes the same local reality more accurately and remains grounded in the underlying evidence."
+                        "You are BetterClaw's memory compressor. Your goal is to maintain a tight, causative map of local reality (The Invariants). 
+
+Extract physics, not history. 
+- State current reality: Write invariants as present-tense empirical facts about the environment, the user, or the system state.
+- Generalize on Falsification: When new evidence falsifies an existing invariant, emit an `invariant_removes` for the old law, and an `invariant_adds` for a newly generalized law that gracefully accounts for all known behavior. Think like a scientist: if a door requires a hard push to open, the invariant is \"This door requires a hard push,\" not a log of every time you pushed it.
+
+Output a tight patch (`invariant_adds` and `invariant_removes`). 
+Use `policies`, `preferences`, and `hypotheses` to record prescriptive advice or transient guesses"
                             .to_string(),
                     )),
                     tool_calls: None,
@@ -412,36 +422,19 @@ impl Runtime {
                                     "support_excerpt":"string",
                                     "falsifier":"string"
                                 }],
-                                "invariant_self": [{
+                                "invariant_adds": [{
                                     "text":"string",
                                     "citations":["entry_id"],
                                     "support_excerpt":"string",
                                     "falsifier":"string",
                                     "why_it_holds":"string",
-                                    "classifier":"empirical_invariant|policy|preference|hypothesis",
                                     "supersedes_ids":["artifact_id"],
                                     "derived_from_fact_ids":["fact_id"]
                                 }],
-                                "invariant_user": [{
-                                    "text":"string",
-                                    "citations":["entry_id"],
-                                    "support_excerpt":"string",
-                                    "falsifier":"string",
-                                    "why_it_holds":"string",
-                                    "classifier":"empirical_invariant|policy|preference|hypothesis",
-                                    "supersedes_ids":["artifact_id"],
-                                    "derived_from_fact_ids":["fact_id"]
-                                }],
-                                "invariant_relationship": [{
-                                    "text":"string",
-                                    "citations":["entry_id"],
-                                    "support_excerpt":"string",
-                                    "falsifier":"string",
-                                    "why_it_holds":"string",
-                                    "classifier":"empirical_invariant|policy|preference|hypothesis",
-                                    "supersedes_ids":["artifact_id"],
-                                    "derived_from_fact_ids":["fact_id"]
-                                }],
+                                "invariant_removes": ["artifact_id"],
+                                "policies": ["string"],
+                                "preferences": ["string"],
+                                "hypotheses": ["string"],
                                 "drift_flags": [{"text":"string","citations":["entry_id"]}],
                                 "drift_contradictions": [{"text":"string","citations":["entry_id"]}],
                                 "drift_merges": [{"text":"string","citations":["entry_id"]}],
@@ -484,17 +477,26 @@ impl Runtime {
                                     "additionalProperties": false
                                 }
                             },
-                            "invariant_self": {
+                            "summary": { "type": ["string", "null"] },
+                            "invariant_adds": {
                                 "type": "array",
                                 "items": { "$ref": "#/$defs/item" }
                             },
-                            "invariant_user": {
+                            "invariant_removes": {
                                 "type": "array",
-                                "items": { "$ref": "#/$defs/item" }
+                                "items": { "type": "string" }
                             },
-                            "invariant_relationship": {
+                            "policies": {
                                 "type": "array",
-                                "items": { "$ref": "#/$defs/item" }
+                                "items": { "type": "string" }
+                            },
+                            "preferences": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
+                            "hypotheses": {
+                                "type": "array",
+                                "items": { "type": "string" }
                             },
                             "drift_flags": {
                                 "type": "array",
@@ -507,10 +509,9 @@ impl Runtime {
                             "drift_merges": {
                                 "type": "array",
                                 "items": { "$ref": "#/$defs/drift_item" }
-                            },
-                            "summary": { "type": ["string", "null"] }
+                            }
                         },
-                        "required": ["wake_pack", "facts", "invariant_self", "invariant_user", "invariant_relationship", "drift_flags", "drift_contradictions", "drift_merges"],
+                        "required": ["wake_pack", "facts", "invariant_adds", "invariant_removes", "policies", "preferences", "hypotheses", "drift_flags", "drift_contradictions", "drift_merges"],
                         "$defs": {
                             "item": {
                                 "type": "object",
@@ -523,10 +524,6 @@ impl Runtime {
                                     "support_excerpt": { "type": ["string", "null"] },
                                     "falsifier": { "type": ["string", "null"] },
                                     "why_it_holds": { "type": ["string", "null"] },
-                                    "classifier": {
-                                        "type": ["string", "null"],
-                                        "enum": ["empirical_invariant", "policy", "preference", "hypothesis", null]
-                                    },
                                     "supersedes_ids": {
                                         "type": "array",
                                         "items": { "type": "string" }
@@ -633,7 +630,7 @@ impl Runtime {
         request: &ModelExchangeRequest,
         exchange: &ModelExchangeResult,
     ) -> Result<Option<CompressorOutput>, RuntimeError> {
-        let primary_content = exchange.content.as_deref();
+        let primary_content = exchange.content.as_deref().or(exchange.reasoning.as_deref());
         tracing::info!(
             target: "betterclaw::memory",
             kind = "compressor_primary_attempt",
@@ -697,7 +694,8 @@ impl Runtime {
             "repair exchange completed; parsing repair content"
         );
 
-        let Some(repair_content) = repair_exchange.content.as_deref() else {
+        let repair_content = repair_exchange.content.as_deref().or(repair_exchange.reasoning.as_deref());
+        let Some(repair_content) = repair_content else {
             tracing::warn!(
                 target: "betterclaw::memory",
                 kind = "compressor_repair_no_content",
@@ -746,37 +744,20 @@ impl Runtime {
         let facts = self
             .persist_compressor_facts(namespace_id, &output.facts, valid_evidence_ids)
             .await?;
-        let mut promoted_invariants = Vec::new();
-        promoted_invariants.extend(
-            self.persist_compressor_artifact_list(
-                namespace_id,
-                MemoryArtifactKind::InvariantSelfV0,
-                &output.invariant_self,
-                &facts,
-                valid_evidence_ids,
-            )
-            .await?,
-        );
-        promoted_invariants.extend(
-            self.persist_compressor_artifact_list(
-                namespace_id,
-                MemoryArtifactKind::InvariantUserV0,
-                &output.invariant_user,
-                &facts,
-                valid_evidence_ids,
-            )
-            .await?,
-        );
-        promoted_invariants.extend(
-            self.persist_compressor_artifact_list(
-                namespace_id,
-                MemoryArtifactKind::InvariantRelationshipV0,
-                &output.invariant_relationship,
-                &facts,
-                valid_evidence_ids,
-            )
-            .await?,
-        );
+        
+        self.db.supersede_active_invariants(namespace_id, &output.invariant_removes)
+            .await
+            .map_err(RuntimeError::from)?;
+
+        let promoted_invariants = self.persist_compressor_artifact_list(
+            namespace_id,
+            MemoryArtifactKind::InvariantV0,
+            &output.invariant_adds,
+            &facts,
+            valid_evidence_ids,
+        )
+        .await?;
+
         self.persist_compressor_artifact_list(
             namespace_id,
             MemoryArtifactKind::DriftFlagV0,
@@ -864,25 +845,11 @@ impl Runtime {
             ) else {
                 continue;
             };
-            let candidate_v2_id = self
-                .db
-                .insert_invariant_candidate(
-                    namespace_id,
-                    kind.as_str(),
-                    kind_classifier_label(prepared.classifier),
-                    &prepared.content,
-                    item.support_excerpt.as_deref(),
-                    item.falsifier.as_deref(),
-                    &prepared.derived_from_fact_ids,
-                )
-                .await
-                .map_err(RuntimeError::from)?;
             if let Some(promoted_payload) = prepared.promoted_payload {
                 let invariant_id = self
                     .db
                     .insert_memory_invariant(
                         namespace_id,
-                        invariant_scope(kind.clone()),
                         &prepared.content,
                         promoted_payload
                             .get("support_excerpt")
@@ -898,48 +865,6 @@ impl Runtime {
                     .await
                     .map_err(RuntimeError::from)?;
                 promoted.push(invariant_id);
-            } else if !matches!(
-                prepared.target_kind,
-                MemoryArtifactKind::InvariantCandidateV0
-            ) {
-                match prepared.target_kind {
-                    MemoryArtifactKind::PolicyV0 => {
-                        self.db
-                            .insert_memory_policy(
-                                namespace_id,
-                                &prepared.content,
-                                item.support_excerpt.as_deref(),
-                                Some(&candidate_v2_id),
-                            )
-                            .await
-                            .map_err(RuntimeError::from)?;
-                    }
-                    MemoryArtifactKind::PreferenceV0 => {
-                        self.db
-                            .insert_memory_preference(
-                                namespace_id,
-                                &prepared.content,
-                                item.support_excerpt.as_deref(),
-                                Some(&candidate_v2_id),
-                            )
-                            .await
-                            .map_err(RuntimeError::from)?;
-                    }
-                    MemoryArtifactKind::HypothesisV0 => {
-                        self.db
-                            .insert_memory_hypothesis(
-                                namespace_id,
-                                &prepared.content,
-                                item.support_excerpt.as_deref(),
-                                item.falsifier.as_deref(),
-                                Some(&candidate_v2_id),
-                            )
-                            .await
-                            .map_err(RuntimeError::from)?;
-                    }
-                    _ => {}
-                }
-                let _ = candidate_v2_id;
             }
         }
         Ok(promoted)
@@ -1404,33 +1329,38 @@ fn stub_compressor_output() -> CompressorOutput {
                 falsifier: Some("Future turns stop focusing on runtime behavior.".to_string()),
             },
         ],
-        invariant_self: vec![CompressorArtifactSpec {
-            text: "BetterClaw should prefer tool-backed answers when tools materially help."
-                .to_string(),
-            citations: vec!["turn:stub:user".to_string()],
-            support_excerpt: Some("User is iterating directly on runtime behavior.".to_string()),
-            falsifier: Some("Tools stop materially improving answer quality.".to_string()),
-            why_it_holds: Some(
-                "The current runtime iteration repeatedly centers tool-backed behavior."
+        invariant_adds: vec![
+            CompressorArtifactSpec {
+                text: "BetterClaw should prefer tool-backed answers when tools materially help."
                     .to_string(),
-            ),
-            classifier: Some(CompressorArtifactClassifier::EmpiricalInvariant),
-            supersedes_ids: Vec::new(),
-            derived_from_fact_ids: vec!["fact-self-1".to_string()],
-        }],
-        invariant_user: vec![CompressorArtifactSpec {
-            text: "The user is actively iterating on BetterClaw runtime behavior.".to_string(),
-            citations: vec!["turn:stub:user".to_string()],
-            support_excerpt: Some("Stub user turn asks about runtime behavior.".to_string()),
-            falsifier: Some("Future turns stop focusing on runtime behavior.".to_string()),
-            why_it_holds: Some(
-                "The visible thread evidence is centered on runtime behavior changes.".to_string(),
-            ),
-            classifier: Some(CompressorArtifactClassifier::EmpiricalInvariant),
-            supersedes_ids: Vec::new(),
-            derived_from_fact_ids: vec!["fact-user-1".to_string()],
-        }],
-        invariant_relationship: Vec::new(),
+                citations: vec!["turn:stub:user".to_string()],
+                support_excerpt: Some("User is iterating directly on runtime behavior.".to_string()),
+                falsifier: Some("Tools stop materially improving answer quality.".to_string()),
+                why_it_holds: Some(
+                    "The current runtime iteration repeatedly centers tool-backed behavior."
+                        .to_string(),
+                ),
+                classifier: Some(CompressorArtifactClassifier::EmpiricalInvariant),
+                supersedes_ids: Vec::new(),
+                derived_from_fact_ids: vec!["fact-self-1".to_string()],
+            },
+            CompressorArtifactSpec {
+                text: "The user is actively iterating on BetterClaw runtime behavior.".to_string(),
+                citations: vec!["turn:stub:user".to_string()],
+                support_excerpt: Some("Stub user turn asks about runtime behavior.".to_string()),
+                falsifier: Some("Future turns stop focusing on runtime behavior.".to_string()),
+                why_it_holds: Some(
+                    "The visible thread evidence is centered on runtime behavior changes.".to_string(),
+                ),
+                classifier: Some(CompressorArtifactClassifier::EmpiricalInvariant),
+                supersedes_ids: Vec::new(),
+                derived_from_fact_ids: vec!["fact-user-1".to_string()],
+            },
+        ],
+        invariant_removes: Vec::new(),
+        policies: Vec::new(),
+        preferences: Vec::new(),
+        hypotheses: Vec::new(),
         drift_flags: Vec::new(),
         drift_contradictions: Vec::new(),
         drift_merges: Vec::new(),
@@ -1571,7 +1501,7 @@ fn prepare_compressor_artifact(
         || (!is_pass_through && derived_from_fact_ids.is_empty())
     {
         return Some(PreparedCompressorArtifact {
-            target_kind: MemoryArtifactKind::HypothesisV0,
+            target_kind: MemoryArtifactKind::InvariantV0,
             classifier,
             promoted_payload: None,
             content: item.text.clone(),
@@ -1609,26 +1539,10 @@ fn kind_classifier_label(classifier: CompressorArtifactClassifier) -> &'static s
 
 fn classifier_artifact_kind(classifier: CompressorArtifactClassifier) -> MemoryArtifactKind {
     match classifier {
-        CompressorArtifactClassifier::EmpiricalInvariant => {
-            MemoryArtifactKind::InvariantCandidateV0
-        }
-        CompressorArtifactClassifier::Policy => MemoryArtifactKind::PolicyV0,
-        CompressorArtifactClassifier::Preference => MemoryArtifactKind::PreferenceV0,
-        CompressorArtifactClassifier::Hypothesis => MemoryArtifactKind::HypothesisV0,
+        _ => MemoryArtifactKind::InvariantV0,
     }
 }
 
-fn invariant_scope(kind: MemoryArtifactKind) -> &'static str {
-    match kind {
-        MemoryArtifactKind::InvariantSelfV0 => "self",
-        MemoryArtifactKind::InvariantUserV0 => "user",
-        MemoryArtifactKind::InvariantRelationshipV0 => "relationship",
-        MemoryArtifactKind::DriftFlagV0 => "drift_flag",
-        MemoryArtifactKind::DriftContradictionV0 => "drift_contradiction",
-        MemoryArtifactKind::DriftMergeV0 => "drift_merge",
-        _ => "unknown",
-    }
-}
 
 #[cfg(test)]
 mod compressor_tests {
@@ -1657,7 +1571,7 @@ mod compressor_tests {
         };
 
         let prepared = prepare_compressor_artifact(
-            MemoryArtifactKind::InvariantSelfV0,
+            MemoryArtifactKind::InvariantV0,
             &item,
             &set(&["turn:1:user"]),
             &set(&["artifact-1"]),
@@ -1668,7 +1582,7 @@ mod compressor_tests {
         )
         .expect("item should produce artifact");
 
-        assert_eq!(prepared.target_kind, MemoryArtifactKind::InvariantSelfV0);
+        assert_eq!(prepared.target_kind, MemoryArtifactKind::InvariantV0);
         assert!(prepared.promoted_payload.is_some());
         assert_eq!(prepared.supersedes_ids, vec!["artifact-1".to_string()]);
         assert_eq!(
@@ -1693,7 +1607,7 @@ mod compressor_tests {
         };
 
         let prepared = prepare_compressor_artifact(
-            MemoryArtifactKind::InvariantSelfV0,
+            MemoryArtifactKind::InvariantV0,
             &item,
             &set(&["turn:1:user"]),
             &set(&[]),
@@ -1701,7 +1615,7 @@ mod compressor_tests {
         )
         .expect("item should produce artifact");
 
-        assert_eq!(prepared.target_kind, MemoryArtifactKind::PolicyV0);
+        assert_eq!(prepared.target_kind, MemoryArtifactKind::InvariantV0);
         assert!(prepared.promoted_payload.is_none());
     }
 
@@ -1719,7 +1633,7 @@ mod compressor_tests {
         };
 
         let prepared = prepare_compressor_artifact(
-            MemoryArtifactKind::InvariantRelationshipV0,
+            MemoryArtifactKind::InvariantV0,
             &item,
             &set(&["turn:1:user"]),
             &set(&[]),
@@ -1727,7 +1641,7 @@ mod compressor_tests {
         )
         .expect("item should produce artifact");
 
-        assert_eq!(prepared.target_kind, MemoryArtifactKind::HypothesisV0);
+        assert_eq!(prepared.target_kind, MemoryArtifactKind::InvariantV0);
         assert!(prepared.promoted_payload.is_none());
         assert!(prepared.citations.is_empty());
     }
@@ -1748,7 +1662,7 @@ mod compressor_tests {
         };
 
         let prepared = prepare_compressor_artifact(
-            MemoryArtifactKind::InvariantUserV0,
+            MemoryArtifactKind::InvariantV0,
             &item,
             &set(&["turn:1:user"]),
             &set(&[]),
@@ -1756,7 +1670,7 @@ mod compressor_tests {
         )
         .expect("item should produce artifact");
 
-        assert_eq!(prepared.target_kind, MemoryArtifactKind::HypothesisV0);
+        assert_eq!(prepared.target_kind, MemoryArtifactKind::InvariantV0);
         assert!(prepared.promoted_payload.is_none());
     }
 }

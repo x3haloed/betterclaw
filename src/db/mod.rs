@@ -277,7 +277,6 @@ impl Db {
             CREATE TABLE IF NOT EXISTS memory_invariants (
                 id TEXT PRIMARY KEY,
                 namespace_id TEXT NOT NULL,
-                scope TEXT NOT NULL,
                 claim TEXT NOT NULL,
                 support_excerpt TEXT NOT NULL,
                 falsifier TEXT NOT NULL,
@@ -296,34 +295,6 @@ impl Db {
                 invariant_id TEXT NOT NULL,
                 superseded_invariant_id TEXT NOT NULL,
                 PRIMARY KEY(invariant_id, superseded_invariant_id)
-            );
-            CREATE TABLE IF NOT EXISTS memory_policies (
-                id TEXT PRIMARY KEY,
-                namespace_id TEXT NOT NULL,
-                claim TEXT NOT NULL,
-                evidence_note TEXT,
-                candidate_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS memory_preferences (
-                id TEXT PRIMARY KEY,
-                namespace_id TEXT NOT NULL,
-                claim TEXT NOT NULL,
-                evidence_note TEXT,
-                candidate_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS memory_hypotheses (
-                id TEXT PRIMARY KEY,
-                namespace_id TEXT NOT NULL,
-                claim TEXT NOT NULL,
-                support_excerpt TEXT,
-                falsifier TEXT,
-                candidate_id TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS memory_drift_items (
                 id TEXT PRIMARY KEY,
@@ -421,6 +392,16 @@ impl Db {
         .await?;
         self.add_column_if_missing(&conn, "turns", "attachments_json", "TEXT")
             .await?;
+        self.drop_column_if_exists(&conn, "memory_invariants", "scope")
+            .await?;
+        conn.execute_batch(
+            r#"
+            DROP TABLE IF EXISTS memory_policies;
+            DROP TABLE IF EXISTS memory_preferences;
+            DROP TABLE IF EXISTS memory_hypotheses;
+            "#,
+        )
+        .await?;
         Ok(())
     }
 

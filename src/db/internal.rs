@@ -35,12 +35,13 @@ pub(crate) fn memory_artifact_kind_from_str(value: &str) -> MemoryArtifactKind {
         "wake_pack.v0" => MemoryArtifactKind::WakePackV0,
         "fact.v0" => MemoryArtifactKind::FactV0,
         "invariant.candidate.v0" => MemoryArtifactKind::InvariantCandidateV0,
-        "invariant.self.v0" => MemoryArtifactKind::InvariantSelfV0,
-        "invariant.user.v0" => MemoryArtifactKind::InvariantUserV0,
-        "invariant.relationship.v0" => MemoryArtifactKind::InvariantRelationshipV0,
-        "policy.v0" => MemoryArtifactKind::PolicyV0,
-        "preference.v0" => MemoryArtifactKind::PreferenceV0,
-        "hypothesis.v0" => MemoryArtifactKind::HypothesisV0,
+        "invariant.v1"
+        | "invariant.self.v0"
+        | "invariant.user.v0"
+        | "invariant.relationship.v0"
+        | "policy.v0"
+        | "preference.v0"
+        | "hypothesis.v0" => MemoryArtifactKind::InvariantV0,
         "drift.flag.v0" => MemoryArtifactKind::DriftFlagV0,
         "drift.contradiction.v0" => MemoryArtifactKind::DriftContradictionV0,
         "drift.merge.v0" => MemoryArtifactKind::DriftMergeV0,

@@ -248,7 +248,6 @@ impl Db {
     pub async fn insert_memory_invariant(
         &self,
         namespace_id: &str,
-        scope: &str,
         claim: &str,
         support_excerpt: &str,
         falsifier: &str,
@@ -259,11 +258,10 @@ impl Db {
         let now = Utc::now().to_rfc3339();
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO memory_invariants (id, namespace_id, scope, claim, support_excerpt, falsifier, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+            "INSERT INTO memory_invariants (id, namespace_id, claim, support_excerpt, falsifier, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
             params![
                 id.clone(),
                 namespace_id.to_string(),
-                scope.to_string(),
                 claim.to_string(),
                 support_excerpt.to_string(),
                 falsifier.to_string(),
@@ -294,96 +292,25 @@ impl Db {
         Ok(id)
     }
 
-    pub async fn insert_memory_policy(
-        &self,
-        namespace_id: &str,
-        claim: &str,
-        evidence_note: Option<&str>,
-        candidate_id: Option<&str>,
-    ) -> Result<String> {
-        self.insert_memory_note(
-            "memory_policies",
-            namespace_id,
-            claim,
-            evidence_note,
-            candidate_id,
-        )
-        .await
-    }
 
-    pub async fn insert_memory_preference(
+    pub async fn supersede_active_invariants(
         &self,
         namespace_id: &str,
-        claim: &str,
-        evidence_note: Option<&str>,
-        candidate_id: Option<&str>,
-    ) -> Result<String> {
-        self.insert_memory_note(
-            "memory_preferences",
-            namespace_id,
-            claim,
-            evidence_note,
-            candidate_id,
-        )
-        .await
-    }
-
-    pub async fn insert_memory_hypothesis(
-        &self,
-        namespace_id: &str,
-        claim: &str,
-        support_excerpt: Option<&str>,
-        falsifier: Option<&str>,
-        candidate_id: Option<&str>,
-    ) -> Result<String> {
+        ids: &[String],
+    ) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
         let (_write_guard, conn) = self.write_connection().await?;
         let now = Utc::now().to_rfc3339();
-        let id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO memory_hypotheses (id, namespace_id, claim, support_excerpt, falsifier, candidate_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            params![
-                id.clone(),
-                namespace_id.to_string(),
-                claim.to_string(),
-                support_excerpt.map(ToString::to_string),
-                falsifier.map(ToString::to_string),
-                candidate_id.map(ToString::to_string),
-                now.clone(),
-                now.clone(),
-            ],
-        )
-        .await?;
-        Ok(id)
-    }
-
-    async fn insert_memory_note(
-        &self,
-        table: &str,
-        namespace_id: &str,
-        claim: &str,
-        evidence_note: Option<&str>,
-        candidate_id: Option<&str>,
-    ) -> Result<String> {
-        let (_write_guard, conn) = self.write_connection().await?;
-        let now = Utc::now().to_rfc3339();
-        let id = Uuid::new_v4().to_string();
-        let sql = format!(
-            "INSERT INTO {table} (id, namespace_id, claim, evidence_note, candidate_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-        );
-        conn.execute(
-            &sql,
-            params![
-                id.clone(),
-                namespace_id.to_string(),
-                claim.to_string(),
-                evidence_note.map(ToString::to_string),
-                candidate_id.map(ToString::to_string),
-                now.clone(),
-                now.clone(),
-            ],
-        )
-        .await?;
-        Ok(id)
+        for id in ids {
+            conn.execute(
+                "UPDATE memory_invariants SET status = 'superseded', updated_at = ? WHERE id = ? AND namespace_id = ? AND status = 'active'",
+                params![now.clone(), id.clone(), namespace_id.to_string()],
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub async fn insert_wake_pack_v2(
@@ -488,7 +415,7 @@ impl Db {
         let conn = self.connect().await?;
         let mut rows = conn
             .query(
-                "SELECT id, namespace_id, scope, claim, support_excerpt, falsifier, status, created_at, updated_at FROM memory_invariants WHERE namespace_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?",
+                "SELECT id, namespace_id, claim, support_excerpt, falsifier, status, created_at, updated_at FROM memory_invariants WHERE namespace_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?",
                 params![namespace_id.to_string(), limit as i64],
             )
             .await?;
@@ -500,15 +427,14 @@ impl Db {
             invariants.push(MemoryInvariantRecord {
                 id,
                 namespace_id: row.get(1)?,
-                scope: row.get(2)?,
-                claim: row.get(3)?,
-                support_excerpt: row.get(4)?,
-                falsifier: row.get(5)?,
-                status: row.get(6)?,
+                claim: row.get(2)?,
+                support_excerpt: row.get(3)?,
+                falsifier: row.get(4)?,
+                status: row.get(5)?,
                 fact_ids,
                 supersedes_ids,
-                created_at: row.get::<String>(7)?.parse()?,
-                updated_at: row.get::<String>(8)?.parse()?,
+                created_at: row.get::<String>(6)?.parse()?,
+                updated_at: row.get::<String>(7)?.parse()?,
             });
         }
         Ok(invariants)

@@ -84,6 +84,11 @@ impl OpenAiResponsesEngine {
                 target.insert(key.clone(), value.clone());
             }
         }
+        if let Some(target) = payload.as_object_mut() {
+            if let Some(effort) = target.remove("reasoning_effort") {
+                target.insert("reasoning".to_string(), json!({ "effort": effort }));
+            }
+        }
         payload
     }
 

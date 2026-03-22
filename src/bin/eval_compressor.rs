@@ -373,28 +373,81 @@ async fn main() -> Result<()> {
                 extra: config.evaluator.hyperparams.clone().unwrap_or_else(|| json!({})),
             };
 
-            let evaluator_result = evaluator_engine.run(evaluator_request).await;
-            let eval_output = match evaluator_result {
-                Ok(res) => {
-                    let content = res.content.clone().unwrap_or_default();
-                    let reasoning = res.reasoning.clone().unwrap_or_default();
-                    
-                    // Try parsing content first, fallback to reasoning
-                    serde_json::from_str::<EvaluatorOutput>(&content)
-                        .or_else(|_| serde_json::from_str::<EvaluatorOutput>(&reasoning))
-                        .unwrap_or_else(|e| {
-                            println!("Failed to parse evaluator JSON: {}", e);
-                            EvaluatorOutput { 
-                                score: 0.0, 
-                                reasoning: format!("Parse failure (Content: '{}', Reasoning: '{}')", content, reasoning) 
+            let mut evaluator_request = evaluator_request;
+            let mut eval_output = EvaluatorOutput { score: 0.0, reasoning: String::new() };
+            
+            for attempt in 0..2 {
+                let evaluator_result = evaluator_engine.run(evaluator_request.clone()).await;
+                match evaluator_result {
+                    Ok(res) => {
+                        let content_str = res.content.clone().unwrap_or_default();
+                        let reasoning_str = res.reasoning.clone().unwrap_or_default();
+                        
+                        let parsed = serde_json::from_str::<EvaluatorOutput>(&content_str)
+                            .or_else(|_| serde_json::from_str::<EvaluatorOutput>(&reasoning_str));
+                            
+                        match parsed {
+                            Ok(output) => {
+                                if output.score < 0.0 || output.score > 10.0 {
+                                    if attempt == 0 {
+                                        println!("Score '{}' out of bounds [0..10]. Attempting repair...", output.score);
+                                        evaluator_request.messages.push(ModelMessage {
+                                            role: "assistant".to_string(),
+                                            content: Some(MessageContent::Text(if content_str.is_empty() { reasoning_str.clone() } else { content_str.clone() })),
+                                            tool_calls: None,
+                                            tool_call_id: None,
+                                        });
+                                        evaluator_request.messages.push(ModelMessage {
+                                            role: "user".to_string(),
+                                            content: Some(MessageContent::Text("Reminder: score must be no less than 0 and no more than 10. Please try again.".to_string())),
+                                            tool_calls: None,
+                                            tool_call_id: None,
+                                        });
+                                        continue;
+                                    } else {
+                                        println!("Repair failed. Score still out of bounds.");
+                                        eval_output = output;
+                                        break;
+                                    }
+                                } else {
+                                    eval_output = output;
+                                    break;
+                                }
                             }
-                        })
+                            Err(e) => {
+                                if attempt == 0 {
+                                    println!("Failed to parse evaluator JSON. Attempting repair...");
+                                    evaluator_request.messages.push(ModelMessage {
+                                        role: "assistant".to_string(),
+                                        content: Some(MessageContent::Text(if content_str.is_empty() { reasoning_str.clone() } else { content_str.clone() })),
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                    });
+                                    evaluator_request.messages.push(ModelMessage {
+                                        role: "user".to_string(),
+                                        content: Some(MessageContent::Text("Failed to parse JSON. Please ensure your response is exactly valid JSON with a score from 1 to 10, adhering to the required schema.".to_string())),
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                    });
+                                    continue;
+                                } else {
+                                    println!("Failed to parse evaluator JSON after repair: {}", e);
+                                    eval_output = EvaluatorOutput { 
+                                        score: 0.0, 
+                                        reasoning: format!("Parse failure after repair (Content: '{}', Reasoning: '{}')", content_str, reasoning_str) 
+                                    };
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("Evaluator error: {:?}", e);
+                        eval_output = EvaluatorOutput { score: 0.0, reasoning: format!("Evaluator error: {:?}", e) };
+                        break;
+                    }
                 }
-                Err(e) => {
-                    println!("Evaluator error: {:?}", e);
-                    EvaluatorOutput { score: 0.0, reasoning: format!("Evaluator error: {:?}", e) }
-                }
-            };
+            }
 
             println!("Score: {}", eval_output.score);
             total_score += eval_output.score;

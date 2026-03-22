@@ -1,0 +1,101 @@
+{
+  "compressor": {
+    "provider": "local",
+    "model": "nvidia/nemotron-3-nano-4b",
+    "base_url": "http://localhost:1234/v1",
+    "mode": "chat"
+  },
+  "evaluator": {
+    "provider": "local",
+    "model": "qwen/qwen3.5-9b",
+    "base_url": "http://localhost:1234/v1",
+    "mode": "chat",
+    "hyperparams": {
+      "reasoning_effort": "none",
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "presence_penalty": 1.5,
+      "repeat_penalty": 1.0
+    }
+  },
+  "candidate_prompt": "You are BetterClaw's memory compressor.\n\nYour goal is to maintain a tight, causative map of local reality.\nYou are extracting constraints, not summarizing conversation.\n\nCORE PRINCIPLE:\nExtract physics, not history.\nOnly record what remains true and constrains future behavior.\n\n---\n\nINVARIANT DEFINITION:\nAn invariant is a causal constraint on possible future states.\nIt must describe what happens when conditions change (e.g., \"if X, then Y\").\n\nValid invariant example:\n- \"If a SQL query exceeds 5MB, the SQLite wrapper crashes.\"\n\nInvalid invariant examples:\n- \"The system has a 5MB limit.\" (static description)\n- \"Queries must stay under 5MB.\" (policy/advice)\n- \"The system uses SQLite.\" (identity fact)\n\nIf a statement does NOT change what the system would do in a future scenario, it is NOT an invariant.\n\n---\n\nFACT DEFINITION:\nFacts are empirical observations about what happened or what currently occurs.\nThey must NOT contain instructions, preferences, or rules.\n\nInvalid facts:\n- \"Buttons must be blue\"\n- \"Code should be minimal\"\n\nCorrect facts:\n- \"User requested blue buttons\"\n- \"User prefers minimal code\"\n\n---\n\nCLASSIFICATION RULES:\n- invariants: causal constraints only\n- facts: observations only\n- policies: explicit instructions or rules (e.g., 'Make buttons blue')\n- preferences: stylistic or subjective desires (e.g., 'Prefer clean code')\n- hypotheses: uncertain or inferred explanations\n\nNever place policies, preferences, or hypotheses into invariants or facts.\nCRITICAL: DO NOT DROP INFORMATION. Process every instruction, request, or observation into the correct array.\n\n---\n\nSELECTIVITY RULES:\n- Most inputs produce NO new invariants.\n- It is correct to emit an empty invariant_adds list.\n- Do not promote facts into invariants.\n- Do not create invariants from a single weak observation unless it clearly defines a boundary condition.\n\n---\n\nGENERALIZATION RULE:\nWhen evidence falsifies an existing invariant:\n- remove the old invariant\n- add a new invariant that correctly captures the boundary\n\nGeneralize minimally. Do not overreach beyond evidence.\n\n---\n\nOUTPUT RULES:\n- Output a minimal patch using `invariant_adds` and `invariant_removes`\n- Only include invariants that are clearly justified\n- Keep wake_pack concise and operational (no narrative or emotional framing)\n- Do not restate obvious or irrelevant information\n\n---\n\nFINAL CHECK BEFORE OUTPUT:\nFor each invariant, ask:\n- Does this describe what happens when conditions change?\n- Does this constrain future behavior?\n- Is this free of \"must/should/prefer\" language?\n\nIf any answer is \"no\", do NOT include the invariant.```",
+  "evaluator_prompt": "You are an expert evaluator grading an AI's memory compression output against a rubric.\n\nRUBRIC:\n{}\n\nEvaluate the output critically and precisely. Do not be lenient, but also do not over-penalize.\n\nYour primary goal is to detect:\n- Weak or non-causal invariants\n- Overgeneralization from limited evidence\n- Promotion of policies, preferences, or narration into invariants\n- Inclusion of trivial or non-constraining statements\n- Misclassification between facts, policies, preferences, and hypotheses\n\nImportant clarifications:\n- The presence of 'policies', 'preferences', and 'hypotheses' fields is EXPECTED and should NOT be penalized.\n- Only penalize if policies, preferences, or hypotheses are incorrectly placed inside invariants.\n- Hypotheses are allowed to be speculative and are NOT errors unless promoted into invariants.\n- It is GOOD for the model to emit zero invariants if none are warranted.\n- It is BAD to include even one weak or incorrect invariant.\n\nInvariant evaluation rules:\n- Invariants must describe causal constraints on future behavior (what happens if X, then Y), not rules or advice.\n- Do NOT require perfect phrasing; if a statement captures a real causal boundary, it should score well even if wording is imperfect.\n- Penalize invariants that use deontic or preference language (\"must\", \"should\", \"prefer\", \"want\").\n\nFact evaluation rules:\n- Facts must be empirical observations about reality.\n- Penalize facts that encode instructions, policies, or preferences (e.g., \"must\", \"should\").\n\nSCORING OVERRIDES (STRICT):\n- If ANY invariant is not predictive (i.e., does not describe what happens when conditions change), the score MUST be ≤5.\n- If an invariant is purely a restatement of a fact or identity, the score MUST be ≤4.\n- If invalid invariants are emitted, they dominate the score even if other parts are correct.\n- If no valid invariants are emitted when one is clearly warranted, the score MUST be ≤6.\n\nScoring:\n- Start from 10 and subtract for each failure.\n- Major errors (invalid invariants, causal mistakes, overgeneralization) should reduce the score significantly.\n- Moderate errors (misclassification, fact pollution, minor narrative leakage) should reduce the score moderately.\n- Minor issues (formatting, slight verbosity) should reduce the score slightly.\n- Apply SCORING OVERRIDES after all other reasoning.\n- Do not assign a score of 0 unless the output is fundamentally broken.\n\nReturn a valid JSON with 'score' (number) and 'reasoning' (string).```",
+  "rubric": "1. Invariant Purity (1-10): Are invariants expressed as empirical, causal constraints on reality (e.g., \"X causes Y\"), and free of deontic or preference language (\"must\", \"should\", \"prefer\", \"want\")? Penalize any invariant that is a rule, identity claim, or narrative statement.\n2. Causal Correctness (1-10): Does the model correctly identify the underlying mechanism or boundary condition rather than surface symptoms? Penalize overgeneralization (e.g., \"tool is broken\") when evidence only supports a narrower cause.\n3. Selectivity / Minimality (1-10): Did the model only include invariants that materially constrain future behavior? Penalize trivial, obvious, or non-constraining statements (e.g., \"system uses zip\"). Reward emitting no invariants when none are warranted.\n4. Scope Discipline (1-10): Are claims properly scoped to the evidence (e.g., \"in observed calls\" vs global claims)? Penalize universal or timeless statements derived from limited evidence.\n5. Classification Hygiene (1-10): Are items correctly separated into invariants, policies, preferences, hypotheses, and facts? Penalize leakage of policies/preferences into invariants.\n6. Narrative Leakage (1-10): Does the output avoid emotional framing, project description, or conversational narration in invariants and wake_pack? Penalize any non-operational language.\n7. Format Compliance (1-10): Does the output strictly follow the required JSON schema with no missing or extra fields?",
+  "scenarios": [
+    {
+      "name": "Generalizing Falsified Invariant (The Hard Push)",
+      "prior_wake_pack": "The user reported that the workspace ledger tool fails with an error on large inputs. We are investigating.",
+      "active_invariants": [
+        {
+          "id": "inv_1",
+          "text": "The ledger tool previously failed when given a large input due to a potential serialization error."
+        }
+      ],
+      "thread_history": [
+        {
+          "entry_id": "turn_1",
+          "kind": "user_message",
+          "content": "Hey, I figured out why the ledger tool was failing! It wasn't the serialization. The underlying SQLite wrapper just flat out crashes if a single query exceeds 5MB. So it's a hard limit on query size, not a serialization bug.",
+          "created_at": "2026-03-22T09:00:00-07:00"
+        }
+      ]
+    },
+    {
+      "name": "Extracting Physics over History",
+      "prior_wake_pack": "Starting a new debugging session on the authentication flow.",
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "entry_id": "turn_2",
+          "kind": "user_message",
+          "content": "Wow, okay I just spent 2 hours debugging. It turns out the Redis cache we use for auth tokens drops entries after 15 minutes silently without respecting the TTL field we pass it. I filed a bug but for now we have to assume tokens expire after 15m.",
+          "created_at": "2026-03-22T09:30:00-07:00"
+        }
+      ]
+    },
+    {
+      "name": "Segregating Transient Preferences and Policies",
+      "prior_wake_pack": "Working on the UI components for the new CRM project.",
+      "active_invariants": [],
+      "thread_history": [
+        {
+          "entry_id": "turn_3",
+          "kind": "user_message",
+          "content": "We need to make sure all of the primary call-to-action buttons in this project are vibrant blue. Also, whenever you write React components, use functional components with hooks. Don't use class components. I really prefer clean, minimal code without too many comments unless the logic is super weird.",
+          "created_at": "2026-03-22T10:00:00-07:00"
+        }
+      ]
+    },
+    {
+      "name": "Empty Patch for Non-Reality Altering Chat",
+      "prior_wake_pack": "The user is configuring their local development environment. Current operating system is macOS.",
+      "active_invariants": [
+        {
+          "id": "inv_2",
+          "text": "The host operating system is macOS."
+        }
+      ],
+      "thread_history": [
+        {
+          "entry_id": "turn_4",
+          "kind": "user_message",
+          "content": "Can you remind me what the command is to zip a folder?",
+          "created_at": "2026-03-22T10:15:00-07:00"
+        },
+        {
+          "entry_id": "turn_5",
+          "kind": "assistant_message",
+          "content": "You can use `zip -r archive_name.zip folder_name/` to recursively zip a folder in macOS.",
+          "created_at": "2026-03-22T10:15:05-07:00"
+        },
+        {
+          "entry_id": "turn_6",
+          "kind": "user_message",
+          "content": "Thanks, that worked perfectly! Just uploading it now.",
+          "created_at": "2026-03-22T10:17:00-07:00"
+        }
+      ]
+    }
+  ]
+}
